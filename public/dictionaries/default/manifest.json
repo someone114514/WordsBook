@@ -1,0 +1,15 @@
+﻿{
+  "id": "default",
+  "name": "WordsBook Starter",
+  "version": "2026.02.28-demo",
+  "locale": "en-US",
+  "source": "WordsBook Built-in Demo Dictionary",
+  "publishedAt": "2026-02-28",
+  "entryCount": 12,
+  "entries": [
+    {
+      "path": "entries-1.jsonl"
+    }
+  ],
+  "indices": []
+}

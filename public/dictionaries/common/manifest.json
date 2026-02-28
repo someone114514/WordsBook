@@ -1,0 +1,15 @@
+﻿{
+  "id": "common",
+  "name": "Common Core",
+  "version": "2026.02.28-common",
+  "locale": "en-US",
+  "source": "WordsBook Common Core Dictionary",
+  "publishedAt": "2026-02-28",
+  "entryCount": 6,
+  "entries": [
+    {
+      "path": "entries-1.jsonl"
+    }
+  ],
+  "indices": []
+}
