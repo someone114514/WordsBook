@@ -25,7 +25,7 @@ npm run test:e2e
 
 ## Product Notes
 
-- First launch: install mixed dictionaries, now including ECDICT mini generated from `asserts/ECDICT-master/ecdict.mini.csv`.
+- First launch: install mixed dictionaries, now including ECDICT full generated from `asserts/ECDICT-master/ecdict.csv`.
 - Lookup order: exact -> lemma -> prefix -> fuzzy.
 - Review schedule: `[0, 1, 2, 4, 7, 15, 30, 60]` days.
 - Backup: export/import available in Settings.
@@ -44,4 +44,7 @@ npm run dict:build
 2. Open with Safari on iPhone.
 3. Share -> Add to Home Screen.
 
-Detailed implementation notes: `docs/IMPLEMENTATION.md`.
+Detailed notes:
+
+- Implementation: `docs/IMPLEMENTATION.md`
+- GitHub Pages + mobile packaging: `docs/DEPLOY_GITHUB_MOBILE.md`
