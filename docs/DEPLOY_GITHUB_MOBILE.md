@@ -13,6 +13,7 @@
 1. CI：`.github/workflows/ci.yml`
 2. Pages 发布：`.github/workflows/deploy-pages.yml`
 3. Vite 已支持 GitHub Pages 的 `base` 路径自动处理（仓库名子路径）。
+4. 发布流程自动生成 `404.html`（SPA 刷新/直达子路由不会白屏）。
 
 你需要做的：
 
