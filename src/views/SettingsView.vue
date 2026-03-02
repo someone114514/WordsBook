@@ -97,7 +97,9 @@ async function onImport(event: Event) {
 
 <template>
   <section class="panel">
-    <p v-if="message" class="success">{{ message }}</p>
+    <Transition name="soft-fade-slide">
+      <p v-if="message" class="success">{{ message }}</p>
+    </Transition>
 
     <article class="result-section">
       <h2>词典</h2>

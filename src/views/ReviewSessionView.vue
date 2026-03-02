@@ -1,9 +1,10 @@
 ﻿<script setup lang="ts">
+import dayjs from 'dayjs'
 import { computed, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 import type { ReviewCard, StudyPlan } from '../types/models'
-import { playEntryPronunciation } from '../modules/dictionary/audioService'
+import { playEntryPronunciation, preloadPronunciationQueue } from '../modules/dictionary/audioService'
 import { buildTodayPlan, gradeCard, loadReviewCards } from '../modules/review/reviewService'
 import { useSettingsStore } from '../modules/settings/settingsStore'
 import { parseJsonArray } from '../utils/json'
@@ -20,6 +21,12 @@ const currentIndex = ref(0)
 const revealMeaning = ref(false)
 const finished = ref(false)
 const playMessage = ref('')
+const audioPreparing = ref(false)
+const preloadMessage = ref('')
+const showSessionSettings = ref(false)
+
+let playbackToken = 0
+let preloadToken = 0
 
 const currentCard = computed(() => cards.value[currentIndex.value] ?? null)
 const progressPercent = computed(() => {
@@ -30,19 +37,54 @@ const progressPercent = computed(() => {
   return Math.round(((currentIndex.value + 1) / cards.value.length) * 100)
 })
 
-const queueSummary = computed(() => `${currentIndex.value + 1} / ${cards.value.length}`)
+const queueSummary = computed(() => {
+  if (cards.value.length === 0) {
+    return '0 / 0'
+  }
+
+  return `${currentIndex.value + 1} / ${cards.value.length}`
+})
+
+const currentTimingHint = computed(() => {
+  const card = currentCard.value
+  if (!card) {
+    return ''
+  }
+
+  const now = dayjs()
+  const sinceLast = card.reviewState.lastReviewedAt
+    ? `${Math.max(0, Math.round(now.diff(card.reviewState.lastReviewedAt, 'day', true) * 10) / 10)} 天`
+    : '-'
+  const scheduleDelta = Math.round(Math.abs(now.diff(card.reviewState.nextReviewAt, 'day', true)) * 10) / 10
+  const scheduleText = now.isAfter(card.reviewState.nextReviewAt)
+    ? `已过期 ${scheduleDelta} 天`
+    : `提前 ${scheduleDelta} 天`
+
+  return `周期 ${card.reviewState.cycle} · 距上次复习 ${sinceLast} · ${scheduleText}`
+})
 
 watch(
   currentCard,
   async (card) => {
-    if (card && settings.value.autoPronunciation) {
-      await playEntryPronunciation(card.entry, {
-        rate: settings.value.speechRate,
-        ttsEngine: settings.value.ttsEngine,
-      })
+    if (!card) {
+      return
+    }
+
+    playMessage.value = ''
+    void preloadUpcomingAudio()
+
+    if (settings.value.autoPronunciation) {
+      await playCurrentCardAudio(true)
     }
   },
   { immediate: false },
+)
+
+watch(
+  () => settings.value.ttsEngine,
+  () => {
+    void preloadUpcomingAudio()
+  },
 )
 
 async function initialize() {
@@ -56,6 +98,7 @@ async function initialize() {
     plan.value = await buildTodayPlan()
     cards.value = await loadReviewCards(plan.value.queueWordIds)
     finished.value = cards.value.length === 0
+    void preloadUpcomingAudio()
   } finally {
     loading.value = false
   }
@@ -65,16 +108,62 @@ onMounted(() => {
   void initialize()
 })
 
-async function onPlayCurrent() {
+async function playCurrentCardAudio(isAuto = false) {
   if (!currentCard.value) {
     return
   }
+
+  const token = ++playbackToken
+  audioPreparing.value = true
 
   const result = await playEntryPronunciation(currentCard.value.entry, {
     rate: settings.value.speechRate,
     ttsEngine: settings.value.ttsEngine,
   })
-  playMessage.value = result.success ? '' : '发音失败：当前设备语音服务不可用'
+
+  if (token !== playbackToken) {
+    return
+  }
+
+  audioPreparing.value = false
+  if (!result.success) {
+    playMessage.value = '发音失败：当前设备语音服务不可用'
+  } else if (!isAuto) {
+    playMessage.value = ''
+  }
+}
+
+async function preloadUpcomingAudio() {
+  const token = ++preloadToken
+  const lookaheadEntries = cards.value
+    .slice(currentIndex.value + 1, currentIndex.value + 9)
+    .map((card) => card.entry)
+
+  if (lookaheadEntries.length === 0) {
+    preloadMessage.value = ''
+    return
+  }
+
+  preloadMessage.value = `语音预加载中（${lookaheadEntries.length}）`
+  await preloadPronunciationQueue(lookaheadEntries, {
+    ttsEngine: settings.value.ttsEngine,
+    batchSize: 3,
+  })
+
+  if (token !== preloadToken) {
+    return
+  }
+
+  preloadMessage.value = '语音缓存就绪'
+  window.setTimeout(() => {
+    if (preloadMessage.value === '语音缓存就绪') {
+      preloadMessage.value = ''
+    }
+  }, 1200)
+}
+
+async function onPlayCurrent() {
+  await playCurrentCardAudio(false)
 }
 
 function onReveal() {
@@ -95,6 +184,7 @@ async function onGrade(rating: 'remember' | 'forget') {
 
   currentIndex.value += 1
   revealMeaning.value = false
+  playMessage.value = ''
 }
 
 async function onRestartQueue() {
@@ -104,6 +194,28 @@ async function onRestartQueue() {
 
 async function onExit() {
   await router.push('/review')
+}
+
+async function onUpdateSessionBoolean(key: 'autoPronunciation', event: Event) {
+  const target = event.target as HTMLInputElement
+  await settingsStore.update({ [key]: target.checked })
+}
+
+async function onUpdateSessionNumber(key: 'speechRate', event: Event): Promise<void> {
+  const target = event.target as HTMLInputElement
+  const value = Number(target.value)
+  if (!Number.isFinite(value)) {
+    return
+  }
+
+  await settingsStore.update({ [key]: value })
+}
+
+async function onUpdateSessionEngine(event: Event): Promise<void> {
+  const target = event.target as HTMLSelectElement
+  await settingsStore.update({
+    ttsEngine: target.value as 'auto' | 'browser' | 'youdao' | 'google' | 'dictionaryapi',
+  })
 }
 
 function parseLines(raw: string): string[] {
@@ -119,13 +231,52 @@ function parseLines(raw: string): string[] {
         <span>Immersive Session</span>
         <strong v-if="!loading && !finished">{{ queueSummary }}</strong>
       </div>
-      <button v-if="finished" class="btn" @click="onRestartQueue">Refresh</button>
-      <span v-else class="progress-chip">{{ progressPercent }}%</span>
+      <div class="immersive-header-actions">
+        <button class="btn" @click="showSessionSettings = !showSessionSettings">
+          {{ showSessionSettings ? '收起设置' : '设置' }}
+        </button>
+        <button v-if="finished" class="btn" @click="onRestartQueue">Refresh</button>
+        <span v-else class="progress-chip">{{ progressPercent }}%</span>
+      </div>
     </header>
 
     <div class="immersive-progress-bar">
       <span :style="{ width: `${progressPercent}%` }" />
     </div>
+
+    <section v-if="showSessionSettings" class="session-settings-panel">
+      <label class="setting-row">
+        <span>自动播放发音</span>
+        <input
+          type="checkbox"
+          :checked="settings.autoPronunciation"
+          @change="onUpdateSessionBoolean('autoPronunciation', $event)"
+        />
+      </label>
+
+      <label class="setting-row">
+        <span>语速 {{ settings.speechRate.toFixed(1) }}</span>
+        <input
+          type="range"
+          min="0.7"
+          max="1.3"
+          step="0.1"
+          :value="settings.speechRate"
+          @input="onUpdateSessionNumber('speechRate', $event)"
+        />
+      </label>
+
+      <label class="setting-row">
+        <span>TTS 引擎</span>
+        <select class="inline-input" :value="settings.ttsEngine" @change="onUpdateSessionEngine">
+          <option value="auto">自动（推荐）</option>
+          <option value="browser">系统 TTS</option>
+          <option value="youdao">Youdao 免费语音</option>
+          <option value="google">Google 免费语音</option>
+          <option value="dictionaryapi">DictionaryAPI 语音</option>
+        </select>
+      </label>
+    </section>
 
     <div v-if="loading" class="immersive-empty">
       <p>{{ loadingText }}</p>
@@ -144,11 +295,14 @@ function parseLines(raw: string): string[] {
       <p class="immersive-caption">{{ currentCard.entry.dictionaryName || 'Dictionary' }}</p>
       <h1>{{ currentCard.entry.headword }}</h1>
       <p class="muted">{{ currentCard.entry.phonetic || 'No phonetic' }}</p>
+      <p class="muted">{{ currentTimingHint }}</p>
 
       <div class="actions review-main-actions">
         <button class="btn" @click="onPlayCurrent">Play</button>
         <button class="btn" :disabled="revealMeaning" @click="onReveal">Reveal Meaning</button>
       </div>
+      <p v-if="audioPreparing" class="muted">语音缓冲中...</p>
+      <p v-else-if="preloadMessage" class="muted">{{ preloadMessage }}</p>
       <p v-if="playMessage" class="muted">{{ playMessage }}</p>
 
       <div v-if="revealMeaning" class="answer-panel">

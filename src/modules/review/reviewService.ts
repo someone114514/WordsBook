@@ -11,6 +11,18 @@ interface BuildPlanOptions {
   dailyReviewLimit?: number
 }
 
+const FOCUS_OVERDUE_DAYS = 2
+
+interface PlanCache {
+  plan: StudyPlan
+  createdAt: number
+  fingerprint: string
+  dayKey: string
+}
+
+const PLAN_CACHE_REFRESH_MS = 3 * 60 * 1000
+let planCache: PlanCache | null = null
+
 async function getActiveStateRows(): Promise<Array<{ wordId: string; state: ReviewState }>> {
   const [wordbookRows, stateRows] = await Promise.all([
     db.wordbook.where('archived').equals(0).toArray(),
@@ -24,18 +36,38 @@ async function getActiveStateRows(): Promise<Array<{ wordId: string; state: Revi
 }
 
 export async function buildTodayPlan(options: BuildPlanOptions = {}): Promise<StudyPlan> {
-  const settings = await loadSettings()
+  const requiresSettings =
+    options.dailyNewLimit === undefined || options.dailyReviewLimit === undefined
+  const settings = requiresSettings ? await loadSettings() : null
   const now = options.at ?? new Date()
   const nowIso = now.toISOString()
 
-  const dailyNewLimit = options.dailyNewLimit ?? settings.dailyNewLimit
-  const dailyReviewLimit = options.dailyReviewLimit ?? settings.dailyReviewLimit
+  const dailyNewLimit = options.dailyNewLimit ?? settings?.dailyNewLimit ?? 20
+  const dailyReviewLimit = options.dailyReviewLimit ?? settings?.dailyReviewLimit ?? 200
 
   const rows = await getActiveStateRows()
 
+  const getOverdueDays = (nextReviewAt: string) => dayjs(nowIso).diff(nextReviewAt, 'day', true)
+
   const dueRows = rows
-    .filter((row) => row.state.totalReviews > 0 && dayjs(row.state.nextReviewAt).isBefore(nowIso))
-    .sort((left, right) => left.state.nextReviewAt.localeCompare(right.state.nextReviewAt))
+    .filter((row) => row.state.totalReviews > 0 && !dayjs(row.state.nextReviewAt).isAfter(nowIso))
+    .sort((left, right) => {
+      const leftOverdueDays = getOverdueDays(left.state.nextReviewAt)
+      const rightOverdueDays = getOverdueDays(right.state.nextReviewAt)
+
+      // Prioritize items close to the intended review window first.
+      const leftTier = leftOverdueDays <= FOCUS_OVERDUE_DAYS ? 0 : 1
+      const rightTier = rightOverdueDays <= FOCUS_OVERDUE_DAYS ? 0 : 1
+      if (leftTier !== rightTier) {
+        return leftTier - rightTier
+      }
+
+      if (Math.abs(leftOverdueDays - rightOverdueDays) > 1e-6) {
+        return leftOverdueDays - rightOverdueDays
+      }
+
+      return left.state.nextReviewAt.localeCompare(right.state.nextReviewAt)
+    })
 
   const newRows = rows
     .filter((row) => row.state.totalReviews === 0)
@@ -50,6 +82,77 @@ export async function buildTodayPlan(options: BuildPlanOptions = {}): Promise<St
     newCount: newRows.length,
     queueWordIds: [...selectedDue, ...selectedNew].map((row) => row.wordId),
   }
+}
+
+function getTodayKey(date = new Date()): string {
+  return dayjs(date).format('YYYY-MM-DD')
+}
+
+async function getPlanFingerprint(
+  dailyNewLimit: number,
+  dailyReviewLimit: number,
+): Promise<string> {
+  const [activeCount, latestWordbookRow, latestReviewLog] = await Promise.all([
+    db.wordbook.where('archived').equals(0).count(),
+    db.wordbook.orderBy('addedAt').last(),
+    db.reviewLogs.orderBy('id').last(),
+  ])
+
+  return [
+    activeCount,
+    latestWordbookRow?.addedAt ?? '-',
+    latestReviewLog?.id ?? 0,
+    dailyNewLimit,
+    dailyReviewLimit,
+  ].join('|')
+}
+
+export function getCachedStudyPlan(): StudyPlan | null {
+  if (!planCache) {
+    return null
+  }
+
+  const isToday = planCache.dayKey === getTodayKey()
+  const isFresh = Date.now() - planCache.createdAt < PLAN_CACHE_REFRESH_MS
+  if (isToday && isFresh) {
+    return planCache.plan
+  }
+
+  return null
+}
+
+export function invalidateStudyPlanCache(): void {
+  planCache = null
+}
+
+export async function buildTodayPlanCached(): Promise<StudyPlan> {
+  const settings = await loadSettings()
+  const dayKey = getTodayKey()
+  const fingerprint = await getPlanFingerprint(settings.dailyNewLimit, settings.dailyReviewLimit)
+  const now = Date.now()
+
+  if (
+    planCache &&
+    planCache.dayKey === dayKey &&
+    planCache.fingerprint === fingerprint &&
+    now - planCache.createdAt < PLAN_CACHE_REFRESH_MS
+  ) {
+    return planCache.plan
+  }
+
+  const plan = await buildTodayPlan({
+    dailyNewLimit: settings.dailyNewLimit,
+    dailyReviewLimit: settings.dailyReviewLimit,
+  })
+
+  planCache = {
+    plan,
+    createdAt: now,
+    fingerprint,
+    dayKey,
+  }
+
+  return plan
 }
 
 export async function loadReviewCards(wordIds: string[]): Promise<ReviewCard[]> {
@@ -125,6 +228,7 @@ export async function gradeCard(
       nextReviewAtBefore: computed.nextReviewAtBefore,
       nextReviewAtAfter: computed.nextReviewAtAfter,
     })
+    invalidateStudyPlanCache()
 
     return updatedState
   })

@@ -1,10 +1,9 @@
 ﻿import { createRouter, createWebHistory } from 'vue-router'
 
-const LookupView = () => import('../views/LookupView.vue')
-const ReviewView = () => import('../views/ReviewView.vue')
-const ReviewSessionView = () => import('../views/ReviewSessionView.vue')
-const WordbookView = () => import('../views/WordbookView.vue')
-const SettingsView = () => import('../views/SettingsView.vue')
+import LookupView from '../views/LookupView.vue'
+import ReviewView from '../views/ReviewView.vue'
+import ReviewSessionView from '../views/ReviewSessionView.vue'
+import SettingsView from '../views/SettingsView.vue'
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -17,7 +16,7 @@ export const router = createRouter({
       component: ReviewSessionView,
       meta: { title: '背诵中', immersive: true },
     },
-    { path: '/wordbook', component: WordbookView, meta: { title: '单词本' } },
+    { path: '/wordbook', redirect: '/review' },
     { path: '/settings', component: SettingsView, meta: { title: '设置' } },
   ],
 })

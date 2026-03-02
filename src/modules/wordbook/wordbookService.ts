@@ -1,6 +1,7 @@
 ﻿import { db } from '../../db/database'
 import type { AddToWordbookResult, WordbookItem, WordbookWithEntry } from '../../types/models'
 import { applyAiOverrides } from '../dictionary/entryOverrideMapper'
+import { invalidateStudyPlanCache } from '../review/reviewService'
 
 export async function listWordbookItems(): Promise<WordbookWithEntry[]> {
   const items = await db.wordbook.where('archived').equals(0).sortBy('addedAt')
@@ -63,6 +64,7 @@ export async function addToWordbook(entryId: string): Promise<AddToWordbookResul
       totalReviews: 0,
     })
   })
+  invalidateStudyPlanCache()
 
   return { wordId, alreadyExists: false }
 }
@@ -73,6 +75,7 @@ export async function removeWordFromWordbook(wordId: string): Promise<void> {
     await db.reviewState.delete(wordId)
     await db.reviewLogs.where('wordId').equals(wordId).delete()
   })
+  invalidateStudyPlanCache()
 }
 
 export async function updateWordbookItem(
@@ -86,6 +89,9 @@ export async function updateWordbookItem(
 
   const next = { ...current, ...patch }
   await db.wordbook.put(next)
+  if (patch.archived !== undefined) {
+    invalidateStudyPlanCache()
+  }
   return next
 }
 

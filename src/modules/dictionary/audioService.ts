@@ -12,6 +12,8 @@ export interface PronunciationOptions {
 }
 
 const dictionaryApiAudioCache = new Map<string, string | null>()
+const preloadPromiseMap = new Map<string, Promise<boolean>>()
+const preloadedUrlSet = new Set<string>()
 
 function appBaseUrl(): string {
   return import.meta.env.BASE_URL || '/'
@@ -34,6 +36,51 @@ function getAudioUrl(audioKey: string): string {
 async function playAudioUrl(url: string): Promise<void> {
   const audio = new Audio(url)
   await audio.play()
+}
+
+async function preloadAudioUrl(url: string): Promise<boolean> {
+  if (preloadedUrlSet.has(url)) {
+    return true
+  }
+
+  const existing = preloadPromiseMap.get(url)
+  if (existing) {
+    return existing
+  }
+
+  const task = new Promise<boolean>((resolve) => {
+    const audio = new Audio()
+    let settled = false
+    let timeout = 0
+
+    const finish = (ok: boolean) => {
+      if (settled) {
+        return
+      }
+      settled = true
+      window.clearTimeout(timeout)
+      audio.onloadeddata = null
+      audio.oncanplaythrough = null
+      audio.onerror = null
+      if (ok) {
+        preloadedUrlSet.add(url)
+      }
+      resolve(ok)
+    }
+
+    audio.preload = 'auto'
+    audio.onloadeddata = () => finish(true)
+    audio.oncanplaythrough = () => finish(true)
+    audio.onerror = () => finish(false)
+    timeout = window.setTimeout(() => finish(false), 3500)
+    audio.src = url
+    audio.load()
+  }).finally(() => {
+    preloadPromiseMap.delete(url)
+  })
+
+  preloadPromiseMap.set(url, task)
+  return task
 }
 
 function normalizeWordForDictionaryApi(word: string): string {
@@ -130,6 +177,35 @@ async function resolveRemoteAudioCandidates(
   return urls
 }
 
+async function resolveAudioCandidatesForEntry(
+  entry: DictionaryEntry,
+  ttsEngine: AppSettings['ttsEngine'],
+): Promise<Array<{ url: string; source: 'dictionary-audio' | 'remote-audio' }>> {
+  const candidates: Array<{ url: string; source: 'dictionary-audio' | 'remote-audio' }> = []
+  const seen = new Set<string>()
+
+  const append = (url: string | null | undefined, source: 'dictionary-audio' | 'remote-audio') => {
+    if (!url || seen.has(url)) {
+      return
+    }
+    seen.add(url)
+    candidates.push({ url, source })
+  }
+
+  if (entry.audioKey) {
+    append(getAudioUrl(entry.audioKey), 'dictionary-audio')
+  }
+
+  if (ttsEngine !== 'browser') {
+    const remoteUrls = await resolveRemoteAudioCandidates(entry.headword, ttsEngine)
+    for (const url of remoteUrls) {
+      append(url, 'remote-audio')
+    }
+  }
+
+  return candidates
+}
+
 function speakFallback(text: string, rate = 1): boolean {
   if (typeof window === 'undefined' || !window.speechSynthesis) {
     return false
@@ -173,25 +249,13 @@ export async function playEntryPronunciation(
   }
 
   const normalized = normalizeOptions(options)
-
-  if (entry.audioKey) {
+  const candidates = await resolveAudioCandidatesForEntry(entry, normalized.ttsEngine)
+  for (const candidate of candidates) {
     try {
-      await playAudioUrl(getAudioUrl(entry.audioKey))
-      return { success: true, source: 'dictionary-audio' }
+      await playAudioUrl(candidate.url)
+      return { success: true, source: candidate.source }
     } catch {
-      // Continue to remote audio and TTS fallback.
-    }
-  }
-
-  if (normalized.ttsEngine !== 'browser') {
-    const remoteCandidates = await resolveRemoteAudioCandidates(entry.headword, normalized.ttsEngine)
-    for (const url of remoteCandidates) {
-      try {
-        await playAudioUrl(url)
-        return { success: true, source: 'remote-audio' }
-      } catch {
-        // try next source
-      }
+      // try next source
     }
   }
 
@@ -200,4 +264,46 @@ export async function playEntryPronunciation(
   }
 
   return { success: false, source: 'none', error: 'no-audio-source' }
+}
+
+export async function preloadEntryPronunciation(
+  entry: DictionaryEntry,
+  options?: PronunciationOptions,
+): Promise<PronunciationResult> {
+  if (typeof window === 'undefined') {
+    return { success: false, source: 'none', error: 'not-in-browser' }
+  }
+
+  const normalized = normalizeOptions(options)
+  const candidates = await resolveAudioCandidatesForEntry(entry, normalized.ttsEngine)
+  for (const candidate of candidates) {
+    const ok = await preloadAudioUrl(candidate.url)
+    if (ok) {
+      return { success: true, source: candidate.source }
+    }
+  }
+
+  return { success: false, source: 'none', error: 'no-preload-source' }
+}
+
+export async function preloadPronunciationQueue(
+  entries: DictionaryEntry[],
+  options?: PronunciationOptions & { batchSize?: number },
+): Promise<void> {
+  if (entries.length === 0) {
+    return
+  }
+
+  const batchSize = Math.max(1, options?.batchSize ?? 3)
+  for (let offset = 0; offset < entries.length; offset += batchSize) {
+    const chunk = entries.slice(offset, offset + batchSize)
+    await Promise.all(
+      chunk.map((entry) =>
+        preloadEntryPronunciation(entry, {
+          rate: options?.rate,
+          ttsEngine: options?.ttsEngine,
+        }),
+      ),
+    )
+  }
 }
