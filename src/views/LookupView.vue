@@ -1,7 +1,6 @@
 ﻿<script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
-import { useRouter } from 'vue-router'
 import type { DictionaryEntry, LookupResult } from '../types/models'
 import { debounce } from '../utils/debounce'
 import { parseJsonArray } from '../utils/json'
@@ -19,12 +18,12 @@ import { addToWordbook, getWordbookEntryStatus } from '../modules/wordbook/wordb
 
 const dictionaryStore = useDictionaryStore()
 const settingsStore = useSettingsStore()
-const router = useRouter()
 
 const { installedMeta } = storeToRefs(dictionaryStore)
 const { settings } = storeToRefs(settingsStore)
 
 const query = ref('')
+const searchInputRef = ref<HTMLInputElement | null>(null)
 const loading = ref(false)
 const lookupResult = ref<LookupResult | null>(null)
 const entryStatusMap = ref(new Map<string, string>())
@@ -164,10 +163,6 @@ function onClearQuery() {
   query.value = ''
 }
 
-async function onOpenSettings() {
-  await router.push('/settings')
-}
-
 async function onAddWord(entryId: string) {
   const result = await addToWordbook(entryId)
   entryStatusMap.value.set(entryId, result.wordId)
@@ -183,6 +178,22 @@ async function onPlay(entry: DictionaryEntry) {
   if (!result.success) {
     messageType.value = 'error'
     message.value = '发音失败：当前设备语音服务不可用'
+  }
+}
+
+async function onPasteQuery() {
+  try {
+    const text = (await navigator.clipboard.readText()).trim()
+    if (!text) {
+      messageType.value = 'error'
+      message.value = '剪贴板为空'
+      return
+    }
+    query.value = text
+    searchInputRef.value?.focus()
+  } catch {
+    messageType.value = 'error'
+    message.value = '读取剪贴板失败，请手动粘贴'
   }
 }
 
@@ -272,18 +283,7 @@ function parseLines(raw: string): string[] {
 
 <template>
   <section class="panel lookup-panel">
-    <section class="result-section lookup-hero">
-      <div>
-        <strong>极速查词</strong>
-        <p class="muted">输入即查，本地优先，结果按命中等级分组</p>
-      </div>
-      <div class="entry-badges">
-        <span class="chip chip-secondary">{{ dictionarySummary }}</span>
-        <span v-if="flowState === 'results'" class="chip">本次命中 {{ totalMatchCount }}</span>
-      </div>
-    </section>
-
-    <div class="lookup-main">
+    <Transition name="soft-fade-slide">
       <p
         v-if="message"
         :class="messageType === 'error' ? 'error' : 'success'"
@@ -292,121 +292,126 @@ function parseLines(raw: string): string[] {
       >
         {{ message }}
       </p>
+    </Transition>
 
-      <div class="lookup-flow-panel">
-        <div v-if="flowState === 'idle'" class="result-section lookup-stage">
-          <p class="muted">请在下方查询单词，回车即可录入</p>
-          <div class="lookup-stage-actions">
-            <button v-if="!installedMeta" type="button" class="btn btn-quiet" @click="onOpenSettings">
-              前往设置安装词库
-            </button>
-          </div>
-        </div>
-
-        <div v-else-if="flowState === 'loading'" class="result-section lookup-stage">
-          <p class="muted">检索中...</p>
-        </div>
-
-        <div v-else-if="flowState === 'empty'" class="result-section">
-          <p class="muted">没有找到结果</p>
-          <div class="actions">
-            <button class="btn btn-quiet" :disabled="aiBusyNoResult || !canUseAi" @click="onAiCreateFromQuery">
-              {{ aiBusyNoResult ? 'AI 查询中...' : 'AI 查询并加入词典' }}
-            </button>
-            <button v-if="!installedMeta" type="button" class="btn btn-quiet" @click="onOpenSettings">
-              去设置安装词库
-            </button>
-          </div>
-          <p v-if="!canUseAi" class="muted">在设置页填写 Deepseek API Key 后可启用 AI 查询。</p>
-        </div>
-
-        <div v-else class="lookup-flow-spacer" aria-hidden="true" />
-      </div>
-
-      <div v-if="flowState === 'results'" class="lookup-results-list">
-        <article v-for="section in visibleGroupedMatches" :key="section.title" class="result-section">
-          <div class="result-section-head">
-            <h2>
-              {{ section.title }}
-              <span class="result-count">({{ section.entries.length }})</span>
-            </h2>
-            <button
-              v-if="section.entries.length > MAX_VISIBLE_ENTRIES"
-              type="button"
-              class="btn btn-quiet section-toggle"
-              @click="toggleSection(section.title)"
-            >
-              {{ section.expanded ? '收起' : `显示更多（+${section.hiddenCount}）` }}
-            </button>
+    <section class="result-section lookup-canvas">
+      <div class="lookup-canvas-body">
+        <Transition name="soft-fade-slide" mode="out-in">
+          <div v-if="flowState === 'idle'" key="idle" class="lookup-stage lookup-stage-idle">
+            <p class="lookup-stage-center-text">请在下方查询单词，回车即可录入</p>
           </div>
 
-          <div class="entry-list">
-            <div v-for="entry in section.visibleEntries" :key="entry.entryId" class="entry-card">
-              <div class="entry-header">
-                <h3>{{ entry.headword }}</h3>
-                <div class="entry-badges">
-                  <span v-if="entry.dictionaryName" class="chip chip-secondary">{{ entry.dictionaryName }}</span>
-                  <span v-if="entry.aiEnhanced" class="chip">AI {{ entry.aiEnhanceMode === 'replace' ? '替换' : '增强' }}</span>
-                  <span v-if="isAdded(entry.entryId)" class="chip">已加入</span>
-                </div>
-              </div>
-              <p class="muted">{{ entry.phonetic || '无音标' }}</p>
-              <p class="muted">词性: {{ entry.posList.join(' / ') || '-' }}</p>
+          <div v-else-if="flowState === 'loading'" key="loading" class="lookup-stage lookup-stage-idle">
+            <p class="lookup-stage-center-text">检索中...</p>
+          </div>
 
-              <ul>
-                <li v-for="sense in parseLines(entry.sensesJson)" :key="sense">{{ sense }}</li>
-              </ul>
-
-              <p v-for="example in parseLines(entry.examplesJson)" :key="example" class="example">{{ example }}</p>
-
-              <div class="actions">
-                <button class="btn" @click="onPlay(entry)">发音</button>
-                <button class="btn btn-primary" :disabled="isAdded(entry.entryId)" @click="onAddWord(entry.entryId)">
-                  {{ isAdded(entry.entryId) ? '已加入' : '加入单词本' }}
-                </button>
-              </div>
-
-              <details class="ai-details">
-                <summary>AI 词义增强</summary>
-                <div class="actions actions-soft ai-actions">
-                  <button
-                    class="btn btn-quiet"
-                    :disabled="!canUseAi || isAiActionBusy(entry.entryId, 'add')"
-                    @click="onAiEnhance(entry, 'add')"
-                  >
-                    {{ isAiActionBusy(entry.entryId, 'add') ? 'AI处理中...' : 'AI 追加释义' }}
-                  </button>
-                  <button
-                    class="btn btn-quiet"
-                    :disabled="!canUseAi || isAiActionBusy(entry.entryId, 'replace')"
-                    @click="onAiEnhance(entry, 'replace')"
-                  >
-                    {{ isAiActionBusy(entry.entryId, 'replace') ? 'AI处理中...' : 'AI 替换释义' }}
-                  </button>
-                  <button
-                    class="btn btn-quiet"
-                    :disabled="!entry.aiEnhanced || isAiActionBusy(entry.entryId, 'rollback')"
-                    @click="onAiRollback(entry)"
-                  >
-                    {{ isAiActionBusy(entry.entryId, 'rollback') ? '回退中...' : '回退 AI' }}
-                  </button>
-                </div>
-                <p v-if="!canUseAi" class="muted">在设置页填写 Deepseek API Key 后可启用 AI 增强。</p>
-              </details>
+          <div v-else-if="flowState === 'empty'" key="empty" class="lookup-stage lookup-stage-empty">
+            <p class="lookup-stage-center-text">没有找到结果</p>
+            <div class="actions">
+              <button class="btn btn-quiet" :disabled="aiBusyNoResult || !canUseAi" @click="onAiCreateFromQuery">
+                {{ aiBusyNoResult ? 'AI 查询中...' : 'AI 查询并加入词典' }}
+              </button>
             </div>
+            <p v-if="!canUseAi" class="muted">在设置页填写 Deepseek API Key 后可启用 AI 查询。</p>
           </div>
-        </article>
-      </div>
-    </div>
 
-    <form class="lookup-search-wrap lookup-dock" @submit.prevent="onLookupSubmit">
-      <label class="lookup-search-field">
+          <div v-else key="results" class="lookup-results-scroll">
+            <TransitionGroup name="soft-list" tag="div" class="lookup-results-list">
+              <article v-for="section in visibleGroupedMatches" :key="section.title" class="result-section">
+                <div class="result-section-head">
+                  <h2>
+                    {{ section.title }}
+                    <span class="result-count">({{ section.entries.length }})</span>
+                  </h2>
+                  <button
+                    v-if="section.entries.length > MAX_VISIBLE_ENTRIES"
+                    type="button"
+                    class="btn btn-quiet section-toggle"
+                    @click="toggleSection(section.title)"
+                  >
+                    {{ section.expanded ? '收起' : `显示更多（+${section.hiddenCount}）` }}
+                  </button>
+                </div>
+
+                <TransitionGroup name="soft-list" tag="div" class="entry-list">
+                  <div v-for="entry in section.visibleEntries" :key="entry.entryId" class="entry-card">
+                    <div class="entry-header">
+                      <h3>{{ entry.headword }}</h3>
+                      <div class="entry-badges">
+                        <span v-if="entry.dictionaryName" class="chip chip-secondary">{{ entry.dictionaryName }}</span>
+                        <span v-if="entry.aiEnhanced" class="chip">AI {{ entry.aiEnhanceMode === 'replace' ? '替换' : '增强' }}</span>
+                        <span v-if="isAdded(entry.entryId)" class="chip">已加入</span>
+                      </div>
+                    </div>
+                    <p class="muted">{{ entry.phonetic || '无音标' }}</p>
+                    <p class="muted">词性: {{ entry.posList.join(' / ') || '-' }}</p>
+
+                    <ul>
+                      <li v-for="sense in parseLines(entry.sensesJson)" :key="sense">{{ sense }}</li>
+                    </ul>
+
+                    <p v-for="example in parseLines(entry.examplesJson)" :key="example" class="example">{{ example }}</p>
+
+                    <div class="actions">
+                      <button class="btn" @click="onPlay(entry)">发音</button>
+                      <button class="btn btn-primary" :disabled="isAdded(entry.entryId)" @click="onAddWord(entry.entryId)">
+                        {{ isAdded(entry.entryId) ? '已加入' : '加入单词本' }}
+                      </button>
+                    </div>
+
+                    <details class="ai-details">
+                      <summary>AI 词义增强</summary>
+                      <div class="actions actions-soft ai-actions">
+                        <button
+                          class="btn btn-quiet"
+                          :disabled="!canUseAi || isAiActionBusy(entry.entryId, 'add')"
+                          @click="onAiEnhance(entry, 'add')"
+                        >
+                          {{ isAiActionBusy(entry.entryId, 'add') ? 'AI处理中...' : 'AI 追加释义' }}
+                        </button>
+                        <button
+                          class="btn btn-quiet"
+                          :disabled="!canUseAi || isAiActionBusy(entry.entryId, 'replace')"
+                          @click="onAiEnhance(entry, 'replace')"
+                        >
+                          {{ isAiActionBusy(entry.entryId, 'replace') ? 'AI处理中...' : 'AI 替换释义' }}
+                        </button>
+                        <button
+                          class="btn btn-quiet"
+                          :disabled="!entry.aiEnhanced || isAiActionBusy(entry.entryId, 'rollback')"
+                          @click="onAiRollback(entry)"
+                        >
+                          {{ isAiActionBusy(entry.entryId, 'rollback') ? '回退中...' : '回退 AI' }}
+                        </button>
+                      </div>
+                      <p v-if="!canUseAi" class="muted">在设置页填写 Deepseek API Key 后可启用 AI 增强。</p>
+                    </details>
+                  </div>
+                </TransitionGroup>
+              </article>
+            </TransitionGroup>
+          </div>
+        </Transition>
+      </div>
+
+      <footer class="lookup-canvas-footer">
+        <div class="entry-badges">
+          <span class="chip chip-secondary">{{ dictionarySummary }}</span>
+          <span v-if="flowState === 'results'" class="chip">命中 {{ totalMatchCount }}</span>
+        </div>
+      </footer>
+    </section>
+
+    <form class="lookup-dock lookup-search-strip" @submit.prevent="onLookupSubmit">
+      <label class="lookup-search-pill">
+        <span class="lookup-search-glyph" aria-hidden="true">⌕</span>
         <span class="sr-only">查词输入框</span>
         <input
+          ref="searchInputRef"
           v-model="query"
           class="search-input"
           type="text"
-          placeholder="输入英文单词，如 running"
+          placeholder="查询单词"
           autocomplete="off"
           inputmode="search"
         />
@@ -420,9 +425,9 @@ function parseLines(raw: string): string[] {
           清空
         </button>
       </label>
-      <button type="submit" class="btn btn-primary lookup-submit-btn" :disabled="loading || !query.trim()">
-        查询
-      </button>
+
+      <button type="button" class="quick-action-btn quick-action-btn-soft" @click="onPasteQuery">粘贴</button>
+      <button type="submit" class="sr-only">查询</button>
     </form>
   </section>
 </template>

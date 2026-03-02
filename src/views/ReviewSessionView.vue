@@ -1,5 +1,4 @@
 ﻿<script setup lang="ts">
-import dayjs from 'dayjs'
 import { computed, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
@@ -43,24 +42,6 @@ const queueSummary = computed(() => {
   }
 
   return `${currentIndex.value + 1} / ${cards.value.length}`
-})
-
-const currentTimingHint = computed(() => {
-  const card = currentCard.value
-  if (!card) {
-    return ''
-  }
-
-  const now = dayjs()
-  const sinceLast = card.reviewState.lastReviewedAt
-    ? `${Math.max(0, Math.round(now.diff(card.reviewState.lastReviewedAt, 'day', true) * 10) / 10)} 天`
-    : '-'
-  const scheduleDelta = Math.round(Math.abs(now.diff(card.reviewState.nextReviewAt, 'day', true)) * 10) / 10
-  const scheduleText = now.isAfter(card.reviewState.nextReviewAt)
-    ? `已过期 ${scheduleDelta} 天`
-    : `提前 ${scheduleDelta} 天`
-
-  return `周期 ${card.reviewState.cycle} · 距上次复习 ${sinceLast} · ${scheduleText}`
 })
 
 watch(
@@ -226,16 +207,16 @@ function parseLines(raw: string): string[] {
 <template>
   <section class="immersive-stage">
     <header class="immersive-header">
-      <button class="btn" @click="onExit">Exit</button>
+      <button class="btn" @click="onExit">退出</button>
       <div class="immersive-progress">
-        <span>Immersive Session</span>
+        <span>沉浸背词</span>
         <strong v-if="!loading && !finished">{{ queueSummary }}</strong>
       </div>
       <div class="immersive-header-actions">
         <button class="btn" @click="showSessionSettings = !showSessionSettings">
           {{ showSessionSettings ? '收起设置' : '设置' }}
         </button>
-        <button v-if="finished" class="btn" @click="onRestartQueue">Refresh</button>
+        <button v-if="finished" class="btn" @click="onRestartQueue">刷新</button>
         <span v-else class="progress-chip">{{ progressPercent }}%</span>
       </div>
     </header>
@@ -244,81 +225,100 @@ function parseLines(raw: string): string[] {
       <span :style="{ width: `${progressPercent}%` }" />
     </div>
 
-    <section v-if="showSessionSettings" class="session-settings-panel">
-      <label class="setting-row">
-        <span>自动播放发音</span>
-        <input
-          type="checkbox"
-          :checked="settings.autoPronunciation"
-          @change="onUpdateSessionBoolean('autoPronunciation', $event)"
-        />
-      </label>
+    <Transition name="soft-fade-slide">
+      <section v-if="showSessionSettings" class="session-settings-panel">
+        <label class="setting-row">
+          <span>自动播放发音</span>
+          <input
+            type="checkbox"
+            :checked="settings.autoPronunciation"
+            @change="onUpdateSessionBoolean('autoPronunciation', $event)"
+          />
+        </label>
 
-      <label class="setting-row">
-        <span>语速 {{ settings.speechRate.toFixed(1) }}</span>
-        <input
-          type="range"
-          min="0.7"
-          max="1.3"
-          step="0.1"
-          :value="settings.speechRate"
-          @input="onUpdateSessionNumber('speechRate', $event)"
-        />
-      </label>
+        <label class="setting-row">
+          <span>语速 {{ settings.speechRate.toFixed(1) }}</span>
+          <input
+            type="range"
+            min="0.7"
+            max="1.3"
+            step="0.1"
+            :value="settings.speechRate"
+            @input="onUpdateSessionNumber('speechRate', $event)"
+          />
+        </label>
 
-      <label class="setting-row">
-        <span>TTS 引擎</span>
-        <select class="inline-input" :value="settings.ttsEngine" @change="onUpdateSessionEngine">
-          <option value="auto">自动（推荐）</option>
-          <option value="browser">系统 TTS</option>
-          <option value="youdao">Youdao 免费语音</option>
-          <option value="google">Google 免费语音</option>
-          <option value="dictionaryapi">DictionaryAPI 语音</option>
-        </select>
-      </label>
-    </section>
+        <label class="setting-row">
+          <span>TTS 引擎</span>
+          <select class="inline-input" :value="settings.ttsEngine" @change="onUpdateSessionEngine">
+            <option value="auto">自动（推荐）</option>
+            <option value="browser">系统 TTS</option>
+            <option value="youdao">Youdao 免费语音</option>
+            <option value="google">Google 免费语音</option>
+            <option value="dictionaryapi">DictionaryAPI 语音</option>
+          </select>
+        </label>
+      </section>
+    </Transition>
 
     <div v-if="loading" class="immersive-empty">
       <p>{{ loadingText }}</p>
     </div>
 
     <div v-else-if="finished" class="immersive-empty">
-      <h2>Queue Completed</h2>
-      <p v-if="plan">Due {{ plan.dueCount }}, New {{ plan.newCount }}</p>
+      <h2>本轮已完成</h2>
+      <p v-if="plan">到期 {{ plan.dueCount }}，新词 {{ plan.newCount }}</p>
       <div class="actions">
-        <button class="btn" @click="onRestartQueue">Start Again</button>
-        <button class="btn btn-primary" @click="onExit">Back</button>
+        <button class="btn" @click="onRestartQueue">再来一轮</button>
+        <button class="btn btn-primary" @click="onExit">返回</button>
       </div>
     </div>
 
-    <article v-else-if="currentCard" class="immersive-card">
-      <p class="immersive-caption">{{ currentCard.entry.dictionaryName || 'Dictionary' }}</p>
-      <h1>{{ currentCard.entry.headword }}</h1>
-      <p class="muted">{{ currentCard.entry.phonetic || 'No phonetic' }}</p>
-      <p class="muted">{{ currentTimingHint }}</p>
+    <article v-else-if="currentCard" class="review-card-stage">
+      <div class="review-card-shadow review-card-shadow-back" aria-hidden="true" />
+      <div class="review-card-shadow review-card-shadow-mid" aria-hidden="true" />
 
-      <div class="actions review-main-actions">
-        <button class="btn" @click="onPlayCurrent">Play</button>
-        <button class="btn" :disabled="revealMeaning" @click="onReveal">Reveal Meaning</button>
-      </div>
-      <p v-if="audioPreparing" class="muted">语音缓冲中...</p>
-      <p v-else-if="preloadMessage" class="muted">{{ preloadMessage }}</p>
-      <p v-if="playMessage" class="muted">{{ playMessage }}</p>
+      <Transition name="review-card-swap" mode="out-in">
+        <section :key="currentCard.wordId" class="immersive-card review-flashcard">
+          <div class="review-card-content review-card-content-focus">
+            <p class="immersive-caption">{{ currentCard.entry.dictionaryName || '本地词典' }}</p>
 
-      <div v-if="revealMeaning" class="answer-panel">
-        <ul>
-          <li v-for="sense in parseLines(currentCard.entry.sensesJson)" :key="sense">{{ sense }}</li>
-        </ul>
+            <div class="review-word-stack">
+              <h1 class="review-word">{{ currentCard.entry.headword }}</h1>
+              <p class="muted review-phonetic">{{ currentCard.entry.phonetic || '无音标' }}</p>
+              <button class="btn review-play-inline" @click="onPlayCurrent">发音</button>
+            </div>
 
-        <p v-for="example in parseLines(currentCard.entry.examplesJson)" :key="example" class="example">
-          {{ example }}
-        </p>
+            <Transition name="review-reveal">
+              <div v-if="revealMeaning" class="answer-panel review-answer-panel">
+                <ul>
+                  <li v-for="sense in parseLines(currentCard.entry.sensesJson)" :key="sense">{{ sense }}</li>
+                </ul>
 
-        <div class="actions review-grade-actions">
-          <button class="btn btn-danger" @click="onGrade('forget')">Forget</button>
-          <button class="btn btn-primary" @click="onGrade('remember')">Remember</button>
-        </div>
-      </div>
+                <p v-for="example in parseLines(currentCard.entry.examplesJson)" :key="example" class="example">
+                  {{ example }}
+                </p>
+              </div>
+            </Transition>
+
+            <p v-if="audioPreparing" class="muted">语音缓冲中...</p>
+            <p v-else-if="preloadMessage" class="muted">{{ preloadMessage }}</p>
+            <p v-if="playMessage" class="muted review-play-message">{{ playMessage }}</p>
+          </div>
+
+          <footer class="immersive-bottom-dock">
+            <div class="review-action-row">
+              <button v-if="!revealMeaning" class="btn btn-primary review-action-btn review-reveal-btn" @click="onReveal">
+                显示释义
+              </button>
+              <template v-else>
+                <button class="btn btn-danger review-action-btn" @click="onGrade('forget')">忘记了</button>
+                <button class="btn btn-primary review-action-btn" @click="onGrade('remember')">记住了</button>
+              </template>
+            </div>
+          </footer>
+        </section>
+      </Transition>
     </article>
   </section>
 </template>

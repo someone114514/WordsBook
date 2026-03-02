@@ -1,6 +1,6 @@
 ﻿<script setup lang="ts">
 import dayjs from 'dayjs'
-import { onMounted, reactive, ref } from 'vue'
+import { onActivated, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import type { StudyPlan, WordbookWithEntry } from '../types/models'
 import {
@@ -59,6 +59,10 @@ async function initialize() {
 }
 
 onMounted(() => {
+  void initialize()
+})
+
+onActivated(() => {
   void initialize()
 })
 
