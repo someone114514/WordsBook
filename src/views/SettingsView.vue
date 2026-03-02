@@ -49,6 +49,13 @@ async function onUpdateNumber(
   await settingsStore.update({ [key]: value })
 }
 
+async function onUpdateEngine(event: Event): Promise<void> {
+  const target = event.target as HTMLSelectElement
+  await settingsStore.update({
+    ttsEngine: target.value as 'auto' | 'browser' | 'youdao' | 'google' | 'dictionaryapi',
+  })
+}
+
 async function onUpdateString(
   key: 'deepseekApiKey' | 'deepseekBaseUrl' | 'deepseekModel',
   event: Event,
@@ -126,6 +133,17 @@ async function onImport(event: Event) {
           :value="settings.speechRate"
           @input="onUpdateNumber('speechRate', $event)"
         />
+      </label>
+
+      <label class="setting-row">
+        <span>TTS 引擎</span>
+        <select class="inline-input" :value="settings.ttsEngine" @change="onUpdateEngine">
+          <option value="auto">自动（推荐）</option>
+          <option value="browser">系统 TTS</option>
+          <option value="youdao">Youdao 免费语音</option>
+          <option value="google">Google 免费语音</option>
+          <option value="dictionaryapi">DictionaryAPI 语音</option>
+        </select>
       </label>
 
       <label class="setting-row">

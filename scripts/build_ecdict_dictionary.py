@@ -1,12 +1,13 @@
 ﻿#!/usr/bin/env python3
+import argparse
 import csv
 import json
 from pathlib import Path
 
-SRC = Path('asserts/ECDICT-master/ecdict.mini.csv')
+DEFAULT_SRC = Path('asserts/ECDICT-master/ecdict.csv')
 OUT_DIR = Path('public/dictionaries/ecdict')
-ENTRIES_FILE = OUT_DIR / 'entries-1.jsonl'
 MANIFEST_FILE = OUT_DIR / 'manifest.json'
+SHARD_SIZE = 50000
 
 
 def clean_lines(raw: str):
@@ -39,16 +40,45 @@ def normalize_word(word: str):
     return ''.join(ch for ch in word.strip().lower() if ch.isalnum() or ch in "-'")
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description='Build dictionary bundle from ECDICT CSV.')
+    parser.add_argument(
+        '--src',
+        type=Path,
+        default=DEFAULT_SRC,
+        help='Path to ECDICT CSV source file (default: asserts/ECDICT-master/ecdict.csv)',
+    )
+    return parser.parse_args()
+
+
+def open_shard(shard_index: int):
+    shard_name = f'entries-{shard_index}.jsonl'
+    shard_path = OUT_DIR / shard_name
+    return shard_name, shard_path.open('w', encoding='utf-8', newline='')
+
+
 def main():
-    if not SRC.exists():
-        raise SystemExit(f'Missing source file: {SRC}')
+    args = parse_args()
+    src = args.src
+
+    if not src.exists():
+        raise SystemExit(f'Missing source file: {src}')
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    entries = []
-    seen = {}
+    for old in OUT_DIR.glob('entries-*.jsonl'):
+        old.unlink()
 
-    with SRC.open('r', encoding='utf-8', newline='') as f:
+    seen = {}
+    entry_count = 0
+    shard_paths = []
+    shard_index = 1
+    current_shard_count = 0
+
+    shard_name, shard_file = open_shard(shard_index)
+    shard_paths.append(shard_name)
+
+    with src.open('r', encoding='utf-8', newline='') as f:
         reader = csv.DictReader(f)
         for row in reader:
             word = (row.get('word') or '').strip()
@@ -87,27 +117,42 @@ def main():
                 'usageJson': json.dumps(usage, ensure_ascii=False),
                 'audioKey': '',
             }
-            entries.append(entry)
 
-    with ENTRIES_FILE.open('w', encoding='utf-8', newline='') as f:
-        for entry in entries:
-            f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+            shard_file.write(json.dumps(entry, ensure_ascii=False) + '\n')
+            entry_count += 1
+            current_shard_count += 1
+
+            if current_shard_count >= SHARD_SIZE:
+                shard_file.close()
+                shard_index += 1
+                current_shard_count = 0
+                shard_name, shard_file = open_shard(shard_index)
+                shard_paths.append(shard_name)
+
+    shard_file.close()
+
+    if current_shard_count == 0 and shard_paths:
+        empty_last = OUT_DIR / shard_paths[-1]
+        if empty_last.exists() and empty_last.stat().st_size == 0:
+            empty_last.unlink()
+            shard_paths.pop()
 
     manifest = {
-        'id': 'ecdict-mini',
-        'name': 'ECDICT Mini',
-        'version': '2026.03.02-ecdict-mini',
+        'id': 'ecdict-full',
+        'name': 'ECDICT Full',
+        'version': '2026.03.02-ecdict-full',
         'locale': 'en-US,zh-CN',
-        'source': 'ECDICT mini from asserts/ECDICT-master/ecdict.mini.csv',
+        'source': f'ECDICT from {src.as_posix()}',
         'publishedAt': '2026-03-02',
-        'entryCount': len(entries),
-        'entries': [{'path': 'entries-1.jsonl'}],
+        'entryCount': entry_count,
+        'entries': [{'path': path} for path in shard_paths],
         'indices': [],
     }
 
     MANIFEST_FILE.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
 
-    print(f'Generated {len(entries)} entries -> {ENTRIES_FILE}')
+    print(f'Generated {entry_count} entries from {src}')
+    print(f'Generated {len(shard_paths)} shard files under {OUT_DIR}')
     print(f'Generated manifest -> {MANIFEST_FILE}')
 
 

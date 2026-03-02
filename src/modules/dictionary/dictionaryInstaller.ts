@@ -33,6 +33,12 @@ export interface InstallProgress {
   stage: InstallStage
   ratio: number
   message: string
+  stats?: {
+    entries?: number
+    indices?: number
+    dictionaries?: number
+    elapsedMs?: number
+  }
 }
 
 interface LoadedDictionaryPackage {
@@ -40,6 +46,9 @@ interface LoadedDictionaryPackage {
   entries: DictionaryEntry[]
   indices: DictionaryIndexRow[]
 }
+
+const ENTRY_IMPORT_BATCH_SIZE = 10000
+const INDEX_IMPORT_BATCH_SIZE = 5000
 
 function resolveUrl(baseUrl: string, target: string): string {
   return new URL(target, baseUrl).toString()
@@ -228,6 +237,7 @@ export async function installDictionaryBundle(
   manifestUrls: string[],
   onProgress?: (progress: InstallProgress) => void,
 ): Promise<DictionaryMeta> {
+  const startedAt = performance.now()
   if (manifestUrls.length === 0) {
     throw new Error('No dictionary manifests provided')
   }
@@ -247,6 +257,10 @@ export async function installDictionaryBundle(
           stage: progress.stage,
           ratio: (index + progress.ratio) / manifestUrls.length,
           message: `[${index + 1}/${manifestUrls.length}] ${progress.message}`,
+          stats: {
+            dictionaries: manifestUrls.length,
+            elapsedMs: Math.round(performance.now() - startedAt),
+          },
         })
       })
 
@@ -258,6 +272,10 @@ export async function installDictionaryBundle(
         stage: 'fetch-manifest',
         ratio: (index + 1) / manifestUrls.length,
         message: `Skipped dictionary ${index + 1}: ${reason}`,
+        stats: {
+          dictionaries: manifestUrls.length,
+          elapsedMs: Math.round(performance.now() - startedAt),
+        },
       })
     }
   }
@@ -268,8 +286,26 @@ export async function installDictionaryBundle(
 
   const entries = dictionaries.flatMap((item) => item.entries)
   const mergedIndices = mergeIndexRows(dictionaries.flatMap((item) => item.indices))
+  const totalImportItems = entries.length + mergedIndices.length + 1
+  let importedItems = 0
+  const reportImport = (message: string) => {
+    const base = 0.95
+    const span = 0.049
+    const ratio = base + (importedItems / Math.max(totalImportItems, 1)) * span
+    onProgress?.({
+      stage: 'import',
+      ratio: Math.min(ratio, 0.999),
+      message,
+      stats: {
+        entries: entries.length,
+        indices: mergedIndices.length,
+        dictionaries: dictionaries.length,
+        elapsedMs: Math.round(performance.now() - startedAt),
+      },
+    })
+  }
 
-  onProgress?.({ stage: 'import', ratio: 0.95, message: 'Importing merged dictionary bundle' })
+  reportImport('Preparing merged dictionary import')
 
   const installedAt = new Date().toISOString()
   const meta: DictionaryMeta = {
@@ -286,14 +322,39 @@ export async function installDictionaryBundle(
     await db.dictionaryEntries.clear()
     await db.dictionaryIndex.clear()
 
-    await db.dictionaryEntries.bulkPut(entries)
-    await db.dictionaryIndex.bulkPut(mergedIndices)
+    for (let offset = 0; offset < entries.length; offset += ENTRY_IMPORT_BATCH_SIZE) {
+      const chunk = entries.slice(offset, offset + ENTRY_IMPORT_BATCH_SIZE)
+      await db.dictionaryEntries.bulkPut(chunk)
+      importedItems += chunk.length
+      reportImport(`Importing entries ${Math.min(offset + chunk.length, entries.length)} / ${entries.length}`)
+    }
+
+    for (let offset = 0; offset < mergedIndices.length; offset += INDEX_IMPORT_BATCH_SIZE) {
+      const chunk = mergedIndices.slice(offset, offset + INDEX_IMPORT_BATCH_SIZE)
+      await db.dictionaryIndex.bulkPut(chunk)
+      importedItems += chunk.length
+      reportImport(
+        `Importing search indices ${Math.min(offset + chunk.length, mergedIndices.length)} / ${mergedIndices.length}`,
+      )
+    }
+
     await db.dictionaryMeta.put(meta)
+    importedItems += 1
   })
 
   const warningSuffix =
     failedDictionaries.length > 0 ? ` (${failedDictionaries.length} dictionary failed and was skipped)` : ''
-  onProgress?.({ stage: 'completed', ratio: 1, message: `Dictionary bundle installed${warningSuffix}` })
+  onProgress?.({
+    stage: 'completed',
+    ratio: 1,
+    message: `Dictionary bundle installed${warningSuffix}`,
+    stats: {
+      entries: entries.length,
+      indices: mergedIndices.length,
+      dictionaries: dictionaries.length,
+      elapsedMs: Math.round(performance.now() - startedAt),
+    },
+  })
 
   return meta
 }

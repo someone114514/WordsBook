@@ -1,14 +1,59 @@
 {
-  "id": "ecdict-mini",
-  "name": "ECDICT Mini",
-  "version": "2026.03.02-ecdict-mini",
+  "id": "ecdict-full",
+  "name": "ECDICT Full",
+  "version": "2026.03.02-ecdict-full",
   "locale": "en-US,zh-CN",
-  "source": "ECDICT mini from asserts/ECDICT-master/ecdict.mini.csv",
+  "source": "ECDICT from asserts/ECDICT-master/ecdict.csv",
   "publishedAt": "2026-03-02",
-  "entryCount": 53,
+  "entryCount": 770611,
   "entries": [
     {
       "path": "entries-1.jsonl"
+    },
+    {
+      "path": "entries-2.jsonl"
+    },
+    {
+      "path": "entries-3.jsonl"
+    },
+    {
+      "path": "entries-4.jsonl"
+    },
+    {
+      "path": "entries-5.jsonl"
+    },
+    {
+      "path": "entries-6.jsonl"
+    },
+    {
+      "path": "entries-7.jsonl"
+    },
+    {
+      "path": "entries-8.jsonl"
+    },
+    {
+      "path": "entries-9.jsonl"
+    },
+    {
+      "path": "entries-10.jsonl"
+    },
+    {
+      "path": "entries-11.jsonl"
+    },
+    {
+      "path": "entries-12.jsonl"
+    },
+    {
+      "path": "entries-13.jsonl"
+    },
+    {
+      "path": "entries-14.jsonl"
+    },
+    {
+      "path": "entries-15.jsonl"
+    },
+    {
+      "path": "entries-16.jsonl"
     }
   ],
   "indices": []

@@ -4,6 +4,7 @@ import type { AppSettings } from '../../types/models'
 export const DEFAULT_SETTINGS: AppSettings = {
   autoPronunciation: false,
   speechRate: 1,
+  ttsEngine: 'auto',
   dailyNewLimit: 20,
   dailyReviewLimit: 200,
   deepseekApiKey: '',
@@ -22,6 +23,14 @@ export async function loadSettings(): Promise<AppSettings> {
 
     if (row.key === 'speechRate' && typeof row.value === 'number') {
       output.speechRate = row.value
+    }
+
+    if (
+      row.key === 'ttsEngine' &&
+      typeof row.value === 'string' &&
+      ['auto', 'browser', 'youdao', 'google', 'dictionaryapi'].includes(row.value)
+    ) {
+      output.ttsEngine = row.value as AppSettings['ttsEngine']
     }
 
     if (row.key === 'dailyNewLimit' && typeof row.value === 'number') {

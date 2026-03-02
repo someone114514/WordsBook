@@ -19,6 +19,7 @@ const cards = ref<ReviewCard[]>([])
 const currentIndex = ref(0)
 const revealMeaning = ref(false)
 const finished = ref(false)
+const playMessage = ref('')
 
 const currentCard = computed(() => cards.value[currentIndex.value] ?? null)
 const progressPercent = computed(() => {
@@ -35,7 +36,10 @@ watch(
   currentCard,
   async (card) => {
     if (card && settings.value.autoPronunciation) {
-      await playEntryPronunciation(card.entry, settings.value.speechRate)
+      await playEntryPronunciation(card.entry, {
+        rate: settings.value.speechRate,
+        ttsEngine: settings.value.ttsEngine,
+      })
     }
   },
   { immediate: false },
@@ -66,7 +70,11 @@ async function onPlayCurrent() {
     return
   }
 
-  await playEntryPronunciation(currentCard.value.entry, settings.value.speechRate)
+  const result = await playEntryPronunciation(currentCard.value.entry, {
+    rate: settings.value.speechRate,
+    ttsEngine: settings.value.ttsEngine,
+  })
+  playMessage.value = result.success ? '' : '发音失败：当前设备语音服务不可用'
 }
 
 function onReveal() {
@@ -137,10 +145,11 @@ function parseLines(raw: string): string[] {
       <h1>{{ currentCard.entry.headword }}</h1>
       <p class="muted">{{ currentCard.entry.phonetic || 'No phonetic' }}</p>
 
-      <div class="actions">
+      <div class="actions review-main-actions">
         <button class="btn" @click="onPlayCurrent">Play</button>
         <button class="btn" :disabled="revealMeaning" @click="onReveal">Reveal Meaning</button>
       </div>
+      <p v-if="playMessage" class="muted">{{ playMessage }}</p>
 
       <div v-if="revealMeaning" class="answer-panel">
         <ul>
@@ -151,7 +160,7 @@ function parseLines(raw: string): string[] {
           {{ example }}
         </p>
 
-        <div class="actions">
+        <div class="actions review-grade-actions">
           <button class="btn btn-danger" @click="onGrade('forget')">Forget</button>
           <button class="btn btn-primary" @click="onGrade('remember')">Remember</button>
         </div>

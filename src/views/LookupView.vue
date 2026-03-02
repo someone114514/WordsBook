@@ -116,7 +116,13 @@ async function onAddWord(entryId: string) {
 }
 
 async function onPlay(entry: DictionaryEntry) {
-  await playEntryPronunciation(entry, settings.value.speechRate)
+  const result = await playEntryPronunciation(entry, {
+    rate: settings.value.speechRate,
+    ttsEngine: settings.value.ttsEngine,
+  })
+  if (!result.success) {
+    message.value = '发音失败：当前设备语音服务不可用'
+  }
 }
 
 async function onAiEnhance(entry: DictionaryEntry, mode: 'add' | 'replace') {
@@ -229,7 +235,7 @@ function parseLines(raw: string): string[] {
     <div v-else-if="lookupResult && !lookupResult.hasResult" class="result-section">
       <p class="muted">没有找到结果</p>
       <div class="actions">
-        <button class="btn btn-primary" :disabled="aiBusyNoResult || !canUseAi" @click="onAiCreateFromQuery">
+        <button class="btn btn-quiet" :disabled="aiBusyNoResult || !canUseAi" @click="onAiCreateFromQuery">
           {{ aiBusyNoResult ? 'AI 查询中...' : 'AI 查询并加入词典' }}
         </button>
       </div>
@@ -264,23 +270,23 @@ function parseLines(raw: string): string[] {
           </button>
         </div>
 
-        <div class="actions actions-soft">
+        <div class="actions actions-soft ai-actions">
           <button
-            class="btn"
+            class="btn btn-quiet"
             :disabled="!canUseAi || isAiActionBusy(entry.entryId, 'add')"
             @click="onAiEnhance(entry, 'add')"
           >
             {{ isAiActionBusy(entry.entryId, 'add') ? 'AI处理中...' : 'AI 追加释义' }}
           </button>
           <button
-            class="btn"
+            class="btn btn-quiet"
             :disabled="!canUseAi || isAiActionBusy(entry.entryId, 'replace')"
             @click="onAiEnhance(entry, 'replace')"
           >
             {{ isAiActionBusy(entry.entryId, 'replace') ? 'AI处理中...' : 'AI 替换释义' }}
           </button>
           <button
-            class="btn"
+            class="btn btn-quiet"
             :disabled="!entry.aiEnhanced || isAiActionBusy(entry.entryId, 'rollback')"
             @click="onAiRollback(entry)"
           >

@@ -69,6 +69,7 @@ export interface SettingItem {
 export interface AppSettings {
   autoPronunciation: boolean
   speechRate: number
+  ttsEngine: 'auto' | 'browser' | 'youdao' | 'google' | 'dictionaryapi'
   dailyNewLimit: number
   dailyReviewLimit: number
   deepseekApiKey: string
