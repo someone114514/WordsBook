@@ -24,11 +24,7 @@ const installProgressText = computed(() => {
 })
 
 onMounted(async () => {
-  await Promise.all([
-    settingsStore.initialize(),
-    dictionaryStore.refreshInstalledMeta(),
-    refreshStats(),
-  ])
+  await Promise.all([settingsStore.initialize(), dictionaryStore.refreshInstalledMeta(), refreshStats()])
 })
 
 async function refreshStats() {
@@ -51,6 +47,14 @@ async function onUpdateNumber(
   }
 
   await settingsStore.update({ [key]: value })
+}
+
+async function onUpdateString(
+  key: 'deepseekApiKey' | 'deepseekBaseUrl' | 'deepseekModel',
+  event: Event,
+): Promise<void> {
+  const target = event.target as HTMLInputElement
+  await settingsStore.update({ [key]: target.value.trim() })
 }
 
 async function onInstallDictionary() {
@@ -95,7 +99,7 @@ async function onImport(event: Event) {
       </p>
       <p v-else class="muted">尚未安装词典</p>
       <button class="btn btn-primary" :disabled="installing" @click="onInstallDictionary">
-        {{ installing ? '安装中...' : '安装/更新词典' }}
+        {{ installing ? '安装中...' : '安装/更新混合词典' }}
       </button>
       <p v-if="installProgressText" class="muted">{{ installProgressText }}</p>
       <p v-if="lastError" class="error">{{ lastError }}</p>
@@ -145,6 +149,42 @@ async function onImport(event: Event) {
           @change="onUpdateNumber('dailyReviewLimit', $event)"
         />
       </label>
+    </article>
+
+    <article class="result-section">
+      <h2>AI 词典增强（Deepseek）</h2>
+      <label class="setting-stack">
+        <span>API Key</span>
+        <input
+          type="password"
+          class="inline-input"
+          :value="settings.deepseekApiKey"
+          placeholder="sk-..."
+          @change="onUpdateString('deepseekApiKey', $event)"
+        />
+      </label>
+
+      <label class="setting-stack">
+        <span>Base URL</span>
+        <input
+          type="text"
+          class="inline-input"
+          :value="settings.deepseekBaseUrl"
+          @change="onUpdateString('deepseekBaseUrl', $event)"
+        />
+      </label>
+
+      <label class="setting-stack">
+        <span>Model</span>
+        <input
+          type="text"
+          class="inline-input"
+          :value="settings.deepseekModel"
+          @change="onUpdateString('deepseekModel', $event)"
+        />
+      </label>
+
+      <p class="muted">查词页支持：AI 追加释义、AI 替换释义、回退 AI、查不到时 AI 加词。</p>
     </article>
 
     <article class="result-section">

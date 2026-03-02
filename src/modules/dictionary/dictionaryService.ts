@@ -1,6 +1,7 @@
 ﻿import { db } from '../../db/database'
 import type { DictionaryEntry, DictionaryMeta, LookupResult } from '../../types/models'
 import { dedupeEntries, levenshteinDistance, normalizeWord, toLemmaCandidates } from './search'
+import { applyAiOverrides } from './entryOverrideMapper'
 
 async function getEntriesByIds(entryIds: string[]): Promise<DictionaryEntry[]> {
   if (entryIds.length === 0) {
@@ -32,6 +33,7 @@ async function findFuzzyMatches(normalized: string, maxCount = 5): Promise<Dicti
   if (!seed) {
     return []
   }
+
   const candidates = await db.dictionaryEntries
     .where('headwordLower')
     .startsWith(seed)
@@ -48,6 +50,22 @@ async function findFuzzyMatches(normalized: string, maxCount = 5): Promise<Dicti
 
 export async function getInstalledDictionaryMeta(): Promise<DictionaryMeta | undefined> {
   return db.dictionaryMeta.get('active')
+}
+
+export async function getDictionaryHealth(): Promise<{
+  meta: DictionaryMeta | undefined
+  entryCount: number
+  indexCount: number
+  healthy: boolean
+}> {
+  const [meta, entryCount, indexCount] = await Promise.all([
+    db.dictionaryMeta.get('active'),
+    db.dictionaryEntries.count(),
+    db.dictionaryIndex.count(),
+  ])
+
+  const healthy = Boolean(meta) && entryCount > 0 && indexCount > 0
+  return { meta, entryCount, indexCount, healthy }
 }
 
 export async function lookupWord(query: string): Promise<LookupResult> {
@@ -88,13 +106,21 @@ export async function lookupWord(query: string): Promise<LookupResult> {
       !prefix.some((prefixEntry) => prefixEntry.entryId === entry.entryId),
   )
 
+  const [exactWithAi, lemmaWithAi, prefixWithAi, fuzzyWithAi] = await Promise.all([
+    applyAiOverrides(exact),
+    applyAiOverrides(lemma),
+    applyAiOverrides(prefix),
+    applyAiOverrides(fuzzy),
+  ])
+
   return {
     query,
     normalized,
-    exactMatches: exact,
-    lemmaMatches: lemma,
-    prefixMatches: prefix,
-    fuzzyMatches: fuzzy,
-    hasResult: exact.length + lemma.length + prefix.length + fuzzy.length > 0,
+    exactMatches: exactWithAi,
+    lemmaMatches: lemmaWithAi,
+    prefixMatches: prefixWithAi,
+    fuzzyMatches: fuzzyWithAi,
+    hasResult:
+      exactWithAi.length + lemmaWithAi.length + prefixWithAi.length + fuzzyWithAi.length > 0,
   }
 }

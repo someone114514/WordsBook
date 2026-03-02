@@ -1,9 +1,13 @@
 ﻿import { defineStore } from 'pinia'
 import type { DictionaryMeta } from '../../types/models'
-import { getInstalledDictionaryMeta } from './dictionaryService'
+import { getDictionaryHealth } from './dictionaryService'
 import { installDictionaryBundle, type InstallProgress } from './dictionaryInstaller'
 
-const DEFAULT_MANIFESTS = ['/dictionaries/default/manifest.json', '/dictionaries/common/manifest.json']
+const BASE_URL = import.meta.env.BASE_URL || '/'
+const DEFAULT_MANIFESTS = [
+  `${BASE_URL}dictionaries/ecdict/manifest.json`,
+  `${BASE_URL}dictionaries/common/manifest.json`,
+]
 
 interface DictionaryState {
   installedMeta: DictionaryMeta | null
@@ -24,7 +28,17 @@ export const useDictionaryStore = defineStore('dictionary', {
   },
   actions: {
     async refreshInstalledMeta() {
-      this.installedMeta = (await getInstalledDictionaryMeta()) ?? null
+      const health = await getDictionaryHealth()
+
+      if (health.meta && !health.healthy) {
+        // Treat corrupted dictionary as not installed, so install button appears.
+        this.installedMeta = null
+        this.lastError = `词典数据异常（词条 ${health.entryCount} / 索引 ${health.indexCount}）。请重新安装词典。`
+        return
+      }
+
+      this.installedMeta = health.meta ?? null
+      this.lastError = null
     },
 
     async installDefaultDictionary() {

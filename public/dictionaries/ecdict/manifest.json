@@ -1,0 +1,15 @@
+{
+  "id": "ecdict-mini",
+  "name": "ECDICT Mini",
+  "version": "2026.03.02-ecdict-mini",
+  "locale": "en-US,zh-CN",
+  "source": "ECDICT mini from asserts/ECDICT-master/ecdict.mini.csv",
+  "publishedAt": "2026-03-02",
+  "entryCount": 53,
+  "entries": [
+    {
+      "path": "entries-1.jsonl"
+    }
+  ],
+  "indices": []
+}

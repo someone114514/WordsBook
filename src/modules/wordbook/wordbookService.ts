@@ -1,5 +1,6 @@
 ﻿import { db } from '../../db/database'
 import type { AddToWordbookResult, WordbookItem, WordbookWithEntry } from '../../types/models'
+import { applyAiOverrides } from '../dictionary/entryOverrideMapper'
 
 export async function listWordbookItems(): Promise<WordbookWithEntry[]> {
   const items = await db.wordbook.where('archived').equals(0).sortBy('addedAt')
@@ -9,12 +10,17 @@ export async function listWordbookItems(): Promise<WordbookWithEntry[]> {
   }
 
   const entryIds = items.map((item) => item.entryId)
-  const entries = await db.dictionaryEntries.bulkGet(entryIds)
+  const rawEntries = await db.dictionaryEntries.bulkGet(entryIds)
+  const entries = await applyAiOverrides(
+    rawEntries.filter((entry): entry is NonNullable<typeof entry> => entry !== undefined),
+  )
+  const entryMap = new Map(entries.map((entry) => [entry.entryId, entry]))
+
   const stateRows = await db.reviewState.bulkGet(items.map((item) => item.wordId))
 
   return items
     .map((item, index) => {
-      const entry = entries[index]
+      const entry = entryMap.get(item.entryId)
       if (!entry) {
         return undefined
       }

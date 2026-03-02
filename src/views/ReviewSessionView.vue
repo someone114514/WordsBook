@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
@@ -13,7 +13,7 @@ const settingsStore = useSettingsStore()
 const { settings } = storeToRefs(settingsStore)
 
 const loading = ref(false)
-const loadingText = ref('正在生成沉浸式背诵队列...')
+const loadingText = ref('Preparing immersive review queue...')
 const plan = ref<StudyPlan | null>(null)
 const cards = ref<ReviewCard[]>([])
 const currentIndex = ref(0)
@@ -90,7 +90,7 @@ async function onGrade(rating: 'remember' | 'forget') {
 }
 
 async function onRestartQueue() {
-  loadingText.value = '正在刷新复习计划...'
+  loadingText.value = 'Refreshing review plan...'
   await initialize()
 }
 
@@ -106,12 +106,12 @@ function parseLines(raw: string): string[] {
 <template>
   <section class="immersive-stage">
     <header class="immersive-header">
-      <button class="btn" @click="onExit">退出</button>
+      <button class="btn" @click="onExit">Exit</button>
       <div class="immersive-progress">
-        <span>沉浸背诵</span>
+        <span>Immersive Session</span>
         <strong v-if="!loading && !finished">{{ queueSummary }}</strong>
       </div>
-      <button v-if="finished" class="btn" @click="onRestartQueue">刷新</button>
+      <button v-if="finished" class="btn" @click="onRestartQueue">Refresh</button>
       <span v-else class="progress-chip">{{ progressPercent }}%</span>
     </header>
 
@@ -124,22 +124,22 @@ function parseLines(raw: string): string[] {
     </div>
 
     <div v-else-if="finished" class="immersive-empty">
-      <h2>本轮背诵完成</h2>
-      <p v-if="plan">到期 {{ plan.dueCount }}，新词 {{ plan.newCount }}</p>
+      <h2>Queue Completed</h2>
+      <p v-if="plan">Due {{ plan.dueCount }}, New {{ plan.newCount }}</p>
       <div class="actions">
-        <button class="btn" @click="onRestartQueue">再来一轮</button>
-        <button class="btn btn-primary" @click="onExit">返回背词页</button>
+        <button class="btn" @click="onRestartQueue">Start Again</button>
+        <button class="btn btn-primary" @click="onExit">Back</button>
       </div>
     </div>
 
     <article v-else-if="currentCard" class="immersive-card">
-      <p class="immersive-caption">{{ currentCard.entry.dictionaryName || '词典' }}</p>
+      <p class="immersive-caption">{{ currentCard.entry.dictionaryName || 'Dictionary' }}</p>
       <h1>{{ currentCard.entry.headword }}</h1>
-      <p class="muted">{{ currentCard.entry.phonetic || '无音标' }}</p>
+      <p class="muted">{{ currentCard.entry.phonetic || 'No phonetic' }}</p>
 
       <div class="actions">
-        <button class="btn" @click="onPlayCurrent">播放发音</button>
-        <button class="btn" :disabled="revealMeaning" @click="onReveal">查看释义</button>
+        <button class="btn" @click="onPlayCurrent">Play</button>
+        <button class="btn" :disabled="revealMeaning" @click="onReveal">Reveal Meaning</button>
       </div>
 
       <div v-if="revealMeaning" class="answer-panel">
@@ -152,8 +152,8 @@ function parseLines(raw: string): string[] {
         </p>
 
         <div class="actions">
-          <button class="btn btn-danger" @click="onGrade('forget')">遗忘</button>
-          <button class="btn btn-primary" @click="onGrade('remember')">记住</button>
+          <button class="btn btn-danger" @click="onGrade('forget')">Forget</button>
+          <button class="btn btn-primary" @click="onGrade('remember')">Remember</button>
         </div>
       </div>
     </article>

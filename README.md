@@ -25,10 +25,18 @@ npm run test:e2e
 
 ## Product Notes
 
-- First launch: install built-in dictionary from `/dictionaries/default/manifest.json`.
+- First launch: install mixed dictionaries, now including ECDICT mini generated from `asserts/ECDICT-master/ecdict.mini.csv`.
 - Lookup order: exact -> lemma -> prefix -> fuzzy.
 - Review schedule: `[0, 1, 2, 4, 7, 15, 30, 60]` days.
 - Backup: export/import available in Settings.
+
+## Dictionary Source
+
+- Build ECDICT manifest/jsonl from local `asserts` folder:
+
+```bash
+npm run dict:build
+```
 
 ## Deploy to iPhone
 

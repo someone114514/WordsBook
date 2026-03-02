@@ -1,6 +1,7 @@
 ﻿import dayjs from 'dayjs'
 import { db } from '../../db/database'
 import type { ReviewCard, ReviewState, StudyPlan } from '../../types/models'
+import { applyAiOverrides } from '../dictionary/entryOverrideMapper'
 import { loadSettings } from '../settings/settingsService'
 import { computeNextReviewState, type ReviewRating } from './scheduler'
 
@@ -57,17 +58,21 @@ export async function loadReviewCards(wordIds: string[]): Promise<ReviewCard[]> 
   }
 
   const wordbookRows = await db.wordbook.bulkGet(wordIds)
-
   const filteredWordbookRows = wordbookRows.filter((row): row is NonNullable<typeof row> => row !== undefined)
 
-  const [entries, states] = await Promise.all([
+  const [rawEntries, states] = await Promise.all([
     db.dictionaryEntries.bulkGet(filteredWordbookRows.map((row) => row.entryId)),
     db.reviewState.bulkGet(filteredWordbookRows.map((row) => row.wordId)),
   ])
 
+  const entries = await applyAiOverrides(
+    rawEntries.filter((entry): entry is NonNullable<typeof entry> => entry !== undefined),
+  )
+  const entryMap = new Map(entries.map((entry) => [entry.entryId, entry]))
+
   return filteredWordbookRows
     .map((item, index) => {
-      const entry = entries[index]
+      const entry = entryMap.get(item.entryId)
       const reviewState = states[index]
       if (!entry || !reviewState) {
         return undefined

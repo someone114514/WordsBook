@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dict:build": "python scripts/build_ecdict_dictionary.py",
     "typecheck": "vue-tsc -b",
     "build": "npm run typecheck && vite build",
     "preview": "vite preview",

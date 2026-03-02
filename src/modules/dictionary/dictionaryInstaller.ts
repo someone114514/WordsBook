@@ -233,6 +233,7 @@ export async function installDictionaryBundle(
   }
 
   const dictionaries: LoadedDictionaryPackage[] = []
+  const failedDictionaries: string[] = []
   for (const [index, manifestUrl] of manifestUrls.entries()) {
     onProgress?.({
       stage: 'fetch-manifest',
@@ -240,15 +241,29 @@ export async function installDictionaryBundle(
       message: `Loading dictionary ${index + 1} / ${manifestUrls.length}`,
     })
 
-    const pkg = await loadDictionaryPackage(manifestUrl, index, (progress) => {
-      onProgress?.({
-        stage: progress.stage,
-        ratio: (index + progress.ratio) / manifestUrls.length,
-        message: `[${index + 1}/${manifestUrls.length}] ${progress.message}`,
+    try {
+      const pkg = await loadDictionaryPackage(manifestUrl, index, (progress) => {
+        onProgress?.({
+          stage: progress.stage,
+          ratio: (index + progress.ratio) / manifestUrls.length,
+          message: `[${index + 1}/${manifestUrls.length}] ${progress.message}`,
+        })
       })
-    })
 
-    dictionaries.push(pkg)
+      dictionaries.push(pkg)
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      failedDictionaries.push(`${manifestUrl} -> ${reason}`)
+      onProgress?.({
+        stage: 'fetch-manifest',
+        ratio: (index + 1) / manifestUrls.length,
+        message: `Skipped dictionary ${index + 1}: ${reason}`,
+      })
+    }
+  }
+
+  if (dictionaries.length === 0) {
+    throw new Error(`All dictionaries failed to install: ${failedDictionaries.join(' || ')}`)
   }
 
   const entries = dictionaries.flatMap((item) => item.entries)
@@ -276,7 +291,9 @@ export async function installDictionaryBundle(
     await db.dictionaryMeta.put(meta)
   })
 
-  onProgress?.({ stage: 'completed', ratio: 1, message: 'Dictionary bundle installed' })
+  const warningSuffix =
+    failedDictionaries.length > 0 ? ` (${failedDictionaries.length} dictionary failed and was skipped)` : ''
+  onProgress?.({ stage: 'completed', ratio: 1, message: `Dictionary bundle installed${warningSuffix}` })
 
   return meta
 }

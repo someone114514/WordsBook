@@ -13,6 +13,9 @@ export interface DictionaryEntry {
   originEntryId?: string
   dictionaryId?: string
   dictionaryName?: string
+  aiEnhanced?: boolean
+  aiEnhanceMode?: 'add' | 'replace'
+  aiUpdatedAt?: string
   headword: string
   headwordLower: string
   phonetic?: string
@@ -68,6 +71,9 @@ export interface AppSettings {
   speechRate: number
   dailyNewLimit: number
   dailyReviewLimit: number
+  deepseekApiKey: string
+  deepseekBaseUrl: string
+  deepseekModel: string
 }
 
 export interface LookupResult {
@@ -120,4 +126,33 @@ export interface ImportReport {
   importedReviewState: number
   importedReviewLogs: number
   importedSettings: number
+}
+
+export interface AiOverrideRecord {
+  entryId: string
+  mode: 'add' | 'replace'
+  aiSensesJson: string
+  aiExamplesJson: string
+  aiUsageJson: string
+  provider: 'deepseek'
+  model: string
+  promptVersion: string
+  createdAt: string
+}
+
+export interface AiOverrideHistoryRecord {
+  id?: number
+  entryId: string
+  previousOverrideJson: string
+  createdAt: string
+}
+
+export interface AiDictionaryEntryDraft {
+  headword: string
+  phonetic?: string
+  posList: string[]
+  senses: string[]
+  examples: string[]
+  usage: string[]
+  notes?: string[]
 }

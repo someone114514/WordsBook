@@ -6,6 +6,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   speechRate: 1,
   dailyNewLimit: 20,
   dailyReviewLimit: 200,
+  deepseekApiKey: '',
+  deepseekBaseUrl: 'https://api.deepseek.com/v1/chat/completions',
+  deepseekModel: 'deepseek-chat',
 }
 
 export async function loadSettings(): Promise<AppSettings> {
@@ -27,6 +30,18 @@ export async function loadSettings(): Promise<AppSettings> {
 
     if (row.key === 'dailyReviewLimit' && typeof row.value === 'number') {
       output.dailyReviewLimit = row.value
+    }
+
+    if (row.key === 'deepseekApiKey' && typeof row.value === 'string') {
+      output.deepseekApiKey = row.value
+    }
+
+    if (row.key === 'deepseekBaseUrl' && typeof row.value === 'string') {
+      output.deepseekBaseUrl = row.value
+    }
+
+    if (row.key === 'deepseekModel' && typeof row.value === 'string') {
+      output.deepseekModel = row.value
     }
   }
 
