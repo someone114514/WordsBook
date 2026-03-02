@@ -22,12 +22,12 @@
   --radius-lg: 16px;
   --shadow-sm: 0 3px 10px rgba(15, 23, 42, 0.05);
   --shadow-md: 0 8px 24px rgba(15, 23, 42, 0.07);
-  --motion-fast: 160ms;
-  --motion-base: 220ms;
-  --motion-slow: 300ms;
+  --motion-fast: 140ms;
+  --motion-base: 200ms;
+  --motion-slow: 260ms;
   --ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
   --ease-emphasized: cubic-bezier(0.22, 1, 0.36, 1);
-  --frost-blur: 5px;
+  --frost-blur: 3px;
   font-family: var(--font-ui);
   line-height: 1.58;
   font-weight: 400;
@@ -355,7 +355,7 @@ a {
   background: color-mix(in srgb, white 94%, var(--bg-main));
   box-shadow: 0 8px 22px rgba(15, 23, 42, 0.09);
   backdrop-filter: blur(var(--frost-blur));
-  will-change: transform;
+  contain: layout paint;
   transition: border-color var(--motion-fast) var(--ease-standard), box-shadow var(--motion-fast) var(--ease-standard);
 }
 
@@ -684,7 +684,7 @@ input[type='number']:focus {
   background: color-mix(in srgb, white 94%, var(--bg-main));
   backdrop-filter: blur(var(--frost-blur));
   box-shadow: 0 8px 22px rgba(15, 23, 42, 0.09);
-  will-change: transform;
+  contain: layout paint;
 }
 
 .review-manager-section {
@@ -885,7 +885,7 @@ input[type='number']:focus {
 .review-card-content-focus {
   justify-content: flex-start;
   text-align: center;
-  padding-top: clamp(10vh, 14vh, 18vh);
+  padding-top: clamp(12vh, 16vh, 20vh);
 }
 
 .review-card-content-center {
@@ -955,7 +955,7 @@ input[type='number']:focus {
 
 .review-answer-panel {
   width: 100%;
-  margin-top: 0.2rem;
+  margin-top: 0.12rem;
   background: rgba(255, 255, 255, 0.74);
   border: 1px solid #d5e2f2;
   border-radius: 12px;
@@ -1043,23 +1043,23 @@ input[type='number']:focus {
 }
 
 .review-card-swap-enter-active {
-  transition: transform 320ms cubic-bezier(0.22, 1, 0.36, 1), opacity 260ms ease-out;
+  transition: transform 260ms cubic-bezier(0.22, 1, 0.36, 1), opacity 220ms ease-out;
 }
 
 .review-card-swap-leave-active {
-  transition: transform 240ms ease-in, opacity 220ms ease-in;
+  transition: transform 200ms ease-in, opacity 180ms ease-in;
   position: absolute;
   inset: 0;
 }
 
 .review-card-swap-enter-from {
   opacity: 0;
-  transform: translate3d(0, 12px, 0) scale(0.992);
+  transform: translate3d(0, 8px, 0) scale(0.995);
 }
 
 .review-card-swap-leave-to {
   opacity: 0;
-  transform: translate3d(0, -9px, 0) scale(0.994);
+  transform: translate3d(0, -6px, 0) scale(0.996);
 }
 
 .review-reveal-enter-active,
@@ -1103,24 +1103,24 @@ input[type='number']:focus {
 
 .soft-fade-slide-enter-active,
 .soft-fade-slide-leave-active {
-  transition: opacity var(--motion-base) ease, transform var(--motion-slow) var(--ease-emphasized);
+  transition: opacity 180ms var(--ease-standard), transform 220ms var(--ease-emphasized);
 }
 
 .soft-fade-slide-enter-from,
 .soft-fade-slide-leave-to {
   opacity: 0;
-  transform: translate3d(0, 6px, 0);
+  transform: translate3d(0, 3px, 0);
 }
 
 .soft-list-enter-active,
 .soft-list-leave-active {
-  transition: opacity var(--motion-base) ease, transform var(--motion-slow) var(--ease-emphasized);
+  transition: opacity 180ms var(--ease-standard), transform 220ms var(--ease-emphasized);
 }
 
 .soft-list-enter-from,
 .soft-list-leave-to {
   opacity: 0;
-  transform: translate3d(0, 7px, 0);
+  transform: translate3d(0, 4px, 0);
 }
 
 .soft-list-move {
@@ -1129,24 +1129,22 @@ input[type='number']:focus {
 
 .page-slide-enter-active,
 .page-slide-leave-active {
-  transition: opacity 170ms ease, transform 250ms var(--ease-emphasized);
+  transition: opacity 140ms var(--ease-standard);
 }
 
 .page-slide-enter-from,
 .page-slide-leave-to {
   opacity: 0;
-  transform: translate3d(0, 7px, 0) scale(0.998);
 }
 
 .page-zoom-enter-active,
 .page-zoom-leave-active {
-  transition: opacity 170ms ease, transform 250ms var(--ease-emphasized);
+  transition: opacity 140ms var(--ease-standard);
 }
 
 .page-zoom-enter-from,
 .page-zoom-leave-to {
   opacity: 0;
-  transform: scale(0.996);
 }
 
 @media (hover: hover) {
@@ -1278,6 +1276,22 @@ input[type='number']:focus {
   .review-action-btn {
     min-height: 44px;
     font-size: 0.95rem;
+  }
+}
+
+@media (max-width: 768px), (pointer: coarse) {
+  .topbar,
+  .bottom-nav,
+  .lookup-dock,
+  .page-action-dock,
+  .immersive-bottom-dock {
+    backdrop-filter: none;
+  }
+
+  .bottom-nav,
+  .lookup-dock,
+  .page-action-dock {
+    box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08);
   }
 }
 

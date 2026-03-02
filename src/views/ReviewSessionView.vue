@@ -1,10 +1,10 @@
-﻿<script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+<script setup lang="ts">
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 import type { ReviewCard, StudyPlan } from '../types/models'
 import { playEntryPronunciation, preloadPronunciationQueue } from '../modules/dictionary/audioService'
-import { buildTodayPlan, gradeCard, loadReviewCards } from '../modules/review/reviewService'
+import { buildTodayPlanCached, gradeCard, loadReviewCards } from '../modules/review/reviewService'
 import { useSettingsStore } from '../modules/settings/settingsStore'
 import { parseJsonArray } from '../utils/json'
 
@@ -26,6 +26,23 @@ const showSessionSettings = ref(false)
 
 let playbackToken = 0
 let preloadToken = 0
+const parsedLinesCache = new Map<string, string[]>()
+const parseCacheLimit = 90
+
+function getAudioProfile(): { lookahead: number; batchSize: number } {
+  if (typeof window === 'undefined') {
+    return { lookahead: 8, batchSize: 3 }
+  }
+
+  const nav = navigator as Navigator & { deviceMemory?: number }
+  const isCoarsePointer = window.matchMedia?.('(pointer: coarse)').matches ?? false
+  const isLowMemoryDevice = typeof nav.deviceMemory === 'number' && nav.deviceMemory <= 4
+  if (isCoarsePointer || isLowMemoryDevice) {
+    return { lookahead: 5, batchSize: 2 }
+  }
+
+  return { lookahead: 8, batchSize: 3 }
+}
 
 const currentCard = computed(() => cards.value[currentIndex.value] ?? null)
 const progressPercent = computed(() => {
@@ -55,7 +72,7 @@ watch(
     void preloadUpcomingAudio()
 
     if (settings.value.autoPronunciation) {
-      await playCurrentCardAudio(true)
+      void playCurrentCardAudio(true)
     }
   },
   { immediate: false },
@@ -76,7 +93,7 @@ async function initialize() {
 
   try {
     await settingsStore.initialize()
-    plan.value = await buildTodayPlan()
+    plan.value = await buildTodayPlanCached()
     cards.value = await loadReviewCards(plan.value.queueWordIds)
     finished.value = cards.value.length === 0
     void preloadUpcomingAudio()
@@ -87,6 +104,13 @@ async function initialize() {
 
 onMounted(() => {
   void initialize()
+})
+
+onUnmounted(() => {
+  playbackToken += 1
+  preloadToken += 1
+  cards.value = []
+  parsedLinesCache.clear()
 })
 
 async function playCurrentCardAudio(isAuto = false) {
@@ -116,8 +140,9 @@ async function playCurrentCardAudio(isAuto = false) {
 
 async function preloadUpcomingAudio() {
   const token = ++preloadToken
+  const audioProfile = getAudioProfile()
   const lookaheadEntries = cards.value
-    .slice(currentIndex.value + 1, currentIndex.value + 9)
+    .slice(currentIndex.value + 1, currentIndex.value + 1 + audioProfile.lookahead)
     .map((card) => card.entry)
 
   if (lookaheadEntries.length === 0) {
@@ -128,7 +153,7 @@ async function preloadUpcomingAudio() {
   preloadMessage.value = `语音预加载中（${lookaheadEntries.length}）`
   await preloadPronunciationQueue(lookaheadEntries, {
     ttsEngine: settings.value.ttsEngine,
-    batchSize: 3,
+    batchSize: audioProfile.batchSize,
   })
 
   if (token !== preloadToken) {
@@ -200,7 +225,17 @@ async function onUpdateSessionEngine(event: Event): Promise<void> {
 }
 
 function parseLines(raw: string): string[] {
-  return parseJsonArray(raw)
+  const cached = parsedLinesCache.get(raw)
+  if (cached) {
+    return cached
+  }
+
+  const parsed = parseJsonArray(raw)
+  parsedLinesCache.set(raw, parsed)
+  if (parsedLinesCache.size > parseCacheLimit) {
+    parsedLinesCache.clear()
+  }
+  return parsed
 }
 </script>
 

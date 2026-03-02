@@ -14,7 +14,11 @@ interface DictionaryState {
   installing: boolean
   progress: InstallProgress | null
   lastError: string | null
+  refreshingMeta: Promise<void> | null
+  lastRefreshAt: number
 }
+
+const META_REFRESH_TTL_MS = 30 * 1000
 
 export const useDictionaryStore = defineStore('dictionary', {
   state: (): DictionaryState => ({
@@ -22,23 +26,39 @@ export const useDictionaryStore = defineStore('dictionary', {
     installing: false,
     progress: null,
     lastError: null,
+    refreshingMeta: null,
+    lastRefreshAt: 0,
   }),
   getters: {
     isInstalled: (state) => state.installedMeta !== null,
   },
   actions: {
     async refreshInstalledMeta() {
-      const health = await getDictionaryHealth()
-
-      if (health.meta && !health.healthy) {
-        // Treat corrupted dictionary as not installed, so install button appears.
-        this.installedMeta = null
-        this.lastError = `词典数据异常（词条 ${health.entryCount} / 索引 ${health.indexCount}）。请重新安装词典。`
+      const now = Date.now()
+      if (this.lastRefreshAt > 0 && now - this.lastRefreshAt < META_REFRESH_TTL_MS) {
         return
       }
 
-      this.installedMeta = health.meta ?? null
-      this.lastError = null
+      if (!this.refreshingMeta) {
+        this.refreshingMeta = (async () => {
+          const health = await getDictionaryHealth()
+
+          if (health.meta && !health.healthy) {
+            // Treat corrupted dictionary as not installed, so install button appears.
+            this.installedMeta = null
+            this.lastError = `词典数据异常（词条 ${health.entryCount} / 索引 ${health.indexCount}）。请重新安装词典。`
+            return
+          }
+
+          this.installedMeta = health.meta ?? null
+          this.lastError = null
+          this.lastRefreshAt = Date.now()
+        })().finally(() => {
+          this.refreshingMeta = null
+        })
+      }
+
+      await this.refreshingMeta
     },
 
     async installDefaultDictionary() {
@@ -52,6 +72,7 @@ export const useDictionaryStore = defineStore('dictionary', {
         })
 
         this.installedMeta = meta
+        this.lastRefreshAt = Date.now()
       } catch (error) {
         this.lastError = error instanceof Error ? error.message : String(error)
       } finally {

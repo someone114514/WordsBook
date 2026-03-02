@@ -1,6 +1,6 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import dayjs from 'dayjs'
-import { onActivated, onMounted, reactive, ref } from 'vue'
+import { computed, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import type { StudyPlan, WordbookWithEntry } from '../types/models'
 import {
@@ -9,6 +9,7 @@ import {
   invalidateStudyPlanCache,
 } from '../modules/review/reviewService'
 import {
+  WORDBOOK_UPDATED_EVENT,
   listWordbookItems,
   removeWordFromWordbook,
   updateWordbookItem,
@@ -24,6 +25,12 @@ const message = ref('')
 const savingWordId = ref<string | null>(null)
 const deletingWordId = ref<string | null>(null)
 const startingStudy = ref(false)
+const hasLoaded = ref(false)
+const pendingRefresh = ref(false)
+const lastRefreshAt = ref(0)
+const managerMotionThreshold = 24
+const shouldAnimateManagerList = computed(() => managerItems.value.length <= managerMotionThreshold)
+let activateRefreshTimer: number | null = null
 
 async function loadManagerItems() {
   managerItems.value = await listWordbookItems()
@@ -56,15 +63,55 @@ async function refreshPlanInBackground() {
 
 async function initialize() {
   await Promise.all([loadPlan(), loadManagerItems()])
+  hasLoaded.value = true
+  pendingRefresh.value = false
+  lastRefreshAt.value = Date.now()
+}
+
+function clearActivateTimer() {
+  if (activateRefreshTimer !== null) {
+    window.clearTimeout(activateRefreshTimer)
+    activateRefreshTimer = null
+  }
+}
+
+function scheduleActivateRefresh() {
+  clearActivateTimer()
+  const refreshDelayMs = 170
+  activateRefreshTimer = window.setTimeout(() => {
+    activateRefreshTimer = null
+    void initialize()
+  }, refreshDelayMs)
 }
 
 onMounted(() => {
   void initialize()
+  window.addEventListener(WORDBOOK_UPDATED_EVENT, onWordbookUpdated)
 })
 
 onActivated(() => {
-  void initialize()
+  const refreshIntervalMs = 20 * 1000
+  const shouldRefresh = pendingRefresh.value || Date.now() - lastRefreshAt.value > refreshIntervalMs
+  if (!hasLoaded.value || shouldRefresh) {
+    scheduleActivateRefresh()
+  }
 })
+
+onDeactivated(() => {
+  clearActivateTimer()
+})
+
+onUnmounted(() => {
+  clearActivateTimer()
+  window.removeEventListener(WORDBOOK_UPDATED_EVENT, onWordbookUpdated)
+})
+
+function onWordbookUpdated() {
+  pendingRefresh.value = true
+  if (hasLoaded.value) {
+    scheduleActivateRefresh()
+  }
+}
 
 async function startStudy() {
   if (!studyPlan.value || studyPlan.value.queueWordIds.length === 0) {
@@ -143,6 +190,15 @@ function getScheduleOffsetLabel(nextReviewAt?: string): string {
 
   return `提前 ${rounded} 天`
 }
+
+const managerRows = computed(() =>
+  managerItems.value.map((row) => ({
+    ...row,
+    nextReviewText: formatDateTime(row.reviewState?.nextReviewAt),
+    sinceLastReviewText: getSinceLastReviewDays(row.reviewState?.lastReviewedAt),
+    scheduleOffsetText: getScheduleOffsetLabel(row.reviewState?.nextReviewAt),
+  })),
+)
 </script>
 
 <template>
@@ -177,16 +233,22 @@ function getScheduleOffsetLabel(nextReviewAt?: string): string {
     <article class="result-section review-manager-section">
       <h2>单词管理（可编辑/删除）</h2>
       <Transition name="soft-fade-slide">
-        <div v-if="managerItems.length === 0" class="muted">暂无单词</div>
+        <div v-if="managerRows.length === 0" class="muted">暂无单词</div>
       </Transition>
 
-      <TransitionGroup v-if="managerItems.length > 0" name="soft-list" tag="div" class="manager-list">
-        <div v-for="row in managerItems" :key="row.item.wordId" class="manager-row review-manager-row">
+      <TransitionGroup
+        v-if="managerRows.length > 0"
+        :css="shouldAnimateManagerList"
+        name="soft-list"
+        tag="div"
+        class="manager-list"
+      >
+        <div v-for="row in managerRows" :key="row.item.wordId" class="manager-row review-manager-row">
           <div class="review-manager-head">
             <strong>{{ row.entry.headword }}</strong>
-            <p class="muted">下次复习：{{ formatDateTime(row.reviewState?.nextReviewAt) }}</p>
-            <p class="muted">距上次复习：{{ getSinceLastReviewDays(row.reviewState?.lastReviewedAt) }}</p>
-            <p class="muted">当前偏差：{{ getScheduleOffsetLabel(row.reviewState?.nextReviewAt) }}</p>
+            <p class="muted">下次复习：{{ row.nextReviewText }}</p>
+            <p class="muted">距上次复习：{{ row.sinceLastReviewText }}</p>
+            <p class="muted">当前偏差：{{ row.scheduleOffsetText }}</p>
           </div>
 
           <input

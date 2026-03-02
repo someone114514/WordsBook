@@ -25,7 +25,7 @@ const keepAliveViews = ['LookupView', 'ReviewView', 'SettingsView']
 
     <main id="main-content" class="content-area" :class="{ 'content-area-immersive': immersiveMode }">
       <RouterView v-slot="{ Component, route: activeRoute }">
-        <Transition :name="immersiveMode ? 'page-zoom' : 'page-slide'">
+        <Transition :name="immersiveMode ? 'page-zoom' : 'page-slide'" mode="out-in">
           <component v-if="Component && immersiveMode" :is="Component" :key="activeRoute.fullPath" />
           <KeepAlive v-else :include="keepAliveViews">
             <component v-if="Component" :is="Component" :key="activeRoute.path" />

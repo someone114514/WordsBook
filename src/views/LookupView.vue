@@ -1,5 +1,5 @@
 ﻿<script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import type { DictionaryEntry, LookupResult } from '../types/models'
 import { debounce } from '../utils/debounce'
@@ -34,6 +34,10 @@ const aiBusyNoResult = ref(false)
 const sectionExpanded = ref<Record<string, boolean>>({})
 
 const MAX_VISIBLE_ENTRIES = 8
+const RESULT_MOTION_THRESHOLD = 24
+const PARSE_CACHE_LIMIT = 360
+let lookupToken = 0
+const parsedLinesCache = new Map<string, string[]>()
 
 const groupedMatches = computed(() => {
   if (!lookupResult.value) {
@@ -65,6 +69,7 @@ const canUseAi = computed(() => settings.value.deepseekApiKey.trim().length > 0)
 const totalMatchCount = computed(() =>
   groupedMatches.value.reduce((count, section) => count + section.entries.length, 0),
 )
+const disableResultMotion = computed(() => totalMatchCount.value > RESULT_MOTION_THRESHOLD)
 const dictionarySummary = computed(() => {
   if (!installedMeta.value) {
     return '词库未安装'
@@ -99,30 +104,42 @@ function getAiConfig() {
   }
 }
 
-async function refreshEntryStatus(entries: DictionaryEntry[]) {
-  const map = await getWordbookEntryStatus(entries.map((entry) => entry.entryId))
-  entryStatusMap.value = map
+async function loadEntryStatus(entries: DictionaryEntry[]): Promise<Map<string, string>> {
+  return getWordbookEntryStatus(entries.map((entry) => entry.entryId))
 }
 
 async function performLookup(raw: string) {
+  const currentToken = ++lookupToken
   if (!raw) {
     lookupResult.value = null
     entryStatusMap.value = new Map<string, string>()
+    loading.value = false
     return
   }
 
   loading.value = true
   try {
     const result = await lookupWord(raw)
+    if (currentToken !== lookupToken) {
+      return
+    }
+
     lookupResult.value = result
-    await refreshEntryStatus([
+    const combinedEntries = [
       ...result.exactMatches,
       ...result.lemmaMatches,
       ...result.prefixMatches,
       ...result.fuzzyMatches,
-    ])
+    ]
+    const statusMap = await loadEntryStatus(combinedEntries)
+    if (currentToken !== lookupToken) {
+      return
+    }
+    entryStatusMap.value = statusMap
   } finally {
-    loading.value = false
+    if (currentToken === lookupToken) {
+      loading.value = false
+    }
   }
 }
 
@@ -137,6 +154,11 @@ watch(query, () => {
 
 onMounted(async () => {
   await Promise.all([dictionaryStore.refreshInstalledMeta(), settingsStore.initialize()])
+})
+
+onBeforeUnmount(() => {
+  lookupToken += 1
+  parsedLinesCache.clear()
 })
 
 function isAdded(entryId: string): boolean {
@@ -277,7 +299,17 @@ async function onAiCreateFromQuery() {
 }
 
 function parseLines(raw: string): string[] {
-  return parseJsonArray(raw)
+  const cached = parsedLinesCache.get(raw)
+  if (cached) {
+    return cached
+  }
+
+  const parsed = parseJsonArray(raw)
+  parsedLinesCache.set(raw, parsed)
+  if (parsedLinesCache.size > PARSE_CACHE_LIMIT) {
+    parsedLinesCache.clear()
+  }
+  return parsed
 }
 </script>
 
@@ -316,7 +348,7 @@ function parseLines(raw: string): string[] {
           </div>
 
           <div v-else key="results" class="lookup-results-scroll">
-            <TransitionGroup name="soft-list" tag="div" class="lookup-results-list">
+            <TransitionGroup :css="!disableResultMotion" name="soft-list" tag="div" class="lookup-results-list">
               <article v-for="section in visibleGroupedMatches" :key="section.title" class="result-section">
                 <div class="result-section-head">
                   <h2>
@@ -333,7 +365,7 @@ function parseLines(raw: string): string[] {
                   </button>
                 </div>
 
-                <TransitionGroup name="soft-list" tag="div" class="entry-list">
+                <TransitionGroup :css="!disableResultMotion" name="soft-list" tag="div" class="entry-list">
                   <div v-for="entry in section.visibleEntries" :key="entry.entryId" class="entry-card">
                     <div class="entry-header">
                       <h3>{{ entry.headword }}</h3>

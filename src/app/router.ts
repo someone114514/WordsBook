@@ -1,23 +1,30 @@
-﻿import { createRouter, createWebHistory } from 'vue-router'
-
-import LookupView from '../views/LookupView.vue'
-import ReviewView from '../views/ReviewView.vue'
-import ReviewSessionView from '../views/ReviewSessionView.vue'
-import SettingsView from '../views/SettingsView.vue'
+import { createRouter, createWebHistory } from 'vue-router'
 
 export const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/', redirect: '/lookup' },
-    { path: '/lookup', component: LookupView, meta: { title: '查词' } },
-    { path: '/review', component: ReviewView, meta: { title: '背单词' } },
+    {
+      path: '/lookup',
+      component: () => import('../views/LookupView.vue'),
+      meta: { title: '查词' },
+    },
+    {
+      path: '/review',
+      component: () => import('../views/ReviewView.vue'),
+      meta: { title: '背单词' },
+    },
     {
       path: '/review/session',
-      component: ReviewSessionView,
+      component: () => import('../views/ReviewSessionView.vue'),
       meta: { title: '背诵中', immersive: true },
     },
     { path: '/wordbook', redirect: '/review' },
-    { path: '/settings', component: SettingsView, meta: { title: '设置' } },
+    {
+      path: '/settings',
+      component: () => import('../views/SettingsView.vue'),
+      meta: { title: '设置' },
+    },
   ],
 })
 

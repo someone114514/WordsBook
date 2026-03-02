@@ -3,6 +3,16 @@ import type { AddToWordbookResult, WordbookItem, WordbookWithEntry } from '../..
 import { applyAiOverrides } from '../dictionary/entryOverrideMapper'
 import { invalidateStudyPlanCache } from '../review/reviewService'
 
+export const WORDBOOK_UPDATED_EVENT = 'wordsbook:updated'
+
+function emitWordbookUpdatedEvent(): void {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  window.dispatchEvent(new CustomEvent(WORDBOOK_UPDATED_EVENT))
+}
+
 export async function listWordbookItems(): Promise<WordbookWithEntry[]> {
   const items = await db.wordbook.where('archived').equals(0).sortBy('addedAt')
 
@@ -38,6 +48,30 @@ export async function listWordbookItems(): Promise<WordbookWithEntry[]> {
 export async function addToWordbook(entryId: string): Promise<AddToWordbookResult> {
   const existing = await db.wordbook.where('entryId').equals(entryId).first()
   if (existing) {
+    const now = new Date().toISOString()
+    await db.transaction('rw', db.wordbook, db.reviewState, async () => {
+      if (existing.archived !== 0) {
+        await db.wordbook.put({
+          ...existing,
+          archived: 0,
+          addedAt: now,
+        })
+      }
+
+      const state = await db.reviewState.get(existing.wordId)
+      if (!state) {
+        await db.reviewState.put({
+          wordId: existing.wordId,
+          cycle: 0,
+          nextReviewAt: now,
+          successCount: 0,
+          lapseCount: 0,
+          totalReviews: 0,
+        })
+      }
+    })
+    invalidateStudyPlanCache()
+    emitWordbookUpdatedEvent()
     return { wordId: existing.wordId, alreadyExists: true }
   }
 
@@ -65,6 +99,7 @@ export async function addToWordbook(entryId: string): Promise<AddToWordbookResul
     })
   })
   invalidateStudyPlanCache()
+  emitWordbookUpdatedEvent()
 
   return { wordId, alreadyExists: false }
 }
@@ -76,6 +111,7 @@ export async function removeWordFromWordbook(wordId: string): Promise<void> {
     await db.reviewLogs.where('wordId').equals(wordId).delete()
   })
   invalidateStudyPlanCache()
+  emitWordbookUpdatedEvent()
 }
 
 export async function updateWordbookItem(
@@ -91,6 +127,7 @@ export async function updateWordbookItem(
   await db.wordbook.put(next)
   if (patch.archived !== undefined) {
     invalidateStudyPlanCache()
+    emitWordbookUpdatedEvent()
   }
   return next
 }

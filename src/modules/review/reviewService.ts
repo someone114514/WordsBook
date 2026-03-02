@@ -24,15 +24,40 @@ const PLAN_CACHE_REFRESH_MS = 3 * 60 * 1000
 let planCache: PlanCache | null = null
 
 async function getActiveStateRows(): Promise<Array<{ wordId: string; state: ReviewState }>> {
-  const [wordbookRows, stateRows] = await Promise.all([
-    db.wordbook.where('archived').equals(0).toArray(),
-    db.reviewState.toArray(),
-  ])
+  const wordbookRows = await db.wordbook.where('archived').equals(0).toArray()
+  const stateRows = await db.reviewState.bulkGet(wordbookRows.map((row) => row.wordId))
+  const stateMap = new Map(
+    stateRows
+      .filter((state): state is NonNullable<typeof state> => state !== undefined)
+      .map((state) => [state.wordId, state]),
+  )
+  const missingStates: ReviewState[] = []
+  const activeRows: Array<{ wordId: string; state: ReviewState }> = []
 
-  const activeWordIds = new Set(wordbookRows.map((row) => row.wordId))
-  return stateRows
-    .filter((state) => activeWordIds.has(state.wordId))
-    .map((state) => ({ wordId: state.wordId, state }))
+  for (const wordbookRow of wordbookRows) {
+    const existingState = stateMap.get(wordbookRow.wordId)
+    if (existingState) {
+      activeRows.push({ wordId: wordbookRow.wordId, state: existingState })
+      continue
+    }
+
+    const fallbackState: ReviewState = {
+      wordId: wordbookRow.wordId,
+      cycle: 0,
+      nextReviewAt: wordbookRow.addedAt,
+      successCount: 0,
+      lapseCount: 0,
+      totalReviews: 0,
+    }
+    missingStates.push(fallbackState)
+    activeRows.push({ wordId: wordbookRow.wordId, state: fallbackState })
+  }
+
+  if (missingStates.length > 0) {
+    await db.reviewState.bulkPut(missingStates)
+  }
+
+  return activeRows
 }
 
 export async function buildTodayPlan(options: BuildPlanOptions = {}): Promise<StudyPlan> {
@@ -42,8 +67,11 @@ export async function buildTodayPlan(options: BuildPlanOptions = {}): Promise<St
   const now = options.at ?? new Date()
   const nowIso = now.toISOString()
 
-  const dailyNewLimit = options.dailyNewLimit ?? settings?.dailyNewLimit ?? 20
-  const dailyReviewLimit = options.dailyReviewLimit ?? settings?.dailyReviewLimit ?? 200
+  const dailyNewLimit = Math.max(0, Math.floor(options.dailyNewLimit ?? settings?.dailyNewLimit ?? 20))
+  const dailyReviewLimit = Math.max(
+    0,
+    Math.floor(options.dailyReviewLimit ?? settings?.dailyReviewLimit ?? 200),
+  )
 
   const rows = await getActiveStateRows()
 
@@ -75,7 +103,15 @@ export async function buildTodayPlan(options: BuildPlanOptions = {}): Promise<St
 
   const selectedDue = dueRows.slice(0, dailyReviewLimit)
   const reviewCapacityLeft = Math.max(0, dailyReviewLimit - selectedDue.length)
-  const selectedNew = newRows.slice(0, Math.min(dailyNewLimit, reviewCapacityLeft))
+  let selectedNew = newRows.slice(0, Math.min(dailyNewLimit, reviewCapacityLeft))
+
+  // Keep at least one actionable card when new rows exist but limits currently produce an empty queue.
+  if (selectedDue.length === 0 && selectedNew.length === 0 && newRows.length > 0) {
+    const fallbackNew = newRows[0]
+    if (fallbackNew) {
+      selectedNew = [fallbackNew]
+    }
+  }
 
   return {
     dueCount: dueRows.length,
@@ -126,6 +162,10 @@ export function invalidateStudyPlanCache(): void {
 }
 
 export async function buildTodayPlanCached(): Promise<StudyPlan> {
+  if (planCache && planCache.dayKey === getTodayKey() && Date.now() - planCache.createdAt < PLAN_CACHE_REFRESH_MS) {
+    return planCache.plan
+  }
+
   const settings = await loadSettings()
   const dayKey = getTodayKey()
   const fingerprint = await getPlanFingerprint(settings.dailyNewLimit, settings.dailyReviewLimit)
