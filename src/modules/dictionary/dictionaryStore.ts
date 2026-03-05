@@ -7,6 +7,7 @@ const BASE_URL = import.meta.env.BASE_URL || '/'
 const DEFAULT_MANIFESTS = [
   `${BASE_URL}dictionaries/ecdict/manifest.json`,
   `${BASE_URL}dictionaries/common/manifest.json`,
+  `${BASE_URL}dictionaries/default/manifest.json`,
 ]
 
 interface DictionaryState {

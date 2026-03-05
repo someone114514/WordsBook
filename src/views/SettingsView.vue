@@ -23,6 +23,39 @@ const installProgressText = computed(() => {
   return `${progress.value.message} (${Math.floor(progress.value.ratio * 100)}%)`
 })
 
+const installProgressDetails = computed(() => {
+  const stats = progress.value?.stats
+  if (!stats) {
+    return ''
+  }
+
+  const parts: string[] = []
+  if (stats.currentDictionary) {
+    parts.push(`词典：${stats.currentDictionary}`)
+  }
+  if (stats.currentShard) {
+    const shardText =
+      stats.shardIndex && stats.shardTotal
+        ? `分片 ${stats.shardIndex}/${stats.shardTotal}`
+        : '分片'
+    parts.push(`${shardText}：${stats.currentShard}`)
+  }
+  if (typeof stats.entries === 'number') {
+    parts.push(`已写词条 ${stats.entries.toLocaleString()}`)
+  }
+  if (typeof stats.indices === 'number') {
+    parts.push(`已写索引 ${stats.indices.toLocaleString()}`)
+  }
+  if (typeof stats.batchesWritten === 'number') {
+    parts.push(`批次 ${stats.batchesWritten}`)
+  }
+  if (typeof stats.elapsedMs === 'number') {
+    parts.push(`耗时 ${(stats.elapsedMs / 1000).toFixed(1)}s`)
+  }
+
+  return parts.join(' | ')
+})
+
 onMounted(async () => {
   await Promise.all([settingsStore.initialize(), dictionaryStore.refreshInstalledMeta(), refreshStats()])
 })
@@ -111,6 +144,7 @@ async function onImport(event: Event) {
         {{ installing ? '安装中...' : '安装/更新混合词典' }}
       </button>
       <p v-if="installProgressText" class="muted">{{ installProgressText }}</p>
+      <p v-if="installProgressDetails" class="muted">{{ installProgressDetails }}</p>
       <p v-if="lastError" class="error">{{ lastError }}</p>
     </article>
 

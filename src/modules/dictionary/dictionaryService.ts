@@ -64,7 +64,7 @@ export async function getDictionaryHealth(): Promise<{
     db.dictionaryIndex.count(),
   ])
 
-  const healthy = Boolean(meta) && entryCount > 0 && indexCount > 0
+  const healthy = Boolean(meta) && entryCount > 0
   return { meta, entryCount, indexCount, healthy }
 }
 
@@ -86,7 +86,13 @@ export async function lookupWord(query: string): Promise<LookupResult> {
 
   const prefixRows = await db.dictionaryIndex.where('token').startsWith(normalized).limit(10).toArray()
   const prefixEntryIds = [...new Set(prefixRows.flatMap((row) => row.entryIds))]
-  const prefixMatches = await getEntriesByIds(prefixEntryIds)
+  const prefixFromIndex = await getEntriesByIds(prefixEntryIds)
+  const prefixFromEntries = await db.dictionaryEntries
+    .where('headwordLower')
+    .startsWith(normalized)
+    .limit(24)
+    .toArray()
+  const prefixMatches = dedupeEntries([...prefixFromIndex, ...prefixFromEntries])
 
   const fuzzyMatches = await findFuzzyMatches(normalized)
 
