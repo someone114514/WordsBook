@@ -1,5 +1,5 @@
 ﻿<script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onActivated, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useDictionaryStore } from '../modules/dictionary/dictionaryStore'
 import { exportUserData, importUserData } from '../modules/settings/backupService'
@@ -38,6 +38,10 @@ const cloudMessage = ref('')
 const cloudPreview = ref<SyncPreview | null>(null)
 const cloudLastResult = ref<SyncResult | null>(null)
 const cloudLastSyncAt = ref<string | null>(null)
+
+const SETTINGS_REFRESH_TTL_MS = 15 * 1000
+let settingsRefreshPromise: Promise<void> | null = null
+let lastSettingsRefreshAt = 0
 
 const cloudStatusText = computed(() => {
   if (!cloudAuth.value.configured) {
@@ -92,13 +96,37 @@ const installProgressDetails = computed(() => {
   return parts.join(' | ')
 })
 
-onMounted(async () => {
-  await Promise.all([
+function initializeSettingsView(options: { force?: boolean } = {}): Promise<void> {
+  const now = Date.now()
+  if (settingsRefreshPromise) {
+    return settingsRefreshPromise
+  }
+
+  if (!options.force && lastSettingsRefreshAt > 0 && now - lastSettingsRefreshAt < SETTINGS_REFRESH_TTL_MS) {
+    return Promise.resolve()
+  }
+
+  lastSettingsRefreshAt = now
+  settingsRefreshPromise = Promise.allSettled([
     settingsStore.initialize(),
     dictionaryStore.refreshInstalledMeta(),
     refreshStats(),
     refreshCloudState(),
   ])
+    .then(() => undefined)
+    .finally(() => {
+      settingsRefreshPromise = null
+    })
+
+  return settingsRefreshPromise
+}
+
+onMounted(() => {
+  void initializeSettingsView({ force: true })
+})
+
+onActivated(() => {
+  void initializeSettingsView()
 })
 
 async function refreshStats() {

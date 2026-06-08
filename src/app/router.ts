@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import SettingsView from '../views/SettingsView.vue'
 
 export const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -22,12 +23,34 @@ export const router = createRouter({
     { path: '/wordbook', redirect: '/review' },
     {
       path: '/settings',
-      component: () => import('../views/SettingsView.vue'),
+      component: SettingsView,
       meta: { title: '设置' },
     },
   ],
 })
 
+router.onError((error) => {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  const message = error instanceof Error ? error.message : String(error)
+  if (!/dynamically imported module|Importing a module script failed|Failed to fetch/i.test(message)) {
+    return
+  }
+
+  const reloadKey = 'wordsbook:route-reload-after-import-error'
+  if (window.sessionStorage.getItem(reloadKey)) {
+    return
+  }
+
+  window.sessionStorage.setItem(reloadKey, '1')
+  window.location.reload()
+})
+
 router.afterEach((to) => {
+  if (typeof window !== 'undefined') {
+    window.sessionStorage.removeItem('wordsbook:route-reload-after-import-error')
+  }
   document.title = `WordsBook - ${String(to.meta.title ?? 'PWA')}`
 })

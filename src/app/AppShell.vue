@@ -1,8 +1,9 @@
 ﻿<script setup lang="ts">
 import { computed } from 'vue'
-import { RouterLink, RouterView, useRoute } from 'vue-router'
+import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 
 const route = useRoute()
+const router = useRouter()
 
 const tabs = [
   { to: '/lookup', label: '查词' },
@@ -13,6 +14,13 @@ const tabs = [
 const title = computed(() => String(route.meta.title ?? 'WordsBook'))
 const immersiveMode = computed(() => Boolean(route.meta.immersive))
 const keepAliveViews = ['LookupView', 'ReviewView', 'SettingsView']
+
+function navigateTab(path: string, event: MouseEvent): void {
+  event.preventDefault()
+  if (route.path !== path) {
+    void router.push(path)
+  }
+}
 </script>
 
 <template>
@@ -35,8 +43,15 @@ const keepAliveViews = ['LookupView', 'ReviewView', 'SettingsView']
     </main>
 
     <nav v-if="!immersiveMode" class="bottom-nav" aria-label="Main Navigation">
-      <RouterLink v-for="tab in tabs" :key="tab.to" :to="tab.to" class="nav-item">
-        {{ tab.label }}
+      <RouterLink v-for="tab in tabs" :key="tab.to" :to="tab.to" custom v-slot="{ href, isActive, isExactActive }">
+        <a
+          :href="href"
+          class="nav-item"
+          :class="{ 'router-link-active': isActive, 'router-link-exact-active': isExactActive }"
+          @click="navigateTab(tab.to, $event)"
+        >
+          {{ tab.label }}
+        </a>
       </RouterLink>
     </nav>
   </div>

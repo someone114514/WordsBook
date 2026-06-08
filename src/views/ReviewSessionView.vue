@@ -312,7 +312,13 @@ function parseLines(raw: string): string[] {
         <strong v-if="!loading && !finished">{{ queueSummary }}</strong>
       </div>
       <div class="immersive-header-actions">
-        <button type="button" class="btn" @click="showSessionSettings = !showSessionSettings">
+        <button
+          type="button"
+          class="btn"
+          :aria-expanded="showSessionSettings"
+          aria-controls="session-settings-panel"
+          @click="showSessionSettings = !showSessionSettings"
+        >
           {{ showSessionSettings ? '收起设置' : '设置' }}
         </button>
         <button v-if="finished" type="button" class="btn" @click="onRestartQueue">刷新</button>
@@ -325,7 +331,7 @@ function parseLines(raw: string): string[] {
     </div>
 
     <Transition name="soft-fade-slide">
-      <section v-if="showSessionSettings" class="session-settings-panel">
+      <section v-if="showSessionSettings" id="session-settings-panel" class="session-settings-panel">
         <label class="setting-row">
           <span>自动播放发音</span>
           <input
@@ -379,6 +385,18 @@ function parseLines(raw: string): string[] {
 
       <Transition name="review-card-swap" mode="out-in">
         <section :key="currentCard.wordId" class="immersive-card review-flashcard">
+          <div class="review-card-topline">
+            <p class="immersive-caption">{{ currentCard.entry.dictionaryName || '本地词典' }}</p>
+            <button
+              type="button"
+              class="review-delete-mini"
+              :disabled="deletingCurrent"
+              aria-label="从单词本删除当前单词"
+              @click="onDeleteCurrentCard"
+            >
+              {{ deletingCurrent ? '删除中...' : '移除' }}
+            </button>
+          </div>
           <div class="review-card-content review-card-content-focus">
             <p class="immersive-caption">{{ currentCard.entry.dictionaryName || '本地词典' }}</p>
 

@@ -54,7 +54,7 @@ export default defineConfig(() => {
               handler: 'NetworkFirst',
               options: {
                 cacheName: 'pages',
-                networkTimeoutSeconds: 3,
+                networkTimeoutSeconds: 1,
                 expiration: { maxEntries: 50 },
               },
             },

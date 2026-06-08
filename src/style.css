@@ -942,6 +942,47 @@ input[type='number']:focus {
   padding-top: clamp(12vh, 16vh, 20vh);
 }
 
+.review-card-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  min-height: 32px;
+  width: 100%;
+}
+
+.review-card-topline .immersive-caption {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-card-content-focus > .immersive-caption {
+  display: none;
+}
+
+.review-delete-mini {
+  flex: 0 0 auto;
+  min-height: 30px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: #9f4d5b;
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 650;
+  opacity: 0.68;
+  padding: 0.18rem 0.5rem;
+}
+
+.review-delete-mini:disabled {
+  cursor: wait;
+  opacity: 0.46;
+}
+
 .review-card-content-center {
   justify-content: center;
   align-items: center;
@@ -1142,7 +1183,7 @@ input[type='number']:focus {
 }
 
 .review-delete-action {
-  grid-column: 1 / -1;
+  display: none;
 }
 
 .review-action-row .btn-danger {
