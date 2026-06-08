@@ -1108,8 +1108,9 @@ input[type='number']:focus {
 }
 
 .review-action-btn {
-  min-height: 46px;
+  min-height: 52px;
   border-radius: 12px;
+  font-size: 1rem;
   font-weight: 650;
 }
 
@@ -1382,8 +1383,8 @@ input[type='number']:focus {
   }
 
   .review-action-btn {
-    min-height: 44px;
-    font-size: 0.95rem;
+    min-height: 52px;
+    font-size: 1rem;
   }
 }
 

@@ -428,7 +428,7 @@ function parseLines(raw: string): string[] {
               <button
                 v-if="!revealMeaning"
                 type="button"
-                class="btn btn-primary review-action-btn"
+                class="btn btn-primary review-action-btn review-reveal-btn"
                 :disabled="deletingCurrent"
                 @click="onReveal"
               >
