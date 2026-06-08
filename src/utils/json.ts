@@ -5,7 +5,13 @@
       return []
     }
 
-    return parsed.map((item) => String(item))
+    return parsed.flatMap((item) =>
+      String(item)
+        .replace(/\\r\\n|\\n|\\r/g, '\n')
+        .split(/\r\n|\n|\r/)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0),
+    )
   } catch {
     return []
   }

@@ -1,7 +1,14 @@
 ﻿import { db } from '../../db/database'
 import type { AddToWordbookResult, WordbookItem, WordbookWithEntry } from '../../types/models'
 import { applyAiOverrides } from '../dictionary/entryOverrideMapper'
+import { buildFallbackDictionaryEntry } from '../dictionary/fallbackEntry'
 import { invalidateStudyPlanCache } from '../review/reviewService'
+import {
+  markPayloadChanged,
+  markRecordChanged,
+  markRecordDeleted,
+  reviewLogSyncId,
+} from '../sync/localSyncStore'
 
 export const WORDBOOK_UPDATED_EVENT = 'wordsbook:updated'
 
@@ -31,10 +38,7 @@ export async function listWordbookItems(): Promise<WordbookWithEntry[]> {
 
   return items
     .map((item, index) => {
-      const entry = entryMap.get(item.entryId)
-      if (!entry) {
-        return undefined
-      }
+      const entry = entryMap.get(item.entryId) ?? buildFallbackDictionaryEntry(item.entryId)
 
       return {
         item,
@@ -49,25 +53,29 @@ export async function addToWordbook(entryId: string): Promise<AddToWordbookResul
   const existing = await db.wordbook.where('entryId').equals(entryId).first()
   if (existing) {
     const now = new Date().toISOString()
-    await db.transaction('rw', db.wordbook, db.reviewState, async () => {
+    await db.transaction('rw', [db.wordbook, db.reviewState, db.syncMeta, db.syncRecords, db.syncTombstones], async () => {
       if (existing.archived !== 0) {
-        await db.wordbook.put({
+        const restored = {
           ...existing,
           archived: 0,
           addedAt: now,
-        })
+        } as WordbookItem
+        await db.wordbook.put(restored)
+        await markPayloadChanged('wordbook', restored, now)
       }
 
       const state = await db.reviewState.get(existing.wordId)
       if (!state) {
-        await db.reviewState.put({
+        const nextState = {
           wordId: existing.wordId,
           cycle: 0,
           nextReviewAt: now,
           successCount: 0,
           lapseCount: 0,
           totalReviews: 0,
-        })
+        }
+        await db.reviewState.put(nextState)
+        await markRecordChanged('reviewState', existing.wordId, now)
       }
     })
     invalidateStudyPlanCache()
@@ -87,16 +95,19 @@ export async function addToWordbook(entryId: string): Promise<AddToWordbookResul
     archived: 0,
   }
 
-  await db.transaction('rw', db.wordbook, db.reviewState, async () => {
+  await db.transaction('rw', [db.wordbook, db.reviewState, db.syncMeta, db.syncRecords, db.syncTombstones], async () => {
     await db.wordbook.put(item)
-    await db.reviewState.put({
+    const reviewState = {
       wordId,
       cycle: 0,
       nextReviewAt: now,
       successCount: 0,
       lapseCount: 0,
       totalReviews: 0,
-    })
+    }
+    await db.reviewState.put(reviewState)
+    await markPayloadChanged('wordbook', item, now)
+    await markRecordChanged('reviewState', wordId, now)
   })
   invalidateStudyPlanCache()
   emitWordbookUpdatedEvent()
@@ -105,11 +116,22 @@ export async function addToWordbook(entryId: string): Promise<AddToWordbookResul
 }
 
 export async function removeWordFromWordbook(wordId: string): Promise<void> {
-  await db.transaction('rw', db.wordbook, db.reviewState, db.reviewLogs, async () => {
-    await db.wordbook.delete(wordId)
-    await db.reviewState.delete(wordId)
-    await db.reviewLogs.where('wordId').equals(wordId).delete()
-  })
+  await db.transaction(
+    'rw',
+    [db.wordbook, db.reviewState, db.reviewLogs, db.syncMeta, db.syncRecords, db.syncTombstones],
+    async () => {
+      const deletedAt = new Date().toISOString()
+      const logs = await db.reviewLogs.where('wordId').equals(wordId).toArray()
+      await db.wordbook.delete(wordId)
+      await db.reviewState.delete(wordId)
+      await db.reviewLogs.where('wordId').equals(wordId).delete()
+      await markRecordDeleted('wordbook', wordId, deletedAt)
+      await markRecordDeleted('reviewState', wordId, deletedAt)
+      for (const log of logs) {
+        await markRecordDeleted('reviewLogs', reviewLogSyncId(log), deletedAt)
+      }
+    },
+  )
   invalidateStudyPlanCache()
   emitWordbookUpdatedEvent()
 }
@@ -125,6 +147,7 @@ export async function updateWordbookItem(
 
   const next = { ...current, ...patch }
   await db.wordbook.put(next)
+  await markPayloadChanged('wordbook', next)
   if (patch.archived !== undefined) {
     invalidateStudyPlanCache()
     emitWordbookUpdatedEvent()

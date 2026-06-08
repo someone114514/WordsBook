@@ -1,5 +1,6 @@
-﻿import { db } from '../../db/database'
+import { db } from '../../db/database'
 import type { AppSettings } from '../../types/models'
+import { markRecordChanged } from '../sync/localSyncStore'
 
 export const DEFAULT_SETTINGS: AppSettings = {
   autoPronunciation: false,
@@ -60,9 +61,12 @@ export async function loadSettings(): Promise<AppSettings> {
 export async function saveSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
   const nextSettings = { ...(await loadSettings()), ...patch }
 
-  await db.transaction('rw', db.settings, async () => {
+  await db.transaction('rw', [db.settings, db.syncMeta, db.syncRecords, db.syncTombstones], async () => {
     await Promise.all(
-      Object.entries(nextSettings).map(([key, value]) => db.settings.put({ key, value })),
+      Object.entries(nextSettings).map(async ([key, value]) => {
+        await db.settings.put({ key, value })
+        await markRecordChanged('settings', key)
+      }),
     )
   })
 

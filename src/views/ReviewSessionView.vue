@@ -3,9 +3,14 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 import type { ReviewCard, StudyPlan } from '../types/models'
-import { playEntryPronunciation, preloadPronunciationQueue } from '../modules/dictionary/audioService'
+import {
+  playEntryPronunciation,
+  preloadPronunciationQueue,
+  stopActivePronunciation,
+} from '../modules/dictionary/audioService'
 import { buildTodayPlanCached, gradeCard, loadReviewCards } from '../modules/review/reviewService'
 import { useSettingsStore } from '../modules/settings/settingsStore'
+import { removeWordFromWordbook } from '../modules/wordbook/wordbookService'
 import { parseJsonArray } from '../utils/json'
 
 const router = useRouter()
@@ -13,7 +18,7 @@ const settingsStore = useSettingsStore()
 const { settings } = storeToRefs(settingsStore)
 
 const loading = ref(false)
-const loadingText = ref('Preparing immersive review queue...')
+const loadingText = ref('正在准备背词队列...')
 const plan = ref<StudyPlan | null>(null)
 const cards = ref<ReviewCard[]>([])
 const currentIndex = ref(0)
@@ -23,9 +28,11 @@ const playMessage = ref('')
 const audioPreparing = ref(false)
 const preloadMessage = ref('')
 const showSessionSettings = ref(false)
+const deletingCurrent = ref(false)
 
 let playbackToken = 0
 let preloadToken = 0
+let preloadStartTimer: number | null = null
 const parsedLinesCache = new Map<string, string[]>()
 const parseCacheLimit = 90
 
@@ -69,7 +76,7 @@ watch(
     }
 
     playMessage.value = ''
-    void preloadUpcomingAudio()
+    schedulePreloadUpcomingAudio()
 
     if (settings.value.autoPronunciation) {
       void playCurrentCardAudio(true)
@@ -81,7 +88,7 @@ watch(
 watch(
   () => settings.value.ttsEngine,
   () => {
-    void preloadUpcomingAudio()
+    schedulePreloadUpcomingAudio(0)
   },
 )
 
@@ -96,7 +103,7 @@ async function initialize() {
     plan.value = await buildTodayPlanCached()
     cards.value = await loadReviewCards(plan.value.queueWordIds)
     finished.value = cards.value.length === 0
-    void preloadUpcomingAudio()
+    schedulePreloadUpcomingAudio(220)
   } finally {
     loading.value = false
   }
@@ -109,9 +116,26 @@ onMounted(() => {
 onUnmounted(() => {
   playbackToken += 1
   preloadToken += 1
+  clearPreloadStartTimer()
+  stopActivePronunciation()
   cards.value = []
   parsedLinesCache.clear()
 })
+
+function clearPreloadStartTimer() {
+  if (preloadStartTimer !== null) {
+    window.clearTimeout(preloadStartTimer)
+    preloadStartTimer = null
+  }
+}
+
+function schedulePreloadUpcomingAudio(delayMs = 180) {
+  clearPreloadStartTimer()
+  preloadStartTimer = window.setTimeout(() => {
+    preloadStartTimer = null
+    void preloadUpcomingAudio()
+  }, delayMs)
+}
 
 async function playCurrentCardAudio(isAuto = false) {
   if (!currentCard.value) {
@@ -121,20 +145,25 @@ async function playCurrentCardAudio(isAuto = false) {
   const token = ++playbackToken
   audioPreparing.value = true
 
-  const result = await playEntryPronunciation(currentCard.value.entry, {
-    rate: settings.value.speechRate,
-    ttsEngine: settings.value.ttsEngine,
-  })
+  try {
+    const result = await playEntryPronunciation(currentCard.value.entry, {
+      rate: settings.value.speechRate,
+      ttsEngine: settings.value.ttsEngine,
+    })
 
-  if (token !== playbackToken) {
-    return
-  }
+    if (token !== playbackToken) {
+      return
+    }
 
-  audioPreparing.value = false
-  if (!result.success) {
-    playMessage.value = '发音失败：当前设备语音服务不可用'
-  } else if (!isAuto) {
-    playMessage.value = ''
+    if (!result.success) {
+      playMessage.value = '发音失败：当前设备语音服务不可用'
+    } else if (!isAuto) {
+      playMessage.value = ''
+    }
+  } finally {
+    if (token === playbackToken) {
+      audioPreparing.value = false
+    }
   }
 }
 
@@ -144,14 +173,18 @@ async function preloadUpcomingAudio() {
   const lookaheadEntries = cards.value
     .slice(currentIndex.value + 1, currentIndex.value + 1 + audioProfile.lookahead)
     .map((card) => card.entry)
+  const preloadableEntries =
+    settings.value.ttsEngine === 'browser' || settings.value.ttsEngine === 'auto'
+      ? lookaheadEntries.filter((entry) => Boolean(entry.audioKey))
+      : lookaheadEntries
 
-  if (lookaheadEntries.length === 0) {
+  if (preloadableEntries.length === 0) {
     preloadMessage.value = ''
     return
   }
 
-  preloadMessage.value = `语音预加载中（${lookaheadEntries.length}）`
-  await preloadPronunciationQueue(lookaheadEntries, {
+  preloadMessage.value = `语音预加载中（${preloadableEntries.length}）`
+  await preloadPronunciationQueue(preloadableEntries, {
     ttsEngine: settings.value.ttsEngine,
     batchSize: audioProfile.batchSize,
   })
@@ -181,6 +214,8 @@ async function onGrade(rating: 'remember' | 'forget') {
     return
   }
 
+  playbackToken += 1
+  stopActivePronunciation()
   await gradeCard(currentCard.value.wordId, rating)
 
   if (currentIndex.value + 1 >= cards.value.length) {
@@ -193,12 +228,41 @@ async function onGrade(rating: 'remember' | 'forget') {
   playMessage.value = ''
 }
 
+async function onDeleteCurrentCard() {
+  const card = currentCard.value
+  if (!card) {
+    return
+  }
+
+  if (!window.confirm(`确认从单词本删除 ${card.entry.headword} 吗？`)) {
+    return
+  }
+
+  deletingCurrent.value = true
+  playbackToken += 1
+  stopActivePronunciation()
+  try {
+    await removeWordFromWordbook(card.wordId)
+    cards.value = cards.value.filter((item) => item.wordId !== card.wordId)
+    if (currentIndex.value >= cards.value.length) {
+      currentIndex.value = Math.max(0, cards.value.length - 1)
+    }
+    revealMeaning.value = false
+    playMessage.value = '已从单词本删除'
+    finished.value = cards.value.length === 0
+  } finally {
+    deletingCurrent.value = false
+  }
+}
+
 async function onRestartQueue() {
-  loadingText.value = 'Refreshing review plan...'
+  loadingText.value = '正在刷新复习计划...'
   await initialize()
 }
 
 async function onExit() {
+  playbackToken += 1
+  stopActivePronunciation()
   await router.push('/review')
 }
 
@@ -242,16 +306,16 @@ function parseLines(raw: string): string[] {
 <template>
   <section class="immersive-stage">
     <header class="immersive-header">
-      <button class="btn" @click="onExit">退出</button>
+      <button type="button" class="btn" @click="onExit">退出</button>
       <div class="immersive-progress">
         <span>沉浸背词</span>
         <strong v-if="!loading && !finished">{{ queueSummary }}</strong>
       </div>
       <div class="immersive-header-actions">
-        <button class="btn" @click="showSessionSettings = !showSessionSettings">
+        <button type="button" class="btn" @click="showSessionSettings = !showSessionSettings">
           {{ showSessionSettings ? '收起设置' : '设置' }}
         </button>
-        <button v-if="finished" class="btn" @click="onRestartQueue">刷新</button>
+        <button v-if="finished" type="button" class="btn" @click="onRestartQueue">刷新</button>
         <span v-else class="progress-chip">{{ progressPercent }}%</span>
       </div>
     </header>
@@ -304,8 +368,8 @@ function parseLines(raw: string): string[] {
       <h2>本轮已完成</h2>
       <p v-if="plan">到期 {{ plan.dueCount }}，新词 {{ plan.newCount }}</p>
       <div class="actions">
-        <button class="btn" @click="onRestartQueue">再来一轮</button>
-        <button class="btn btn-primary" @click="onExit">返回</button>
+        <button type="button" class="btn" @click="onRestartQueue">再来一轮</button>
+        <button type="button" class="btn btn-primary" @click="onExit">返回</button>
       </div>
     </div>
 
@@ -321,7 +385,7 @@ function parseLines(raw: string): string[] {
             <div class="review-word-stack">
               <h1 class="review-word">{{ currentCard.entry.headword }}</h1>
               <p class="muted review-phonetic">{{ currentCard.entry.phonetic || '无音标' }}</p>
-              <button class="btn review-play-inline" @click="onPlayCurrent">发音</button>
+              <button type="button" class="btn review-play-inline" @click="onPlayCurrent">发音</button>
             </div>
 
             <Transition name="review-reveal">
@@ -343,13 +407,41 @@ function parseLines(raw: string): string[] {
 
           <footer class="immersive-bottom-dock">
             <div class="review-action-row">
-              <button v-if="!revealMeaning" class="btn btn-primary review-action-btn review-reveal-btn" @click="onReveal">
+              <button
+                v-if="!revealMeaning"
+                type="button"
+                class="btn btn-primary review-action-btn"
+                :disabled="deletingCurrent"
+                @click="onReveal"
+              >
                 显示释义
               </button>
               <template v-else>
-                <button class="btn btn-danger review-action-btn" @click="onGrade('forget')">忘记了</button>
-                <button class="btn btn-primary review-action-btn" @click="onGrade('remember')">记住了</button>
+                <button
+                  type="button"
+                  class="btn btn-danger review-action-btn"
+                  :disabled="deletingCurrent"
+                  @click="onGrade('forget')"
+                >
+                  忘记了
+                </button>
+                <button
+                  type="button"
+                  class="btn btn-primary review-action-btn"
+                  :disabled="deletingCurrent"
+                  @click="onGrade('remember')"
+                >
+                  记住了
+                </button>
               </template>
+              <button
+                type="button"
+                class="btn btn-danger review-action-btn review-delete-action"
+                :disabled="deletingCurrent"
+                @click="onDeleteCurrentCard"
+              >
+                {{ deletingCurrent ? '删除中...' : '删除此词' }}
+              </button>
             </div>
           </footer>
         </section>

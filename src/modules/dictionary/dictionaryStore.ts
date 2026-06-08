@@ -5,9 +5,9 @@ import { installDictionaryBundle, type InstallProgress } from './dictionaryInsta
 
 const BASE_URL = import.meta.env.BASE_URL || '/'
 const DEFAULT_MANIFESTS = [
-  `${BASE_URL}dictionaries/ecdict/manifest.json`,
   `${BASE_URL}dictionaries/common/manifest.json`,
   `${BASE_URL}dictionaries/default/manifest.json`,
+  `${BASE_URL}dictionaries/ecdict/manifest.json`,
 ]
 
 interface DictionaryState {
@@ -36,7 +36,7 @@ export const useDictionaryStore = defineStore('dictionary', {
   actions: {
     async refreshInstalledMeta() {
       const now = Date.now()
-      if (this.lastRefreshAt > 0 && now - this.lastRefreshAt < META_REFRESH_TTL_MS) {
+      if (this.installedMeta && this.lastRefreshAt > 0 && now - this.lastRefreshAt < META_REFRESH_TTL_MS) {
         return
       }
 

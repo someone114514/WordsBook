@@ -18,8 +18,10 @@ import {
 const router = useRouter()
 
 const loading = ref(false)
+const managerLoading = ref(false)
 const studyPlan = ref<StudyPlan | null>(null)
 const managerItems = ref<WordbookWithEntry[]>([])
+const managerHasLoaded = ref(false)
 const noteDrafts = reactive<Record<string, string>>({})
 const message = ref('')
 const savingWordId = ref<string | null>(null)
@@ -28,15 +30,53 @@ const startingStudy = ref(false)
 const hasLoaded = ref(false)
 const pendingRefresh = ref(false)
 const lastRefreshAt = ref(0)
+const managerQuery = ref('')
+const managerVisibleLimit = ref(40)
 const managerMotionThreshold = 24
-const shouldAnimateManagerList = computed(() => managerItems.value.length <= managerMotionThreshold)
+const managerPageSize = 40
 let activateRefreshTimer: number | null = null
+let managerLoadTimer: number | null = null
+let managerLoadToken = 0
 
 async function loadManagerItems() {
-  managerItems.value = await listWordbookItems()
-  for (const row of managerItems.value) {
-    noteDrafts[row.item.wordId] = row.item.note
+  const token = ++managerLoadToken
+  managerLoading.value = true
+  try {
+    const rows = await listWordbookItems()
+    if (token !== managerLoadToken) {
+      return
+    }
+
+    managerItems.value = rows
+    managerHasLoaded.value = true
+    for (const row of rows) {
+      noteDrafts[row.item.wordId] = row.item.note
+    }
+  } finally {
+    if (token === managerLoadToken) {
+      managerLoading.value = false
+    }
   }
+}
+
+function clearManagerTimer() {
+  if (managerLoadTimer !== null) {
+    window.clearTimeout(managerLoadTimer)
+    managerLoadTimer = null
+  }
+}
+
+function scheduleManagerLoad(delayMs = 0) {
+  clearManagerTimer()
+  managerLoadTimer = window.setTimeout(() => {
+    managerLoadTimer = null
+    void loadManagerItems()
+  }, delayMs)
+}
+
+function cancelManagerLoad() {
+  managerLoadToken += 1
+  managerLoading.value = false
 }
 
 async function loadPlan() {
@@ -62,10 +102,11 @@ async function refreshPlanInBackground() {
 }
 
 async function initialize() {
-  await Promise.all([loadPlan(), loadManagerItems()])
+  await loadPlan()
   hasLoaded.value = true
   pendingRefresh.value = false
   lastRefreshAt.value = Date.now()
+  scheduleManagerLoad(managerItems.value.length > 0 ? 0 : 90)
 }
 
 function clearActivateTimer() {
@@ -92,17 +133,21 @@ onMounted(() => {
 onActivated(() => {
   const refreshIntervalMs = 20 * 1000
   const shouldRefresh = pendingRefresh.value || Date.now() - lastRefreshAt.value > refreshIntervalMs
-  if (!hasLoaded.value || shouldRefresh) {
+  if (!hasLoaded.value || shouldRefresh || !managerHasLoaded.value) {
     scheduleActivateRefresh()
   }
 })
 
 onDeactivated(() => {
   clearActivateTimer()
+  clearManagerTimer()
+  cancelManagerLoad()
 })
 
 onUnmounted(() => {
   clearActivateTimer()
+  clearManagerTimer()
+  cancelManagerLoad()
   window.removeEventListener(WORDBOOK_UPDATED_EVENT, onWordbookUpdated)
 })
 
@@ -199,6 +244,36 @@ const managerRows = computed(() =>
     scheduleOffsetText: getScheduleOffsetLabel(row.reviewState?.nextReviewAt),
   })),
 )
+
+const filteredManagerRows = computed(() => {
+  const keyword = managerQuery.value.trim().toLowerCase()
+  if (!keyword) {
+    return managerRows.value
+  }
+
+  return managerRows.value.filter((row) => {
+    const haystack = [
+      row.entry.headword,
+      row.entry.headwordLower,
+      row.entry.phonetic ?? '',
+      row.item.note,
+      row.item.tags.join(' '),
+    ]
+      .join(' ')
+      .toLowerCase()
+    return haystack.includes(keyword)
+  })
+})
+
+const visibleManagerRows = computed(() => filteredManagerRows.value.slice(0, managerVisibleLimit.value))
+const hiddenManagerRowCount = computed(() =>
+  Math.max(filteredManagerRows.value.length - visibleManagerRows.value.length, 0),
+)
+const shouldAnimateManagerList = computed(() => visibleManagerRows.value.length <= managerMotionThreshold)
+
+function showMoreManagerRows(): void {
+  managerVisibleLimit.value += managerPageSize
+}
 </script>
 
 <template>
@@ -232,18 +307,35 @@ const managerRows = computed(() =>
 
     <article class="result-section review-manager-section">
       <h2>单词管理（可编辑/删除）</h2>
+      <div class="manager-toolbar">
+        <input
+          v-model="managerQuery"
+          class="search-input manager-search-input"
+          type="search"
+          placeholder="搜索要删除或编辑的单词"
+          @input="managerVisibleLimit = managerPageSize"
+        />
+        <p class="muted">
+          显示 {{ visibleManagerRows.length }} / {{ filteredManagerRows.length }}
+        </p>
+      </div>
       <Transition name="soft-fade-slide">
-        <div v-if="managerRows.length === 0" class="muted">暂无单词</div>
+        <div v-if="managerLoading && !managerHasLoaded" class="muted">
+          正在加载单词管理...
+        </div>
+        <div v-else-if="managerHasLoaded && filteredManagerRows.length === 0" class="muted">
+          {{ managerItems.length === 0 ? '暂无单词' : '没有匹配的单词' }}
+        </div>
       </Transition>
 
       <TransitionGroup
-        v-if="managerRows.length > 0"
+        v-if="visibleManagerRows.length > 0"
         :css="shouldAnimateManagerList"
         name="soft-list"
         tag="div"
         class="manager-list"
       >
-        <div v-for="row in managerRows" :key="row.item.wordId" class="manager-row review-manager-row">
+        <div v-for="row in visibleManagerRows" :key="row.item.wordId" class="manager-row review-manager-row">
           <div class="review-manager-head">
             <strong>{{ row.entry.headword }}</strong>
             <p class="muted">下次复习：{{ row.nextReviewText }}</p>
@@ -273,6 +365,15 @@ const managerRows = computed(() =>
           </div>
         </div>
       </TransitionGroup>
+
+      <button
+        v-if="hiddenManagerRowCount > 0"
+        type="button"
+        class="btn btn-quiet manager-show-more"
+        @click="showMoreManagerRows"
+      >
+        显示更多（还有 {{ hiddenManagerRowCount }} 个）
+      </button>
     </article>
 
     <footer class="page-action-dock">

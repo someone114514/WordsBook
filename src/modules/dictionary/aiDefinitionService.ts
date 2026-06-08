@@ -5,6 +5,11 @@ import type {
   DictionaryEntry,
   DictionaryIndexRow,
 } from '../../types/models'
+import {
+  aiOverrideHistorySyncId,
+  markPayloadChanged,
+  markRecordDeleted,
+} from '../sync/localSyncStore'
 import { buildPrefixTokens, normalizeWord } from './search'
 
 const AI_PROMPT_VERSION = 'v1-detailed-bilingual'
@@ -217,51 +222,73 @@ export async function applyAiOverrideToEntry(options: {
   draft: AiDictionaryEntryDraft
   model: string
 }): Promise<AiOverrideRecord> {
-  return db.transaction('rw', db.dictionaryEntries, db.aiOverrides, db.aiOverrideHistory, async () => {
-    const entry = await db.dictionaryEntries.get(options.entryId)
-    if (!entry) {
-      throw new Error('词条不存在')
-    }
+  return db.transaction(
+    'rw',
+    [
+      db.dictionaryEntries,
+      db.aiOverrides,
+      db.aiOverrideHistory,
+      db.syncMeta,
+      db.syncRecords,
+      db.syncTombstones,
+    ],
+    async () => {
+      const entry = await db.dictionaryEntries.get(options.entryId)
+      if (!entry) {
+        throw new Error('词条不存在')
+      }
 
-    const existingOverride = await db.aiOverrides.get(options.entryId)
-    await db.aiOverrideHistory.add({
-      entryId: options.entryId,
-      previousOverrideJson: existingOverride ? JSON.stringify(existingOverride) : '',
-      createdAt: new Date().toISOString(),
-    })
+      const existingOverride = await db.aiOverrides.get(options.entryId)
+      const history = {
+        entryId: options.entryId,
+        previousOverrideJson: existingOverride ? JSON.stringify(existingOverride) : '',
+        createdAt: new Date().toISOString(),
+      }
+      const historyId = await db.aiOverrideHistory.add(history)
 
-    const nextOverride = draftToOverride(options.entryId, options.mode, options.draft, options.model)
-    await db.aiOverrides.put(nextOverride)
-    return nextOverride
-  })
+      const nextOverride = draftToOverride(options.entryId, options.mode, options.draft, options.model)
+      await db.aiOverrides.put(nextOverride)
+      await markPayloadChanged('aiOverrideHistory', { ...history, id: historyId }, history.createdAt)
+      await markPayloadChanged('aiOverrides', nextOverride, nextOverride.createdAt)
+      return nextOverride
+    },
+  )
 }
 
 export async function rollbackAiOverride(entryId: string): Promise<boolean> {
-  return db.transaction('rw', db.aiOverrides, db.aiOverrideHistory, async () => {
-    const existingOverride = await db.aiOverrides.get(entryId)
-    if (!existingOverride) {
-      return false
-    }
+  return db.transaction(
+    'rw',
+    [db.aiOverrides, db.aiOverrideHistory, db.syncMeta, db.syncRecords, db.syncTombstones],
+    async () => {
+      const existingOverride = await db.aiOverrides.get(entryId)
+      if (!existingOverride) {
+        return false
+      }
 
-    const latestHistory = await db.aiOverrideHistory.where('entryId').equals(entryId).reverse().first()
-    if (!latestHistory) {
-      await db.aiOverrides.delete(entryId)
+      const latestHistory = await db.aiOverrideHistory.where('entryId').equals(entryId).reverse().first()
+      if (!latestHistory) {
+        await db.aiOverrides.delete(entryId)
+        await markRecordDeleted('aiOverrides', entryId)
+        return true
+      }
+
+      if (!latestHistory.previousOverrideJson) {
+        await db.aiOverrides.delete(entryId)
+        await markRecordDeleted('aiOverrides', entryId)
+      } else {
+        const previousOverride = JSON.parse(latestHistory.previousOverrideJson) as AiOverrideRecord
+        await db.aiOverrides.put(previousOverride)
+        await markPayloadChanged('aiOverrides', previousOverride)
+      }
+
+      if (latestHistory.id !== undefined) {
+        await db.aiOverrideHistory.delete(latestHistory.id)
+        await markRecordDeleted('aiOverrideHistory', aiOverrideHistorySyncId(latestHistory))
+      }
+
       return true
-    }
-
-    if (!latestHistory.previousOverrideJson) {
-      await db.aiOverrides.delete(entryId)
-    } else {
-      const previousOverride = JSON.parse(latestHistory.previousOverrideJson) as AiOverrideRecord
-      await db.aiOverrides.put(previousOverride)
-    }
-
-    if (latestHistory.id !== undefined) {
-      await db.aiOverrideHistory.delete(latestHistory.id)
-    }
-
-    return true
-  })
+    },
+  )
 }
 
 export async function createOrReplaceAiEntry(options: {
@@ -293,10 +320,15 @@ export async function createOrReplaceAiEntry(options: {
     aiUpdatedAt: now,
   }
 
-  await db.transaction('rw', db.dictionaryEntries, db.dictionaryIndex, async () => {
-    await db.dictionaryEntries.put(entry)
-    await upsertEntryIntoIndex(entry.entryId, entry.headwordLower)
-  })
+  await db.transaction(
+    'rw',
+    [db.dictionaryEntries, db.dictionaryIndex, db.syncMeta, db.syncRecords, db.syncTombstones],
+    async () => {
+      await db.dictionaryEntries.put(entry)
+      await upsertEntryIntoIndex(entry.entryId, entry.headwordLower)
+      await markPayloadChanged('dictionaryEntries', entry, now)
+    },
+  )
 
   return entry
 }

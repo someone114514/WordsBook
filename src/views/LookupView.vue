@@ -2,7 +2,6 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import type { DictionaryEntry, LookupResult } from '../types/models'
-import { debounce } from '../utils/debounce'
 import { parseJsonArray } from '../utils/json'
 import { playEntryPronunciation } from '../modules/dictionary/audioService'
 import {
@@ -14,7 +13,11 @@ import {
 import { lookupWord } from '../modules/dictionary/dictionaryService'
 import { useDictionaryStore } from '../modules/dictionary/dictionaryStore'
 import { useSettingsStore } from '../modules/settings/settingsStore'
-import { addToWordbook, getWordbookEntryStatus } from '../modules/wordbook/wordbookService'
+import {
+  addToWordbook,
+  getWordbookEntryStatus,
+  removeWordFromWordbook,
+} from '../modules/wordbook/wordbookService'
 
 const dictionaryStore = useDictionaryStore()
 const settingsStore = useSettingsStore()
@@ -31,12 +34,15 @@ const message = ref('')
 const messageType = ref<'success' | 'error'>('success')
 const aiBusyAction = ref<string | null>(null)
 const aiBusyNoResult = ref(false)
+const deletingEntryId = ref<string | null>(null)
 const sectionExpanded = ref<Record<string, boolean>>({})
 
 const MAX_VISIBLE_ENTRIES = 8
 const RESULT_MOTION_THRESHOLD = 24
 const PARSE_CACHE_LIMIT = 360
+const LOOKUP_DEBOUNCE_MS = 140
 let lookupToken = 0
+let lookupTimer: number | null = null
 const parsedLinesCache = new Map<string, string[]>()
 
 const groupedMatches = computed(() => {
@@ -108,12 +114,24 @@ async function loadEntryStatus(entries: DictionaryEntry[]): Promise<Map<string, 
   return getWordbookEntryStatus(entries.map((entry) => entry.entryId))
 }
 
-async function performLookup(raw: string) {
-  const currentToken = ++lookupToken
+function clearLookupTimer(): void {
+  if (lookupTimer !== null) {
+    window.clearTimeout(lookupTimer)
+    lookupTimer = null
+  }
+}
+
+function resetLookupState(): void {
+  lookupResult.value = null
+  entryStatusMap.value = new Map<string, string>()
+  loading.value = false
+}
+
+async function performLookup(raw: string, currentToken: number) {
   if (!raw) {
-    lookupResult.value = null
-    entryStatusMap.value = new Map<string, string>()
-    loading.value = false
+    if (currentToken === lookupToken) {
+      resetLookupState()
+    }
     return
   }
 
@@ -136,6 +154,13 @@ async function performLookup(raw: string) {
       return
     }
     entryStatusMap.value = statusMap
+  } catch (error) {
+    if (currentToken === lookupToken) {
+      lookupResult.value = null
+      entryStatusMap.value = new Map<string, string>()
+      messageType.value = 'error'
+      message.value = error instanceof Error ? error.message : String(error)
+    }
   } finally {
     if (currentToken === lookupToken) {
       loading.value = false
@@ -143,13 +168,30 @@ async function performLookup(raw: string) {
   }
 }
 
-const runLookup = debounce(async () => {
-  await performLookup(query.value.trim())
-}, 180)
+function scheduleLookup(raw: string): void {
+  const currentToken = ++lookupToken
+  clearLookupTimer()
+
+  if (!raw) {
+    resetLookupState()
+    return
+  }
+
+  lookupTimer = window.setTimeout(() => {
+    lookupTimer = null
+    void performLookup(raw, currentToken)
+  }, LOOKUP_DEBOUNCE_MS)
+}
+
+async function runLookupNow(raw: string): Promise<void> {
+  const currentToken = ++lookupToken
+  clearLookupTimer()
+  await performLookup(raw, currentToken)
+}
 
 watch(query, () => {
   sectionExpanded.value = {}
-  void runLookup()
+  scheduleLookup(query.value.trim())
 })
 
 onMounted(async () => {
@@ -158,6 +200,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   lookupToken += 1
+  clearLookupTimer()
   parsedLinesCache.clear()
 })
 
@@ -178,18 +221,44 @@ function toggleSection(title: string) {
 
 async function onLookupSubmit() {
   sectionExpanded.value = {}
-  await performLookup(query.value.trim())
+  await runLookupNow(query.value.trim())
 }
 
 function onClearQuery() {
   query.value = ''
+  lookupToken += 1
+  clearLookupTimer()
+  resetLookupState()
 }
 
 async function onAddWord(entryId: string) {
   const result = await addToWordbook(entryId)
-  entryStatusMap.value.set(entryId, result.wordId)
+  entryStatusMap.value = new Map(entryStatusMap.value).set(entryId, result.wordId)
   messageType.value = 'success'
   message.value = result.alreadyExists ? '该单词已在单词本中' : '已加入单词本'
+}
+
+async function onRemoveWord(entry: DictionaryEntry) {
+  const wordId = entryStatusMap.value.get(entry.entryId)
+  if (!wordId) {
+    return
+  }
+
+  if (!window.confirm(`确认从单词本删除 ${entry.headword} 吗？`)) {
+    return
+  }
+
+  deletingEntryId.value = entry.entryId
+  try {
+    await removeWordFromWordbook(wordId)
+    const nextStatusMap = new Map(entryStatusMap.value)
+    nextStatusMap.delete(entry.entryId)
+    entryStatusMap.value = nextStatusMap
+    messageType.value = 'success'
+    message.value = '已从单词本删除'
+  } finally {
+    deletingEntryId.value = null
+  }
 }
 
 async function onPlay(entry: DictionaryEntry) {
@@ -241,7 +310,7 @@ async function onAiEnhance(entry: DictionaryEntry, mode: 'add' | 'replace') {
 
     messageType.value = 'success'
     message.value = mode === 'replace' ? '已替换为 AI 释义（可回退）' : '已追加 AI 释义（可回退）'
-    await performLookup(query.value.trim())
+    await runLookupNow(query.value.trim())
   } catch (error) {
     messageType.value = 'error'
     message.value = error instanceof Error ? error.message : String(error)
@@ -258,7 +327,7 @@ async function onAiRollback(entry: DictionaryEntry) {
     const rolledBack = await rollbackAiOverride(entry.entryId)
     messageType.value = 'success'
     message.value = rolledBack ? '已回退到上一个版本' : '没有可回退的 AI 修改'
-    await performLookup(query.value.trim())
+    await runLookupNow(query.value.trim())
   } finally {
     aiBusyAction.value = null
   }
@@ -289,7 +358,7 @@ async function onAiCreateFromQuery() {
 
     messageType.value = 'success'
     message.value = 'AI 词条已加入本地词典'
-    await performLookup(raw)
+    await runLookupNow(raw)
   } catch (error) {
     messageType.value = 'error'
     message.value = error instanceof Error ? error.message : String(error)
@@ -386,8 +455,20 @@ function parseLines(raw: string): string[] {
 
                     <div class="actions">
                       <button class="btn" @click="onPlay(entry)">发音</button>
-                      <button class="btn btn-primary" :disabled="isAdded(entry.entryId)" @click="onAddWord(entry.entryId)">
-                        {{ isAdded(entry.entryId) ? '已加入' : '加入单词本' }}
+                      <button
+                        v-if="!isAdded(entry.entryId)"
+                        class="btn btn-primary"
+                        @click="onAddWord(entry.entryId)"
+                      >
+                        加入单词本
+                      </button>
+                      <button
+                        v-else
+                        class="btn btn-danger"
+                        :disabled="deletingEntryId === entry.entryId"
+                        @click="onRemoveWord(entry)"
+                      >
+                        {{ deletingEntryId === entry.entryId ? '删除中...' : '从词本删除' }}
                       </button>
                     </div>
 

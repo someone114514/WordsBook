@@ -116,17 +116,23 @@ export interface WordbookWithEntry {
 export interface BackupPayload {
   schemaVersion: number
   exportedAt: string
+  dictionaryEntries?: DictionaryEntry[]
   wordbook: WordbookItem[]
   reviewState: ReviewState[]
   reviewLogs: ReviewLog[]
   settings: SettingItem[]
+  aiOverrides?: AiOverrideRecord[]
+  aiOverrideHistory?: AiOverrideHistoryRecord[]
 }
 
 export interface ImportReport {
+  importedDictionaryEntries: number
   importedWordbook: number
   importedReviewState: number
   importedReviewLogs: number
   importedSettings: number
+  importedAiOverrides: number
+  importedAiOverrideHistory: number
 }
 
 export interface AiOverrideRecord {
@@ -156,4 +162,35 @@ export interface AiDictionaryEntryDraft {
   examples: string[]
   usage: string[]
   notes?: string[]
+}
+
+export type SyncEntity =
+  | 'dictionaryEntries'
+  | 'wordbook'
+  | 'reviewState'
+  | 'reviewLogs'
+  | 'settings'
+  | 'aiOverrides'
+  | 'aiOverrideHistory'
+
+export interface SyncMetaRecord {
+  key: string
+  value: unknown
+}
+
+export interface SyncRecordMeta {
+  key: string
+  entity: SyncEntity
+  recordId: string
+  updatedAt: string
+  deletedAt?: string
+  sourceClientId?: string
+}
+
+export interface SyncTombstone {
+  key: string
+  entity: SyncEntity
+  recordId: string
+  deletedAt: string
+  sourceClientId?: string
 }

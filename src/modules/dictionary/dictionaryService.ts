@@ -3,6 +3,13 @@ import type { DictionaryEntry, DictionaryMeta, LookupResult } from '../../types/
 import { dedupeEntries, levenshteinDistance, normalizeWord, toLemmaCandidates } from './search'
 import { applyAiOverrides } from './entryOverrideMapper'
 
+const DICTIONARY_PRIORITY = new Map<string, number>([
+  ['ai-local', 0],
+  ['common', 1],
+  ['default', 2],
+  ['ecdict-full', 3],
+])
+
 async function getEntriesByIds(entryIds: string[]): Promise<DictionaryEntry[]> {
   if (entryIds.length === 0) {
     return []
@@ -48,6 +55,30 @@ async function findFuzzyMatches(normalized: string, maxCount = 5): Promise<Dicti
     .map((item) => item.entry)
 }
 
+function getDictionaryPriority(entry: DictionaryEntry): number {
+  if (entry.entryId.startsWith('ai:')) {
+    return 0
+  }
+
+  return DICTIONARY_PRIORITY.get(entry.dictionaryId ?? '') ?? 10
+}
+
+function rankEntries(entries: DictionaryEntry[]): DictionaryEntry[] {
+  return [...entries].sort((left, right) => {
+    const priorityDiff = getDictionaryPriority(left) - getDictionaryPriority(right)
+    if (priorityDiff !== 0) {
+      return priorityDiff
+    }
+
+    const lengthDiff = left.headword.length - right.headword.length
+    if (lengthDiff !== 0) {
+      return lengthDiff
+    }
+
+    return left.entryId.localeCompare(right.entryId)
+  })
+}
+
 export async function getInstalledDictionaryMeta(): Promise<DictionaryMeta | undefined> {
   return db.dictionaryMeta.get('active')
 }
@@ -75,49 +106,46 @@ export async function lookupWord(query: string): Promise<LookupResult> {
     return buildEmptyResult(query)
   }
 
-  const exactMatches = await db.dictionaryEntries.where('headwordLower').equals(normalized).toArray()
-
   const lemmaCandidates = toLemmaCandidates(normalized)
-  const lemmaMatches: DictionaryEntry[] = []
-  for (const lemma of lemmaCandidates) {
-    const rows = await db.dictionaryEntries.where('headwordLower').equals(lemma).toArray()
-    lemmaMatches.push(...rows)
-  }
+  const [exactMatches, lemmaMatches, prefixRows, prefixFromEntries, fuzzyMatches] = await Promise.all([
+    db.dictionaryEntries.where('headwordLower').equals(normalized).toArray(),
+    Promise.all(
+      lemmaCandidates.map((lemma) => db.dictionaryEntries.where('headwordLower').equals(lemma).toArray()),
+    ).then((rows) => rows.flat()),
+    db.dictionaryIndex.where('token').startsWith(normalized).limit(10).toArray(),
+    db.dictionaryEntries.where('headwordLower').startsWith(normalized).limit(24).toArray(),
+    findFuzzyMatches(normalized),
+  ])
 
-  const prefixRows = await db.dictionaryIndex.where('token').startsWith(normalized).limit(10).toArray()
   const prefixEntryIds = [...new Set(prefixRows.flatMap((row) => row.entryIds))]
   const prefixFromIndex = await getEntriesByIds(prefixEntryIds)
-  const prefixFromEntries = await db.dictionaryEntries
-    .where('headwordLower')
-    .startsWith(normalized)
-    .limit(24)
-    .toArray()
   const prefixMatches = dedupeEntries([...prefixFromIndex, ...prefixFromEntries])
 
-  const fuzzyMatches = await findFuzzyMatches(normalized)
-
-  const exact = dedupeEntries(exactMatches)
-  const lemma = dedupeEntries(lemmaMatches).filter(
+  const exact = rankEntries(dedupeEntries(exactMatches))
+  const lemma = rankEntries(dedupeEntries(lemmaMatches)).filter(
     (entry) => !exact.some((exactEntry) => exactEntry.entryId === entry.entryId),
   )
-  const prefix = dedupeEntries(prefixMatches).filter(
+  const prefix = rankEntries(dedupeEntries(prefixMatches)).filter(
     (entry) =>
       !exact.some((exactEntry) => exactEntry.entryId === entry.entryId) &&
       !lemma.some((lemmaEntry) => lemmaEntry.entryId === entry.entryId),
   )
-  const fuzzy = dedupeEntries(fuzzyMatches).filter(
+  const fuzzy = rankEntries(dedupeEntries(fuzzyMatches)).filter(
     (entry) =>
       !exact.some((exactEntry) => exactEntry.entryId === entry.entryId) &&
       !lemma.some((lemmaEntry) => lemmaEntry.entryId === entry.entryId) &&
       !prefix.some((prefixEntry) => prefixEntry.entryId === entry.entryId),
   )
 
-  const [exactWithAi, lemmaWithAi, prefixWithAi, fuzzyWithAi] = await Promise.all([
-    applyAiOverrides(exact),
-    applyAiOverrides(lemma),
-    applyAiOverrides(prefix),
-    applyAiOverrides(fuzzy),
-  ])
+  const entriesWithAi = await applyAiOverrides(dedupeEntries([...exact, ...lemma, ...prefix, ...fuzzy]))
+  const entryWithAiMap = new Map(entriesWithAi.map((entry) => [entry.entryId, entry]))
+  const mapWithAi = (entries: DictionaryEntry[]) =>
+    entries.map((entry) => entryWithAiMap.get(entry.entryId) ?? entry)
+
+  const exactWithAi = mapWithAi(exact)
+  const lemmaWithAi = mapWithAi(lemma)
+  const prefixWithAi = mapWithAi(prefix)
+  const fuzzyWithAi = mapWithAi(fuzzy)
 
   return {
     query,

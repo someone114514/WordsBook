@@ -4,6 +4,16 @@ import { storeToRefs } from 'pinia'
 import { useDictionaryStore } from '../modules/dictionary/dictionaryStore'
 import { exportUserData, importUserData } from '../modules/settings/backupService'
 import { useSettingsStore } from '../modules/settings/settingsStore'
+import {
+  getCloudAuthState,
+  signInCloud,
+  signOutCloud,
+  type CloudAuthState,
+} from '../modules/sync/cloudAuthService'
+import { getLastSuccessfulSyncAt, previewCloudSync, runCloudSync } from '../modules/sync/syncEngine'
+import { getSupabaseClient, isSupabaseConfigured } from '../modules/sync/supabaseClient'
+import { SupabaseCloudSyncRemote } from '../modules/sync/supabaseRemote'
+import type { CloudSyncMode, SyncPreview, SyncResult } from '../modules/sync/syncTypes'
 import { getWordbookStats } from '../modules/wordbook/wordbookService'
 
 const settingsStore = useSettingsStore()
@@ -14,6 +24,32 @@ const { installedMeta, installing, progress, lastError } = storeToRefs(dictionar
 
 const message = ref('')
 const wordbookStats = ref({ total: 0, active: 0 })
+const cloudAuth = ref<CloudAuthState>({
+  configured: isSupabaseConfigured(),
+  signedIn: false,
+  email: '',
+  userId: '',
+  needsLogin: isSupabaseConfigured(),
+})
+const cloudEmail = ref('')
+const cloudPassword = ref('')
+const cloudBusy = ref(false)
+const cloudMessage = ref('')
+const cloudPreview = ref<SyncPreview | null>(null)
+const cloudLastResult = ref<SyncResult | null>(null)
+const cloudLastSyncAt = ref<string | null>(null)
+
+const cloudStatusText = computed(() => {
+  if (!cloudAuth.value.configured) {
+    return '未配置 Supabase，本机离线模式'
+  }
+
+  if (cloudAuth.value.signedIn) {
+    return `已连接：${cloudAuth.value.email || cloudAuth.value.userId}`
+  }
+
+  return '未登录，访客只使用本地数据'
+})
 
 const installProgressText = computed(() => {
   if (!progress.value) {
@@ -57,7 +93,12 @@ const installProgressDetails = computed(() => {
 })
 
 onMounted(async () => {
-  await Promise.all([settingsStore.initialize(), dictionaryStore.refreshInstalledMeta(), refreshStats()])
+  await Promise.all([
+    settingsStore.initialize(),
+    dictionaryStore.refreshInstalledMeta(),
+    refreshStats(),
+    refreshCloudState(),
+  ])
 })
 
 async function refreshStats() {
@@ -103,13 +144,17 @@ async function onInstallDictionary() {
 
 async function onExport() {
   const blob = await exportUserData()
+  downloadBlob(blob, `wordsbook-backup-${new Date().toISOString().slice(0, 10)}.json`)
+  message.value = '备份文件已导出'
+}
+
+function downloadBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
   anchor.href = url
-  anchor.download = `wordsbook-backup-${new Date().toISOString().slice(0, 10)}.json`
+  anchor.download = filename
   anchor.click()
   URL.revokeObjectURL(url)
-  message.value = '备份文件已导出'
 }
 
 async function onImport(event: Event) {
@@ -123,8 +168,96 @@ async function onImport(event: Event) {
   const report = await importUserData(file)
   await Promise.all([settingsStore.initialize(), refreshStats()])
 
-  message.value = `导入完成：${report.importedWordbook} 个单词，${report.importedReviewLogs} 条复习日志`
+  message.value = `导入完成：${report.importedWordbook} 个单词，${report.importedReviewLogs} 条复习日志，${report.importedAiOverrides} 条 AI 释义`
   target.value = ''
+}
+
+async function refreshCloudState() {
+  try {
+    cloudAuth.value = await getCloudAuthState()
+    cloudLastSyncAt.value = await getLastSuccessfulSyncAt()
+  } catch (error) {
+    cloudAuth.value = {
+      configured: isSupabaseConfigured(),
+      signedIn: false,
+      email: '',
+      userId: '',
+      needsLogin: true,
+    }
+    cloudMessage.value = error instanceof Error ? error.message : String(error)
+  }
+}
+
+function getCloudRemote(): SupabaseCloudSyncRemote {
+  const client = getSupabaseClient()
+  if (!client) {
+    throw new Error('未配置 Supabase URL 或 Publishable Key')
+  }
+
+  return new SupabaseCloudSyncRemote(client)
+}
+
+async function onCloudSignIn() {
+  cloudBusy.value = true
+  cloudMessage.value = ''
+  try {
+    cloudAuth.value = await signInCloud(cloudEmail.value.trim(), cloudPassword.value)
+    cloudPassword.value = ''
+    cloudMessage.value = '云同步已登录'
+  } catch (error) {
+    cloudMessage.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    cloudBusy.value = false
+  }
+}
+
+async function onCloudSignOut() {
+  cloudBusy.value = true
+  cloudMessage.value = ''
+  try {
+    await signOutCloud()
+    await refreshCloudState()
+    cloudPreview.value = null
+    cloudLastResult.value = null
+    cloudMessage.value = '已退出云同步，本地数据不受影响'
+  } finally {
+    cloudBusy.value = false
+  }
+}
+
+async function onPreviewCloudSync(mode: CloudSyncMode) {
+  cloudBusy.value = true
+  cloudMessage.value = ''
+  try {
+    cloudPreview.value = await previewCloudSync(getCloudRemote(), mode)
+    cloudMessage.value = '同步预览已生成'
+  } catch (error) {
+    cloudMessage.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    cloudBusy.value = false
+  }
+}
+
+async function onRunCloudSync(mode: CloudSyncMode) {
+  cloudBusy.value = true
+  cloudMessage.value = ''
+  try {
+    if (mode === 'upload') {
+      const backup = await exportUserData()
+      downloadBlob(backup, `wordsbook-before-cloud-upload-${new Date().toISOString().slice(0, 10)}.json`)
+    }
+
+    const result = await runCloudSync(getCloudRemote(), mode)
+    cloudLastResult.value = result
+    cloudPreview.value = result
+    cloudLastSyncAt.value = result.completedAt
+    await Promise.all([settingsStore.initialize(), refreshStats()])
+    cloudMessage.value = `同步完成：上传 ${result.pushed}，下载 ${result.pulled}，删除 ${result.deleted}`
+  } catch (error) {
+    cloudMessage.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    cloudBusy.value = false
+  }
 }
 </script>
 
@@ -239,6 +372,76 @@ async function onImport(event: Event) {
       </label>
 
       <p class="muted">查词页支持：AI 追加释义、AI 替换释义、回退 AI、查不到时 AI 加词。</p>
+    </article>
+
+    <article class="result-section">
+      <h2>云同步（Supabase）</h2>
+      <p class="muted">{{ cloudStatusText }}</p>
+      <p v-if="cloudLastSyncAt" class="muted">上次同步：{{ cloudLastSyncAt }}</p>
+      <p v-if="cloudMessage" class="muted">{{ cloudMessage }}</p>
+
+      <div v-if="!cloudAuth.configured" class="sync-panel">
+        <p class="muted">在部署环境设置 VITE_SUPABASE_URL 和 VITE_SUPABASE_PUBLISHABLE_KEY 后启用。</p>
+      </div>
+
+      <div v-else-if="!cloudAuth.signedIn" class="sync-panel">
+        <label class="setting-stack">
+          <span>邮箱</span>
+          <input v-model="cloudEmail" type="email" class="inline-input" autocomplete="email" />
+        </label>
+        <label class="setting-stack">
+          <span>密码</span>
+          <input
+            v-model="cloudPassword"
+            type="password"
+            class="inline-input"
+            autocomplete="current-password"
+          />
+        </label>
+        <div class="actions">
+          <button class="btn btn-primary" :disabled="cloudBusy || !cloudEmail || !cloudPassword" @click="onCloudSignIn">
+            {{ cloudBusy ? '登录中...' : '登录云同步' }}
+          </button>
+        </div>
+        <p class="muted">未登录时不会读取或写入云端，访客只使用自己的本地浏览器数据。</p>
+      </div>
+
+      <div v-else class="sync-panel">
+        <div class="actions">
+          <button class="btn" :disabled="cloudBusy" @click="onPreviewCloudSync('bidirectional')">预览双向同步</button>
+          <button class="btn btn-primary" :disabled="cloudBusy" @click="onRunCloudSync('upload')">
+            首次上传本地数据
+          </button>
+          <button class="btn" :disabled="cloudBusy" @click="onRunCloudSync('download')">从云端恢复</button>
+          <button class="btn btn-primary" :disabled="cloudBusy" @click="onRunCloudSync('bidirectional')">
+            立即双向同步
+          </button>
+          <button class="btn btn-quiet" :disabled="cloudBusy" @click="onCloudSignOut">退出云同步</button>
+        </div>
+
+        <div v-if="cloudPreview" class="sync-preview-grid">
+          <div>
+            <span>将上传</span>
+            <strong>{{ cloudPreview.upload }}</strong>
+          </div>
+          <div>
+            <span>将下载</span>
+            <strong>{{ cloudPreview.download }}</strong>
+          </div>
+          <div>
+            <span>冲突</span>
+            <strong>{{ cloudPreview.conflicts }}</strong>
+          </div>
+          <div>
+            <span>删除</span>
+            <strong>{{ cloudPreview.deletions }}</strong>
+          </div>
+        </div>
+
+        <p v-if="cloudPreview?.blockedSettings.length" class="muted">
+          不上传敏感设置：{{ cloudPreview.blockedSettings.join('、') }}
+        </p>
+      </div>
     </article>
 
     <article class="result-section">

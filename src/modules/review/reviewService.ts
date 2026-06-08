@@ -1,8 +1,10 @@
 ﻿import dayjs from 'dayjs'
 import { db } from '../../db/database'
 import type { ReviewCard, ReviewState, StudyPlan } from '../../types/models'
+import { buildFallbackDictionaryEntry } from '../dictionary/fallbackEntry'
 import { applyAiOverrides } from '../dictionary/entryOverrideMapper'
 import { loadSettings } from '../settings/settingsService'
+import { markPayloadChanged, markRecordChanged } from '../sync/localSyncStore'
 import { computeNextReviewState, type ReviewRating } from './scheduler'
 
 interface BuildPlanOptions {
@@ -215,9 +217,9 @@ export async function loadReviewCards(wordIds: string[]): Promise<ReviewCard[]> 
 
   return filteredWordbookRows
     .map((item, index) => {
-      const entry = entryMap.get(item.entryId)
+      const entry = entryMap.get(item.entryId) ?? buildFallbackDictionaryEntry(item.entryId)
       const reviewState = states[index]
-      if (!entry || !reviewState) {
+      if (!reviewState) {
         return undefined
       }
 
@@ -240,7 +242,7 @@ export async function gradeCard(
 ): Promise<ReviewState> {
   const reviewedAtIso = reviewedAt.toISOString()
 
-  return db.transaction('rw', db.reviewState, db.reviewLogs, async () => {
+  return db.transaction('rw', [db.reviewState, db.reviewLogs, db.syncMeta, db.syncRecords, db.syncTombstones], async () => {
     const state = await db.reviewState.get(wordId)
     if (!state) {
       throw new Error('Review state missing')
@@ -259,7 +261,7 @@ export async function gradeCard(
     }
 
     await db.reviewState.put(updatedState)
-    await db.reviewLogs.add({
+    const log = {
       wordId,
       reviewedAt: reviewedAtIso,
       rating,
@@ -267,7 +269,10 @@ export async function gradeCard(
       cycleAfter: computed.cycleAfter,
       nextReviewAtBefore: computed.nextReviewAtBefore,
       nextReviewAtAfter: computed.nextReviewAtAfter,
-    })
+    }
+    await db.reviewLogs.add(log)
+    await markRecordChanged('reviewState', wordId, reviewedAtIso)
+    await markPayloadChanged('reviewLogs', log, reviewedAtIso)
     invalidateStudyPlanCache()
 
     return updatedState

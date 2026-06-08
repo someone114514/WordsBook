@@ -599,6 +599,12 @@ input[type='number']:focus {
   font-size: 0.92rem;
 }
 
+.entry-card li,
+.answer-panel li {
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
 .meta-sep {
   margin-inline: 0.56rem;
   color: var(--text-quiet);
@@ -689,6 +695,54 @@ input[type='number']:focus {
 
 .review-manager-section {
   padding: 0.8rem;
+}
+
+.manager-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.75rem;
+}
+
+.manager-search-input {
+  min-height: 42px;
+}
+
+.manager-show-more {
+  width: 100%;
+  margin-top: 0.45rem;
+}
+
+.sync-panel {
+  display: grid;
+  gap: 0.72rem;
+}
+
+.sync-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.sync-preview-grid > div {
+  min-width: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 0.68rem;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.sync-preview-grid span {
+  display: block;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.sync-preview-grid strong {
+  display: block;
+  margin-top: 0.18rem;
+  font-size: 1.18rem;
 }
 
 .review-manager-row {
@@ -1087,6 +1141,10 @@ input[type='number']:focus {
   grid-column: 1 / -1;
 }
 
+.review-delete-action {
+  grid-column: 1 / -1;
+}
+
 .review-action-row .btn-danger {
   background: linear-gradient(180deg, #fff6f6, #ffe9e9);
 }
@@ -1129,7 +1187,7 @@ input[type='number']:focus {
 
 .page-slide-enter-active,
 .page-slide-leave-active {
-  transition: opacity 140ms var(--ease-standard);
+  transition: opacity 90ms var(--ease-standard);
 }
 
 .page-slide-enter-from,
@@ -1139,7 +1197,7 @@ input[type='number']:focus {
 
 .page-zoom-enter-active,
 .page-zoom-leave-active {
-  transition: opacity 140ms var(--ease-standard);
+  transition: opacity 90ms var(--ease-standard);
 }
 
 .page-zoom-enter-from,
@@ -1239,6 +1297,15 @@ input[type='number']:focus {
   .review-stats-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 0.45rem;
+  }
+
+  .manager-toolbar {
+    grid-template-columns: 1fr;
+    gap: 0.38rem;
+  }
+
+  .sync-preview-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .review-stat-item {

@@ -267,6 +267,40 @@ function appendDerivedIndex(tokenMap: Map<string, Set<string>>, entries: Diction
   }
 }
 
+function isLocalUserDictionaryEntry(entry: DictionaryEntry): boolean {
+  return entry.dictionaryId === 'ai-local' || entry.entryId.startsWith('ai:')
+}
+
+async function listLocalUserDictionaryEntries(): Promise<DictionaryEntry[]> {
+  return db.dictionaryEntries.filter(isLocalUserDictionaryEntry).toArray()
+}
+
+async function restoreLocalUserDictionaryEntries(entries: DictionaryEntry[]): Promise<void> {
+  if (entries.length === 0) {
+    return
+  }
+
+  const tokenMap = new Map<string, Set<string>>()
+  appendDerivedIndex(tokenMap, entries)
+  const tokens = [...tokenMap.keys()]
+  const existingRows = await db.dictionaryIndex.bulkGet(tokens)
+
+  await db.transaction('rw', db.dictionaryEntries, db.dictionaryIndex, async () => {
+    await db.dictionaryEntries.bulkPut(entries)
+    await db.dictionaryIndex.bulkPut(
+      tokens.map((token, index) => ({
+        token,
+        entryIds: [
+          ...new Set([
+            ...(existingRows[index]?.entryIds ?? []),
+            ...(tokenMap.get(token) ?? new Set<string>()),
+          ]),
+        ],
+      })),
+    )
+  })
+}
+
 function mapInstallError(error: unknown): Error {
   const reason = error instanceof Error ? error : new Error(String(error))
   const message = reason.message || String(reason)
@@ -487,6 +521,8 @@ export async function installDictionaryBundle(
     throw new Error(`All dictionaries failed to install: ${failedDictionaries.join(' || ')}`)
   }
 
+  const preservedLocalEntries = await listLocalUserDictionaryEntries()
+
   await db.transaction('rw', db.dictionaryMeta, db.dictionaryEntries, db.dictionaryIndex, async () => {
     await db.dictionaryEntries.clear()
     await db.dictionaryIndex.clear()
@@ -535,6 +571,8 @@ export async function installDictionaryBundle(
     throw new Error(`All dictionaries failed to import: ${failedDictionaries.join(' || ')}`)
   }
 
+  await restoreLocalUserDictionaryEntries(preservedLocalEntries)
+
   const installedAt = new Date().toISOString()
   const meta: DictionaryMeta = {
     id: 'active',
@@ -543,7 +581,7 @@ export async function installDictionaryBundle(
     checksum: importedManifestList.map((item) => item.manifest.checksum).filter(Boolean).join('|') || undefined,
     installedAt,
     locale: importedManifestList.map((item) => item.manifest.locale).join(', '),
-    entryCount: totalImportedEntries,
+    entryCount: totalImportedEntries + preservedLocalEntries.length,
   }
   await db.dictionaryMeta.put(meta)
   await yieldToMainThread()
