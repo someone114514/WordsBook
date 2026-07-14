@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import dayjs from 'dayjs'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onActivated, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { db } from '../db/database'
 import type { DailyLearningSession, StudyPlan } from '../types/models'
@@ -11,8 +11,12 @@ const loading = ref(true)
 const error = ref('')
 const plan = ref<StudyPlan | null>(null)
 const session = ref<DailyLearningSession | null>(null)
+const sessionStarted = ref(false)
+const remainingCards = ref(0)
 
-const total = computed(() => session.value?.initialWordIds.length ?? plan.value?.queueWordIds.length ?? 0)
+const total = computed(() => sessionStarted.value && session.value
+  ? session.value.initialWordIds.length
+  : plan.value?.queueWordIds.length ?? 0)
 const buttonLabel = computed(() => {
   if (session.value?.status === 'completed') return '今日已完成'
   return session.value ? '继续今日学习' : '开始今日学习'
@@ -29,6 +33,19 @@ async function load() {
   try {
     session.value = await db.dailyLearningSessions.where('dayKey').equals(dayjs().format('YYYY-MM-DD')).first() ?? null
     plan.value = await buildTodayPlanCached()
+    if (session.value) {
+      const [attemptCount, pendingCount] = await Promise.all([
+        db.dailyQueueAttempts.where('sessionId').equals(session.value.sessionId).count(),
+        db.dailyQueueItems.where('sessionId').equals(session.value.sessionId)
+          .filter((item) => item.kind === 'card' && (item.status === 'pending' || item.status === 'active'))
+          .count(),
+      ])
+      sessionStarted.value = attemptCount > 0
+      remainingCards.value = pendingCount
+    } else {
+      sessionStarted.value = false
+      remainingCards.value = 0
+    }
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : String(reason)
   } finally {
@@ -41,7 +58,7 @@ async function start() {
   await router.push('/review/session')
 }
 
-onMounted(() => {
+onActivated(() => {
   invalidateStudyPlanCache()
   void load()
 })
@@ -60,10 +77,15 @@ onMounted(() => {
     <template v-else>
       <section class="panel study-hero">
         <div class="study-total"><strong>{{ total }}</strong><span>今日单词</span></div>
-        <div class="study-metrics">
-          <div><strong>{{ plan?.dueCount ?? 0 }}</strong><span>到期复习</span></div>
-          <div><strong>{{ plan?.newCount ?? 0 }}</strong><span>新词</span></div>
-          <div><strong>{{ session?.phase === 'article' ? '文章' : session?.status === 'completed' ? '完成' : '卡片' }}</strong><span>当前阶段</span></div>
+        <div class="study-metrics study-metrics-two">
+          <template v-if="!sessionStarted">
+            <div><strong>{{ plan?.dueCount ?? 0 }}</strong><span>复习</span></div>
+            <div><strong>{{ plan?.newCount ?? 0 }}</strong><span>新词</span></div>
+          </template>
+          <template v-else>
+            <div><strong>{{ remainingCards }}</strong><span>队列剩余</span></div>
+            <div><strong>{{ session?.phase === 'article' ? '文章' : session?.status === 'completed' ? '完成' : '卡片' }}</strong><span>当前进度</span></div>
+          </template>
         </div>
         <p v-if="recoveryText" class="recovery-note">{{ recoveryText }}</p>
         <button class="btn btn-primary study-primary" :disabled="session?.status === 'completed'" type="button" @click="start">{{ buttonLabel }}</button>

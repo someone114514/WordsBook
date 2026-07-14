@@ -1092,6 +1092,8 @@ input[type='number']:focus {
   justify-content: center;
   align-items: center;
   text-align: center;
+  overflow-y: auto;
+  padding: 0.5rem 0.25rem 1rem;
 }
 
 .review-card-shell h2 {
@@ -1562,6 +1564,7 @@ input[type='number']:focus {
 .study-total strong { font: 700 clamp(3rem, 12vw, 5rem)/1 var(--font-word); color: var(--primary); }
 .study-total span { color: var(--text-subtle); }
 .study-metrics, .preview-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: .65rem; }
+.study-metrics-two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .study-metrics div, .preview-stats div { display: grid; gap: .2rem; padding: .8rem; border-radius: var(--radius-md); background: var(--bg-soft); }
 .study-metrics span, .preview-stats span { color: var(--text-quiet); font-size: .78rem; }
 .study-primary { width: min(28rem, 100%); min-height: 3.25rem; justify-self: center; }
@@ -1569,8 +1572,15 @@ input[type='number']:focus {
 .contribution-list { display: grid; gap: .65rem; }
 .contribution-list > div, .list-card-meta { display: flex; justify-content: space-between; gap: 1rem; }
 .list-card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: .8rem; }
-.list-overview-card { display: grid; gap: .75rem; padding: 1rem; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-panel); }
-.list-overview-card p { min-height: 2.8em; margin: 0; color: var(--text-subtle); }
+.list-overview-card { display: grid; gap: .8rem; padding: 1rem; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-panel); }
+.list-card-heading { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
+.list-card-heading > strong { min-width: 0; overflow: hidden; font-size: 1.05rem; text-overflow: ellipsis; white-space: nowrap; }
+.list-status-chip { flex: 0 0 auto; padding: .22rem .52rem; border-radius: 999px; background: var(--bg-soft); color: var(--text-quiet); font-size: .75rem; font-weight: 700; }
+.list-status-chip.active { background: #ecfdf5; color: #047857; }
+.list-count { display: flex; align-items: baseline; gap: .35rem; }
+.list-count strong { font: 700 2rem/1 var(--font-word); color: var(--text); }
+.list-count span { color: var(--text-quiet); font-size: .82rem; }
+.list-card-description { margin: 0; overflow: hidden; color: var(--text-subtle); font-size: .9rem; text-overflow: ellipsis; white-space: nowrap; }
 .status-dot { display: inline-block; width: .55rem; height: .55rem; margin-right: .5rem; border-radius: 50%; background: var(--border-strong); }
 .status-dot.active { background: var(--success); }
 .inline-create, .reading-config { display: flex; gap: .6rem; flex-wrap: wrap; margin: .8rem 0; }
@@ -1598,6 +1608,7 @@ input[type='number']:focus {
 .review-answer-sheet p { margin: 0 0 .45rem; }
 .review-answer-sheet ul { margin: 0; padding-left: 1.25rem; }
 .review-answer-sheet li + li { margin-top: .35rem; }
+.review-answer-inline { position: static; z-index: auto; right: auto; bottom: auto; left: auto; width: min(30rem, 100%); max-height: min(30vh, 15rem); margin: .85rem 0 0; padding: .85rem 1rem; background: rgba(248,251,255,.9); box-shadow: none; text-align: left; }
 .sheet-backdrop { position: fixed; z-index: 60; inset: 0; display: grid; align-items: end; padding: 1rem; background: rgba(15,23,42,.34); }
 .bottom-action-sheet { display: grid; gap: .65rem; width: min(34rem, 100%); margin: 0 auto max(0px, env(safe-area-inset-bottom)); padding: 1rem; border-radius: 18px; background: #fff; box-shadow: 0 18px 50px rgba(15,23,42,.24); }
 .bottom-action-sheet p { margin: .2rem 0 0; }
@@ -1627,6 +1638,8 @@ input[type='number']:focus {
 .selection-message { margin: 0; font-size: .86rem; }
 .lookup-add-panel { display: grid; gap: .65rem; margin-top: .8rem; padding: 1rem; border-radius: var(--radius-md); background: var(--bg-soft); }
 .lookup-add-panel h4, .lookup-add-panel p { margin: 0; }
+.lookup-study-action.added { border-color: #15803d; background: #15803d; color: #fff; box-shadow: 0 0 0 3px rgba(21,128,61,.12); }
+.lookup-study-action.added:hover { border-color: #166534; background: #166534; }
 .create-list-panel { display: grid; gap: .75rem; }
 .create-list-panel h2 { margin: 0; }
 .dictionary-setup { display: grid; grid-template-columns: 1fr auto; gap: .55rem 1rem; margin-bottom: 1rem; padding: 1rem; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-soft); }

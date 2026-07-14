@@ -188,6 +188,7 @@ export interface DailyQueueItem {
   maxAttempts: number
   retrievability: number
   startingLongTermRetrievability?: number
+  wasNew?: boolean
   todayMastery?: number
   attemptCount?: number
   nextGap?: number

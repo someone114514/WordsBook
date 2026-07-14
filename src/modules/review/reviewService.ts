@@ -19,6 +19,7 @@ interface BuildPlanOptions {
   dailyNewLimit?: number
   dailyReviewLimit?: number
   listIds?: string[]
+  excludeWordIds?: string[]
 }
 
 interface PlanCache {
@@ -125,7 +126,9 @@ export async function buildTodayPlan(options: BuildPlanOptions = {}): Promise<St
     Math.floor(options.dailyReviewLimit ?? settings?.dailyReviewLimit ?? 200),
   )
 
-  const rows = await getActiveStateRows(options.listIds)
+  const excludedWordIds = new Set(options.excludeWordIds ?? [])
+  const rows = (await getActiveStateRows(options.listIds))
+    .filter((row) => !excludedWordIds.has(row.wordId))
 
   const dueRows = rows
     .filter((row) => {
@@ -166,14 +169,6 @@ export async function buildTodayPlan(options: BuildPlanOptions = {}): Promise<St
     if (!added) break
   }
 
-  // Keep at least one actionable card when new rows exist but limits currently produce an empty queue.
-  if (selectedDue.length === 0 && selectedNew.length === 0 && newRows.length > 0) {
-    const fallbackNew = newRows[0]
-    if (fallbackNew) {
-      selectedNew.push(fallbackNew)
-    }
-  }
-
   const selectedRows = [...selectedDue, ...selectedNew]
   const activeLists = await db.studyLists.bulkGet(enabledListIds)
   const listContributions = activeLists.flatMap((list, index) => list ? [{
@@ -185,8 +180,10 @@ export async function buildTodayPlan(options: BuildPlanOptions = {}): Promise<St
   const daysSinceLastStudy = previousSession ? Math.max(0, dayjs(now).startOf('day').diff(previousSession.dayKey, 'day')) : 0
 
   return {
-    dueCount: dueRows.length,
-    newCount: newRows.length,
+    // These counts describe the actual queue, not the entire backlog. This keeps
+    // the headline total equal to "复习 + 新词" and makes the configured limits visible.
+    dueCount: selectedDue.length,
+    newCount: selectedNew.length,
     queueWordIds: selectedRows.map((row) => row.wordId),
     laterTodayCount: 0,
     listIds: options.listIds,

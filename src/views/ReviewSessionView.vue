@@ -14,6 +14,7 @@ import { preGenerateDailyArticle } from '../modules/reading/readingService'
 import { loadReviewCards, setWordSuspended } from '../modules/review/reviewService'
 import { removeWordFromWordbook } from '../modules/wordbook/wordbookService'
 import { playEntryPronunciation, stopActivePronunciation } from '../modules/dictionary/audioService'
+import { loadSettings } from '../modules/settings/settingsService'
 import { parseJsonArray } from '../utils/json'
 
 const router = useRouter()
@@ -26,6 +27,9 @@ const card = ref<ReviewCard | null>(null)
 const error = ref('')
 const showWordMenu = ref(false)
 const actionBusy = ref(false)
+const autoPronunciation = ref(true)
+const speechRate = ref(1)
+const ttsEngine = ref<'auto' | 'browser' | 'youdao' | 'google' | 'dictionaryapi'>('auto')
 
 const selectedListIds = computed(() => typeof route.query.lists === 'string'
   ? route.query.lists.split(',').filter(Boolean)
@@ -40,14 +44,13 @@ const queueLabel = computed(() => {
   return `队列剩余 ${pending}`
 })
 const reasonLabel = computed(() => ({
-  initial: '首次检索',
-  'new-repeat': '新词巩固',
-  'again-repeat': '忘记后复现',
-  'hard-repeat': '模糊后复现',
-  'context-retry': '文章错词巩固',
+  initial: '先回想释义，再查看答案',
+  'new-repeat': '再次回忆',
+  'again-repeat': '重新回忆',
+  'hard-repeat': '再确认一次',
+  'context-retry': '文章错词',
 }[currentItem.value?.reason ?? 'initial']))
 const todayMastery = computed(() => currentItem.value?.todayMastery ?? 0)
-const longTermMemory = computed(() => Math.round((currentItem.value?.startingLongTermRetrievability ?? currentItem.value?.retrievability ?? 0) * 100))
 const masteryPreview = computed(() => ({
   good: nextTodayMastery(todayMastery.value, 'good'),
   hard: nextTodayMastery(todayMastery.value, 'hard'),
@@ -63,12 +66,22 @@ async function loadCurrentCard() {
   card.value = (await loadReviewCards([item.wordId]))[0] ?? null
   revealMeaning.value = false
   showWordMenu.value = false
+  if (card.value && autoPronunciation.value) {
+    void playEntryPronunciation(card.value.entry, {
+      rate: speechRate.value,
+      ttsEngine: ttsEngine.value,
+    })
+  }
 }
 
 async function initialize() {
   loading.value = true
   error.value = ''
   try {
+    const settings = await loadSettings()
+    autoPronunciation.value = settings.autoPronunciation
+    speechRate.value = settings.speechRate
+    ttsEngine.value = settings.ttsEngine
     snapshot.value = await getOrCreateDailySession(selectedListIds.value)
     if (snapshot.value.session.phase === 'summary') {
       await router.replace('/review')
@@ -172,7 +185,7 @@ async function deleteCurrentWord() {
       <div class="review-card-shadow review-card-shadow-mid" />
       <section class="immersive-card review-flashcard">
         <div class="review-card-topline">
-          <span class="immersive-caption">{{ reasonLabel }} · 第 {{ currentItem.attemptNo }}/5 次</span>
+          <span class="immersive-caption">{{ reasonLabel }}</span>
           <button class="review-delete-mini" :disabled="actionBusy" type="button" aria-haspopup="dialog" @click="showWordMenu = true">移除</button>
         </div>
         <div class="review-card-content review-card-content-center">
@@ -181,18 +194,13 @@ async function deleteCurrentWord() {
             <p class="review-phonetic muted">{{ card.entry.phonetic || '暂无音标' }}</p>
             <button class="btn review-play-inline" type="button" @click="play">播放发音</button>
           </div>
-          <div class="review-memory-grid" aria-label="记忆状态">
-            <div><span>今日掌握</span><strong>{{ todayMastery }}%</strong></div>
-            <div><span>长期记忆</span><strong>{{ longTermMemory }}%</strong></div>
-          </div>
+          <aside v-if="revealMeaning" class="review-answer-sheet review-answer-inline" aria-live="polite">
+            <p class="muted">{{ card.entry.posList.join(' / ') || '释义' }}</p>
+            <ul><li v-for="sense in parseJsonArray(card.entry.sensesJson)" :key="sense">{{ sense }}</li></ul>
+            <p v-if="card.note" class="example">{{ card.note }}</p>
+          </aside>
         </div>
       </section>
-
-      <aside v-if="revealMeaning" class="review-answer-sheet" aria-live="polite">
-        <p class="muted">{{ card.entry.posList.join(' / ') || '释义' }}</p>
-        <ul><li v-for="sense in parseJsonArray(card.entry.sensesJson)" :key="sense">{{ sense }}</li></ul>
-        <p v-if="card.note" class="example">{{ card.note }}</p>
-      </aside>
     </article>
 
     <div v-else class="immersive-empty">正在进入今日文章…</div>

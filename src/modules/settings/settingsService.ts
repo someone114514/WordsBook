@@ -3,7 +3,7 @@ import type { AppSettings } from '../../types/models'
 import { markRecordChanged, markRecordDeleted } from '../sync/localSyncStore'
 
 export const DEFAULT_SETTINGS: AppSettings = {
-  autoPronunciation: false,
+  autoPronunciation: true,
   speechRate: 1,
   ttsEngine: 'auto',
   dailyNewLimit: 20,
@@ -19,11 +19,16 @@ export async function loadSettings(): Promise<AppSettings> {
   const rows = await db.settings.toArray()
   const output: AppSettings = { ...DEFAULT_SETTINGS }
   const storedSecret = await db.localSecrets.get('deepseekApiKey')
+  const autoPronunciationConfigured = rows.some(
+    (row) => row.key === 'autoPronunciationConfigured' && row.value === true,
+  )
   output.deepseekApiKey = storedSecret?.value ?? ''
 
   for (const row of rows) {
     if (row.key === 'autoPronunciation' && typeof row.value === 'boolean') {
-      output.autoPronunciation = row.value
+      // Older versions persisted the old false default whenever any setting was
+      // saved. Treat it as the new true default until the user explicitly toggles it.
+      output.autoPronunciation = autoPronunciationConfigured ? row.value : true
     }
 
     if (row.key === 'speechRate' && typeof row.value === 'number') {
@@ -98,6 +103,10 @@ export async function saveSettings(patch: Partial<AppSettings>): Promise<AppSett
         await markRecordChanged('settings', key)
       }),
     )
+    if (patch.autoPronunciation !== undefined) {
+      await db.settings.put({ key: 'autoPronunciationConfigured', value: true })
+      await markRecordChanged('settings', 'autoPronunciationConfigured')
+    }
     await db.settings.delete('deepseekApiKey')
   })
 

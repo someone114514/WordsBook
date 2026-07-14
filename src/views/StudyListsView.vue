@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onActivated, ref } from 'vue'
 import { createStudyList, listStudyLists } from '../modules/wordbook/studyListService'
 
 type ListRow = Awaited<ReturnType<typeof listStudyLists>>[number]
@@ -33,7 +33,7 @@ async function create() {
   } finally { busy.value = false }
 }
 
-onMounted(() => void load())
+onActivated(() => void load())
 </script>
 
 <template>
@@ -50,13 +50,16 @@ onMounted(() => void load())
     </section>
 
     <section class="panel">
-      <div class="section-heading"><div><h2>学习词表</h2><p class="muted">已开启 {{ learningLists.filter(item => item.studyEnabled).length }} 个</p></div></div>
+      <div class="section-heading"><div><h2>学习词表</h2><p class="muted">{{ learningLists.filter(item => item.studyEnabled).length }} 个参与今日队列</p></div></div>
       <div v-if="learningLists.length" class="list-card-grid">
         <article v-for="list in learningLists" :key="list.listId" class="list-overview-card">
-          <div><span :class="['status-dot', { active: list.studyEnabled }]"/><strong>{{ list.name }}</strong></div>
-          <p>{{ list.description || (list.studyEnabled ? '参与每日学习' : '当前已暂停') }}</p>
-          <div class="list-card-meta"><span>{{ list.wordCount }} 词</span><span>{{ list.studyEnabled ? '学习中' : '已暂停' }}</span></div>
-          <RouterLink class="btn btn-primary" :to="`/lists/${encodeURIComponent(list.listId)}`">查看</RouterLink>
+          <header class="list-card-heading">
+            <strong>{{ list.name }}</strong>
+            <span :class="['list-status-chip', { active: list.studyEnabled }]">{{ list.studyEnabled ? '参与学习' : '已暂停' }}</span>
+          </header>
+          <div class="list-count"><strong>{{ list.wordCount }}</strong><span>个单词</span></div>
+          <p v-if="list.description" class="list-card-description">{{ list.description }}</p>
+          <RouterLink class="btn" :to="`/lists/${encodeURIComponent(list.listId)}`">管理词表</RouterLink>
         </article>
       </div>
       <div v-else class="empty-state compact"><p>输入名称创建词表，或从查词页加入单词。</p><RouterLink class="btn" to="/lookup">去查词</RouterLink></div>

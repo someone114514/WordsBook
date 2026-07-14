@@ -29,7 +29,9 @@ describe('study list membership', () => {
     expect(await addWordToStudyList(second.listId, item.wordId)).toBe(true)
     expect(await db.wordbook.count()).toBe(1)
     expect(await db.reviewState.count()).toBe(1)
-    expect((await buildTodayPlan({ listIds: [second.listId], dailyNewLimit: 20, dailyReviewLimit: 20 })).queueWordIds).toEqual([item.wordId])
+    const plan = await buildTodayPlan({ listIds: [second.listId], dailyNewLimit: 20, dailyReviewLimit: 20 })
+    expect(plan.queueWordIds).toEqual([item.wordId])
+    expect(plan.dueCount + plan.newCount).toBe(plan.queueWordIds.length)
   })
 
   it('keeps lookup-only words out of the global study plan', async () => {
@@ -40,6 +42,17 @@ describe('study list membership', () => {
     const enabled = await createStudyList('Temporary')
     await updateStudyList(enabled.listId, { studyEnabled: 0 })
     expect((await buildTodayPlan({ dailyNewLimit: 20, dailyReviewLimit: 20 })).queueWordIds).toEqual([])
+  })
+
+  it('respects a zero new-word limit without forcing a fallback card', async () => {
+    const entry = { entryId: 'entry:limited', headword: 'limited', headwordLower: 'limited', posList: [], sensesJson: '[]', examplesJson: '[]', usageJson: '[]' }
+    const { item } = await ensureVocabularyItem(entry)
+    const list = await createStudyList('Limited')
+    await addWordToStudyList(list.listId, item.wordId)
+
+    const plan = await buildTodayPlan({ dailyNewLimit: 0, dailyReviewLimit: 20 })
+    expect(plan.queueWordIds).toEqual([])
+    expect(plan.newCount).toBe(0)
   })
 
   it('distinguishes learning membership from save-only membership', async () => {

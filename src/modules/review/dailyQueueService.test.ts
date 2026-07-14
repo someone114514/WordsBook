@@ -5,6 +5,7 @@ import type { DailyQueueItem } from '../../types/models'
 import {
   aggregateSessionRating,
   answerDailyCard,
+  getOrCreateDailySession,
   initialTodayMastery,
   masteryReinsertionGap,
   nextTodayMastery,
@@ -79,5 +80,38 @@ describe('daily learning queue', () => {
     expect(attempts).toHaveLength(5)
     expect(lastItem?.tomorrowPriority).toBe(true)
     expect(await db.reviewLogs.where('wordId').equals('w1').count()).toBe(1)
+  })
+
+  it('rebuilds an unstarted session after the limit or enabled-list contents change', async () => {
+    const now = '2026-07-13T08:00:00.000Z'
+    await db.studyLists.put({ listId: 'list', name: 'List', description: '', studyEnabled: 1, createdAt: now, updatedAt: now })
+    await db.settings.bulkPut([
+      { key: 'dailyNewLimit', value: 2 },
+      { key: 'dailyReviewLimit', value: 20 },
+    ])
+    for (const [index, wordId] of ['w1', 'w2', 'w3'].entries()) {
+      await db.dictionaryEntries.put({ entryId: `e-${wordId}`, headword: wordId, headwordLower: wordId, posList: [], sensesJson: '[]', examplesJson: '[]', usageJson: '[]' })
+      await db.wordbook.put({ wordId, entryId: `e-${wordId}`, addedAt: new Date(Date.parse(now) + index).toISOString(), note: '', tags: [], archived: 0 })
+      await db.reviewState.put({ wordId, cycle: 0, nextReviewAt: now, successCount: 0, lapseCount: 0, totalReviews: 0 })
+      await db.studyListItems.put({ membershipId: `list:${wordId}`, listId: 'list', wordId, addedAt: now })
+    }
+
+    let snapshot = await getOrCreateDailySession(undefined, new Date(now))
+    const sessionId = snapshot.session.sessionId
+    expect(snapshot.totalCards).toBe(2)
+    await db.settings.put({ key: 'dailyNewLimit', value: 1 })
+    await db.studyListItems.delete('list:w1')
+
+    snapshot = await getOrCreateDailySession(undefined, new Date('2026-07-13T08:01:00.000Z'))
+    expect(snapshot.totalCards).toBe(1)
+    expect(snapshot.session.initialWordIds).toEqual(['w2'])
+    expect(snapshot.items.filter((item) => item.status === 'pending')).toHaveLength(1)
+
+    snapshot = await answerDailyCard(sessionId, snapshot.current!.itemId, 'hard', new Date('2026-07-13T08:02:00.000Z'))
+    await db.studyListItems.delete('list:w2')
+    snapshot = await getOrCreateDailySession(undefined, new Date('2026-07-13T08:03:00.000Z'))
+    expect(snapshot.session.sessionId).toBe(sessionId)
+    expect(snapshot.attempts).toHaveLength(1)
+    expect(snapshot.current?.wordId).toBe('w2')
   })
 })

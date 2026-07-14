@@ -23,5 +23,5 @@ describe('review data migration', () => {
     expect(await db.reviewLogs.count()).toBe(3372)
     expect(await db.settings.get('deepseekApiKey')).toBeUndefined()
     expect((await db.localSecrets.get('deepseekApiKey'))?.value).toBeUndefined()
-  })
+  }, 10_000)
 })

@@ -1,5 +1,5 @@
 ﻿<script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRoute } from 'vue-router'
 import type { DictionaryEntry, LookupResult } from '../types/models'
@@ -225,6 +225,13 @@ onMounted(async () => {
   }
 })
 
+onActivated(async () => {
+  studyLists.value = (await listStudyLists()).filter((list) => list.systemType !== 'lookup')
+  if (!studyLists.value.some((list) => list.listId === selectedStudyListId.value)) {
+    selectedStudyListId.value = studyLists.value.find((list) => list.studyEnabled)?.listId ?? studyLists.value[0]?.listId ?? ''
+  }
+})
+
 onBeforeUnmount(() => {
   lookupToken += 1
   clearLookupTimer()
@@ -237,6 +244,24 @@ function isAdded(entryId: string): boolean {
 
 function isSaved(entryId: string): boolean {
   return entryStatusMap.value.get(entryId)?.listIds.includes('system:lookup') ?? false
+}
+
+function isInSelectedStudyList(entryId: string): boolean {
+  return Boolean(selectedStudyListId.value)
+    && (entryStatusMap.value.get(entryId)?.listIds.includes(selectedStudyListId.value) ?? false)
+}
+
+function toggleEntryManagement(entry: DictionaryEntry): void {
+  if (manageEntryId.value === entry.entryId) {
+    manageEntryId.value = ''
+    return
+  }
+  manageEntryId.value = entry.entryId
+  const memberships = entryStatusMap.value.get(entry.entryId)?.listIds ?? []
+  selectedStudyListId.value = studyLists.value.find((list) => !memberships.includes(list.listId))?.listId
+    ?? studyLists.value.find((list) => list.studyEnabled)?.listId
+    ?? studyLists.value[0]?.listId
+    ?? ''
 }
 
 function isAiActionBusy(entryId: string, mode: 'add' | 'replace' | 'rollback'): boolean {
@@ -277,6 +302,11 @@ async function onAddToStudyList(entry: DictionaryEntry) {
   if (!selectedStudyListId.value) {
     messageType.value = 'error'
     message.value = '请先在“词表”页创建学习词表'
+    return
+  }
+  if (isInSelectedStudyList(entry.entryId)) {
+    messageType.value = 'success'
+    message.value = '这个单词已在所选词表中'
     return
   }
   addingEntryId.value = entry.entryId
@@ -535,19 +565,20 @@ function parseLines(raw: string): string[] {
                     <div class="actions">
                       <button class="btn" @click="onPlay(entry)">发音</button>
                       <button
-                        class="btn btn-primary"
+                        :class="['btn', 'btn-primary', 'lookup-study-action', { added: isAdded(entry.entryId) }]"
                         type="button"
                         :disabled="addingEntryId === entry.entryId"
-                        @click="onAddToStudyList(entry)"
+                        :aria-pressed="isAdded(entry.entryId)"
+                        @click="isAdded(entry.entryId) ? toggleEntryManagement(entry) : onAddToStudyList(entry)"
                       >
-                        {{ addingEntryId === entry.entryId ? '加入中…' : isAdded(entry.entryId) ? '加入其他词表' : '加入学习' }}
+                        {{ addingEntryId === entry.entryId ? '加入中…' : isAdded(entry.entryId) ? '已加入学习' : '加入学习' }}
                       </button>
-                      <button class="btn btn-quiet" type="button" @click="manageEntryId = manageEntryId === entry.entryId ? '' : entry.entryId">选择词表与更多</button>
+                      <button class="btn btn-quiet" type="button" @click="toggleEntryManagement(entry)">{{ isAdded(entry.entryId) ? '加入其他词表' : '选择词表与更多' }}</button>
                     </div>
                     <div v-if="manageEntryId === entry.entryId" class="lookup-add-panel">
-                      <h4>加入哪些学习词表？</h4>
-                      <select v-if="studyLists.length" v-model="selectedStudyListId" class="inline-input" aria-label="选择学习词表"><option v-for="list in studyLists" :key="list.listId" :value="list.listId">{{ list.name }}</option></select>
-                      <button class="btn btn-primary" :disabled="addingEntryId === entry.entryId" type="button" @click="onAddToStudyList(entry)">{{ addingEntryId === entry.entryId ? '加入中…' : '确认加入学习' }}</button>
+                      <h4>{{ isAdded(entry.entryId) ? '加入其他词表' : '选择学习词表' }}</h4>
+                      <select v-if="studyLists.length" v-model="selectedStudyListId" class="inline-input" aria-label="选择学习词表"><option v-for="list in studyLists" :key="list.listId" :value="list.listId" :disabled="entryStatusMap.get(entry.entryId)?.listIds.includes(list.listId)">{{ list.name }}{{ entryStatusMap.get(entry.entryId)?.listIds.includes(list.listId) ? '（已加入）' : '' }}</option></select>
+                      <button class="btn btn-primary" :disabled="addingEntryId === entry.entryId || isInSelectedStudyList(entry.entryId)" type="button" @click="onAddToStudyList(entry)">{{ addingEntryId === entry.entryId ? '加入中…' : isInSelectedStudyList(entry.entryId) ? '已在此词表' : '确认加入' }}</button>
                       <hr><p class="muted">只想留作参考，不安排复习？</p>
                       <button v-if="!isSaved(entry.entryId)" class="btn" type="button" @click="onAddWord(entry.entryId)">仅保存</button>
                       <button v-else class="btn btn-danger" :disabled="deletingEntryId === entry.entryId" type="button" @click="onRemoveWord(entry)">{{ deletingEntryId === entry.entryId ? '处理中…' : '取消仅保存' }}</button>

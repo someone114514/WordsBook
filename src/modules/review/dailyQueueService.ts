@@ -6,11 +6,13 @@ import type {
   DailyQueueItem,
   DailyQueueReason,
   ReviewRating,
+  ReviewState,
 } from '../../types/models'
 import { markPayloadChanged, markRecordChanged } from '../sync/localSyncStore'
 import { buildTodayPlan, gradeCard } from './reviewService'
 import { getReviewRetrievability } from './scheduler'
 import { repairVocabularyIntegrity } from '../wordbook/vocabularyIntegrity'
+import { loadSettings } from '../settings/settingsService'
 
 const MAX_DAILY_ATTEMPTS = 5
 
@@ -52,6 +54,125 @@ export function aggregateSessionRating(ratings: ReviewRating[]): ReviewRating {
   return 'good'
 }
 
+function createInitialQueueItems(
+  session: DailyLearningSession,
+  wordIds: string[],
+  states: Array<ReviewState | undefined>,
+  at: Date,
+): DailyQueueItem[] {
+  const now = at.toISOString()
+  return wordIds.map((wordId, index) => {
+    const state = states[index]
+    const retrievability = state ? getReviewRetrievability(state, at) : 0
+    const isNew = (state?.reps ?? state?.totalReviews ?? 0) === 0
+    return {
+      itemId: `${session.sessionId}:card:${index}`,
+      sessionId: session.sessionId,
+      kind: 'card',
+      wordId,
+      reason: 'initial',
+      position: index,
+      status: 'pending',
+      attemptNo: 1,
+      maxAttempts: MAX_DAILY_ATTEMPTS,
+      retrievability,
+      startingLongTermRetrievability: retrievability,
+      wasNew: isNew,
+      todayMastery: initialTodayMastery(retrievability, isNew),
+      attemptCount: 0,
+      nextGap: 0,
+      tomorrowPriority: false,
+      createdAt: now,
+      updatedAt: now,
+    }
+  })
+}
+
+async function refreshCurrentSession(
+  existing: DailyLearningSession,
+  listIds: string[] | undefined,
+  at: Date,
+): Promise<DailyLearningSession> {
+  if (existing.status !== 'active' || existing.articleStatus !== 'waiting') return existing
+  const requestedListIds = listIds ?? (existing.selectedListIds.length ? existing.selectedListIds : undefined)
+  const [attempts, existingItems, settings] = await Promise.all([
+    db.dailyQueueAttempts.where('sessionId').equals(existing.sessionId).toArray(),
+    db.dailyQueueItems.where('sessionId').equals(existing.sessionId).toArray(),
+    loadSettings(),
+  ])
+  const attemptedWordIds = [...new Set(attempts.map((attempt) => attempt.wordId))]
+  const attemptedSet = new Set(attemptedWordIds)
+  const firstItems = new Map<string, DailyQueueItem>()
+  for (const item of existingItems.slice().sort((left, right) => left.attemptNo - right.attemptNo)) {
+    if (item.wordId && !firstItems.has(item.wordId)) firstItems.set(item.wordId, item)
+  }
+  const [attemptedStates, attemptedLogs] = await Promise.all([
+    db.reviewState.bulkGet(attemptedWordIds),
+    attemptedWordIds.length ? db.reviewLogs.where('wordId').anyOf(attemptedWordIds).toArray() : [],
+  ])
+  let attemptedNew = 0
+  let attemptedReview = 0
+  for (const [index, wordId] of attemptedWordIds.entries()) {
+    const item = firstItems.get(wordId)
+    const state = attemptedStates[index]
+    const sameDayLog = attemptedLogs.find((log) => log.wordId === wordId && dayKey(new Date(log.reviewedAt)) === existing.dayKey)
+    const wasNew = item?.wasNew ?? sameDayLog?.wasNew ?? (state?.reps ?? state?.totalReviews ?? 0) === 0
+    if (wasNew) attemptedNew += 1
+    else attemptedReview += 1
+  }
+
+  const plan = await buildTodayPlan({
+    listIds: requestedListIds,
+    at,
+    dailyNewLimit: Math.max(0, settings.dailyNewLimit - attemptedNew),
+    dailyReviewLimit: Math.max(0, settings.dailyReviewLimit - attemptedReview),
+    excludeWordIds: attemptedWordIds,
+  })
+  const plannedSet = new Set(plan.queueWordIds)
+  const activeItems = existingItems
+    .filter((item) => item.kind === 'card' && (item.status === 'pending' || item.status === 'active'))
+    .sort((left, right) => left.position - right.position)
+  const retained = activeItems.filter((item) => Boolean(item.wordId && (attemptedSet.has(item.wordId) || plannedSet.has(item.wordId))))
+  const retainedWordIds = new Set(retained.flatMap((item) => item.wordId ? [item.wordId] : []))
+  const addedWordIds = plan.queueWordIds.filter((wordId) => !retainedWordIds.has(wordId))
+  const states = await db.reviewState.bulkGet(addedWordIds)
+  const placeholderSession = { ...existing, selectedListIds: requestedListIds ?? [] }
+  const addedItems = createInitialQueueItems(placeholderSession, addedWordIds, states, at)
+    .map((item) => ({ ...item, itemId: `${existing.sessionId}:card:refresh:${crypto.randomUUID()}` }))
+  const pendingItems = [...retained, ...addedItems]
+    .map((item, position) => ({ ...item, position, updatedAt: at.toISOString() }))
+  const removedItems = activeItems.filter((item) => !pendingItems.some((pending) => pending.itemId === item.itemId))
+    .map((item) => ({ ...item, status: 'skipped' as const, updatedAt: at.toISOString() }))
+  const initialWordIds = [
+    ...existing.initialWordIds.filter((wordId) => attemptedSet.has(wordId)),
+    ...plan.queueWordIds,
+  ].filter((wordId, index, rows) => rows.indexOf(wordId) === index)
+  const unchanged = initialWordIds.length === existing.initialWordIds.length
+    && initialWordIds.every((wordId, index) => wordId === existing.initialWordIds[index])
+    && addedItems.length === 0
+    && removedItems.length === 0
+  if (unchanged) return existing
+
+  const now = at.toISOString()
+  const updated: DailyLearningSession = {
+    ...existing,
+    phase: pendingItems.length ? 'cards' : 'article',
+    selectedListIds: requestedListIds ?? [],
+    initialWordIds,
+    cardsCompletedAt: pendingItems.length ? undefined : existing.cardsCompletedAt ?? now,
+    updatedAt: now,
+  }
+  await db.transaction('rw', [db.dailyLearningSessions, db.dailyQueueItems], async () => {
+    if (removedItems.length) await db.dailyQueueItems.bulkPut(removedItems)
+    if (pendingItems.length) await db.dailyQueueItems.bulkPut(pendingItems)
+    await db.dailyLearningSessions.put(updated)
+  })
+  for (const item of removedItems) await markPayloadChanged('dailyQueueItems', item, now)
+  for (const item of pendingItems) await markPayloadChanged('dailyQueueItems', item, now)
+  await markPayloadChanged('dailyLearningSessions', updated, now)
+  return updated
+}
+
 async function orderedItems(sessionId: string): Promise<DailyQueueItem[]> {
   return db.dailyQueueItems.where('sessionId').equals(sessionId).sortBy('position')
 }
@@ -76,8 +197,9 @@ export async function loadDailyQueueSnapshot(sessionId: string): Promise<DailyQu
 
 export async function getOrCreateDailySession(listIds?: string[], at = new Date()): Promise<DailyQueueSnapshot> {
   const today = dayKey(at)
-  const existing = await db.dailyLearningSessions.where('dayKey').equals(today).first()
-  if (existing) {
+  const storedSession = await db.dailyLearningSessions.where('dayKey').equals(today).first()
+  if (storedSession) {
+    const existing = await refreshCurrentSession(storedSession, listIds, at)
     await repairVocabularyIntegrity(existing.initialWordIds)
     const words = await db.wordbook.bulkGet(existing.initialWordIds)
     const validIds = words.filter((word) => word && word.integrityStatus !== 'needs-repair').map((word) => word!.wordId)
@@ -111,31 +233,7 @@ export async function getOrCreateDailySession(listIds?: string[], at = new Date(
     createdAt: now,
     updatedAt: now,
   }
-  const items: DailyQueueItem[] = plan.queueWordIds.map((wordId, index) => {
-    const state = states[index]
-    const retrievability = state ? getReviewRetrievability(state, at) : 0
-    const isNew = (state?.reps ?? state?.totalReviews ?? 0) === 0
-    const todayMastery = initialTodayMastery(retrievability, isNew)
-    return {
-      itemId: `${session.sessionId}:card:${index}`,
-      sessionId: session.sessionId,
-      kind: 'card',
-      wordId,
-      reason: 'initial',
-      position: index,
-      status: 'pending',
-      attemptNo: 1,
-      maxAttempts: MAX_DAILY_ATTEMPTS,
-      retrievability,
-      startingLongTermRetrievability: retrievability,
-      todayMastery,
-      attemptCount: 0,
-      nextGap: 0,
-      tomorrowPriority: false,
-      createdAt: now,
-      updatedAt: now,
-    }
-  })
+  const items = createInitialQueueItems(session, plan.queueWordIds, states, at)
 
   await db.transaction('rw', [db.dailyLearningSessions, db.dailyQueueItems], async () => {
     await db.dailyLearningSessions.add(session)
