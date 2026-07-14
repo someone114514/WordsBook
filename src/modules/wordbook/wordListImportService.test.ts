@@ -20,6 +20,19 @@ describe('word list parser', () => {
     expect(parseWordListText('apple\nbanana').map((row) => row.word)).toEqual(['apple', 'banana'])
   })
 
+  it('parses structured JSON arrays and words containers', () => {
+    expect(parseWordListText(JSON.stringify({
+      words: [
+        { word: 'resilient', meaning: ['有韧性的', '能恢复的'], note: '重点', tags: ['B2', '写作'] },
+        { term: 'context', definition: '语境', tags: '阅读,考试' },
+      ],
+    }))).toEqual([
+      { word: 'resilient', meaning: '有韧性的；能恢复的', note: '重点', tags: ['B2', '写作'] },
+      { word: 'context', meaning: '语境', note: '', tags: ['阅读', '考试'] },
+    ])
+    expect(() => parseWordListText('{"words": [}')).toThrow('JSON 格式错误')
+  })
+
   it('reuses dictionary lemmas, preserves phrases and reports duplicates', async () => {
     await db.dictionaryEntries.put({ entryId: 'dict:cat', headword: 'cat', headwordLower: 'cat', posList: ['noun'], sensesJson: '["猫"]', examplesJson: '[]', usageJson: '[]' })
     const list = await createStudyList('Import')

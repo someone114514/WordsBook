@@ -26,6 +26,7 @@ test('installs the core dictionary and completes lookup to daily review', async 
   await expect(page.getByText(/已加入「我的单词」· 将进入每日队列/)).toBeVisible()
   await expect(habitCard.getByText('学习中', { exact: true })).toBeVisible()
   await expect(habitCard.getByRole('button', { name: '已加入学习', exact: true })).toHaveClass(/added/)
+  await expect(habitCard.getByRole('button', { name: '已加入学习', exact: true })).toHaveCSS('background-color', 'rgb(241, 245, 249)')
   await expect(habitCard.getByRole('button', { name: '加入其他词表', exact: true })).toBeVisible()
 
   await page.reload()
@@ -57,7 +58,9 @@ test('imports a list and completes the three-grade daily queue without an AI key
   await page.getByRole('button', { name: '创建', exact: true }).click()
   await page.getByRole('link', { name: '管理词表', exact: true }).last().click()
   await page.getByRole('button', { name: '导入', exact: true }).click()
-  await page.getByPlaceholder(/resilient/).fill('inventedword,自造词')
+  await page.getByText('查看 JSON 范例').click()
+  await expect(page.getByText(/"words"/)).toBeVisible()
+  await page.getByPlaceholder(/粘贴 JSON/).fill(JSON.stringify({ words: [{ word: 'inventedword', meaning: '自造词', tags: ['E2E'] }] }))
   await page.getByRole('button', { name: '预览导入' }).click()
   await page.getByRole('button', { name: '确认导入' }).click()
   await expect(page.getByRole('heading', { name: '导入完成' })).toBeVisible()

@@ -10,6 +10,8 @@ import {
   loadContextAttempts,
   parseReadingSession,
   recordContextAttempt,
+  resetReadingSessionAttempts,
+  saveReadingProgress,
 } from '../modules/reading/readingService'
 import { completeDailySession, setArticleStatus } from '../modules/review/dailyQueueService'
 import { loadSettings } from '../modules/settings/settingsService'
@@ -32,6 +34,7 @@ const error = ref('')
 const noKey = ref(false)
 const paragraphs = ref<string[]>([])
 const generatedTargets = ref(0)
+const generationPhase = ref<'article' | 'details'>('article')
 const topic = ref('')
 const level = ref<'A2' | 'B1' | 'B2' | 'C1'>('B2')
 const showTranslation = ref(false)
@@ -57,6 +60,7 @@ async function loadBatch(force = false) {
   error.value = ''
   paragraphs.value = []
   generatedTargets.value = 0
+  generationPhase.value = 'article'
   stage.value = 0
   results.value = {}
   showTranslation.value = false
@@ -67,6 +71,7 @@ async function loadBatch(force = false) {
       dayKey, batchIndex: batchIndex.value, seed: 0, wordIds, level: level.value, topic: topic.value, force,
       signal: controller.signal,
       onProgress(progress) {
+        generationPhase.value = progress.phase
         paragraphs.value = progress.paragraphs
         generatedTargets.value = progress.targetCount
       },
@@ -75,6 +80,8 @@ async function loadBatch(force = false) {
     await setArticleStatus(dailySessionId.value, 'ready')
     const attempts = await loadContextAttempts(session.value.sessionId)
     results.value = Object.fromEntries(attempts.map((attempt) => [attempt.wordId, attempt.result]))
+    stage.value = session.value.readerStage ?? (attempts.length ? 1 : 0)
+    showTranslation.value = session.value.showTranslation ?? false
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : String(reason)
     await setArticleStatus(dailySessionId.value, 'failed')
@@ -94,6 +101,10 @@ async function initialize() {
     await router.replace('/review')
     return
   }
+  const requestedBatch = Number(route.query.batch)
+  if (Number.isInteger(requestedBatch) && requestedBatch >= 0 && requestedBatch < batches.value.length) {
+    batchIndex.value = requestedBatch
+  }
   if (!noKey.value) await loadBatch()
 }
 
@@ -103,9 +114,31 @@ async function answer(target: ReadingTarget, choice?: string) {
   if (attempt.result !== 'correct') hadRetry.value = true
 }
 
+async function revealTargets() {
+  stage.value = 1
+  if (session.value) await saveReadingProgress(session.value.sessionId, stage.value, showTranslation.value)
+}
+
 async function finishBatch() {
   if (session.value) await completeReadingSession(session.value.sessionId)
   stage.value = 2
+  if (session.value) await saveReadingProgress(session.value.sessionId, stage.value, showTranslation.value)
+}
+
+async function toggleTranslation() {
+  showTranslation.value = !showTranslation.value
+  if (session.value) await saveReadingProgress(session.value.sessionId, stage.value, showTranslation.value)
+}
+
+async function regenerate() {
+  if (!session.value) return
+  await saveReadingProgress(session.value.sessionId, 0, false)
+  await resetReadingSessionAttempts(session.value.sessionId)
+  results.value = {}
+  stage.value = 0
+  showTranslation.value = false
+  hadRetry.value = false
+  await loadBatch(true)
 }
 
 async function nextBatch() {
@@ -163,9 +196,10 @@ async function updateSelectedWord() {
   }
 }
 
-function openSelectedLookup() {
+async function openSelectedLookup() {
   if (!selectedWord.value) return
-  void router.push({ path: '/lookup', query: { q: selectedWord.value, from: 'reading' } })
+  if (session.value) await saveReadingProgress(session.value.sessionId, stage.value, showTranslation.value)
+  await router.push({ path: '/lookup', query: { q: selectedWord.value, from: 'reading', returnTo: route.fullPath } })
 }
 
 async function addSelectedWord(listId = selectedListId.value) {
@@ -222,22 +256,24 @@ onBeforeUnmount(() => {
     </div>
 
     <div v-else-if="loading" class="reading-stream-state" aria-live="polite">
-      <p class="eyebrow">正在生成 · {{ level }}</p><h1>今日语境文章</h1>
-      <p>目标词 {{ batches[batchIndex]?.length ?? 0 }} 个 · 已生成 {{ paragraphs.length }} 段 · 已准备 {{ generatedTargets }} 个测义题</p>
-      <div v-if="paragraphs.length" class="reading-copy stream-preview"><p v-for="(paragraph, index) in paragraphs" :key="index">{{ paragraph }}</p></div>
+      <p class="eyebrow">{{ generationPhase === 'article' ? '正文流式生成中' : '正文已完成' }} · {{ level }}</p><h1>今日语境文章</h1>
+      <p v-if="generationPhase === 'article'">目标词 {{ batches[batchIndex]?.length ?? 0 }} 个 · 正文会边生成边显示</p>
+      <p v-else>正在准备测义题与翻译 · 已生成 {{ generatedTargets }} 题</p>
+      <div v-if="paragraphs.length" class="reading-copy streaming-article"><p v-for="(paragraph, index) in paragraphs" :key="index">{{ paragraph }}</p></div>
       <div v-else class="skeleton-lines" aria-hidden="true"><span/><span/><span/></div>
       <button class="btn" type="button" @click="cancel">取消生成</button>
     </div>
 
     <div v-else-if="error" class="immersive-empty">
       <h1>文章暂时没有生成</h1><p class="error" role="alert">{{ error }}</p>
-      <div class="action-row"><button class="btn btn-primary" type="button" @click="loadBatch(true)">重试</button><button class="btn" type="button" @click="skip">跳过并完成今日学习</button><button v-if="error.includes('Key')" class="btn" type="button" @click="router.push('/settings')">更新 Key</button></div>
+      <div v-if="paragraphs.length" class="reading-copy retained-article"><p v-for="(paragraph, index) in paragraphs" :key="index">{{ paragraph }}</p></div>
+      <div class="action-row"><button class="btn btn-primary" type="button" @click="loadBatch(false)">{{ paragraphs.length ? '重试题目与翻译' : '重试' }}</button><button v-if="paragraphs.length" class="btn" type="button" @click="loadBatch(true)">重新生成正文</button><button class="btn" type="button" @click="skip">跳过并完成今日学习</button><button v-if="error.includes('Key')" class="btn" type="button" @click="router.push('/settings')">更新 Key</button></div>
     </div>
 
     <article v-else-if="session" class="reading-card">
-      <h1>{{ session.title }}</h1>
+      <div class="reading-title-row"><h1>{{ session.title }}</h1><button class="btn btn-quiet" type="button" @click="regenerate">重新生成</button></div>
       <div ref="readingCopy" class="reading-copy reading-copy-selectable"><template v-for="(segment, index) in parsed.segments" :key="index"><mark v-if="stage >= 1 && segment.wordId" class="target-word">{{ segment.text }}</mark><span v-else>{{ segment.text }}</span></template></div>
-      <button v-if="stage === 0" class="btn btn-primary" type="button" @click="stage = 1">我已读完，标出目标词</button>
+      <button v-if="stage === 0" class="btn btn-primary" type="button" @click="revealTargets">我已读完，标出目标词</button>
       <section v-if="stage >= 1" class="quiz-list">
         <article v-for="target in parsed.targets" :key="target.wordId" class="entry-card">
           <h2>{{ target.headword }}</h2>
@@ -245,13 +281,12 @@ onBeforeUnmount(() => {
             <button v-for="choice in target.choices" :key="choice" class="btn" type="button" @click="answer(target, choice)">{{ choice }}</button>
             <button class="btn btn-quiet" type="button" @click="answer(target)">不确定</button>
           </div>
-          <div v-else-if="stage === 2" :class="results[target.wordId] === 'correct' ? 'success' : 'error'"><strong>{{ target.contextualMeaning }}</strong><p>{{ target.explanation }}</p></div>
-          <p v-else class="muted">已作答</p>
+          <div v-else :class="['context-answer', results[target.wordId] === 'correct' ? 'correct' : 'incorrect']"><strong>{{ results[target.wordId] === 'correct' ? '回答正确' : results[target.wordId] === 'uncertain' ? '不确定' : '回答错误' }}</strong><p>答案：{{ target.contextualMeaning }}</p><p>{{ target.explanation }}</p></div>
         </article>
       </section>
-      <button v-if="stage === 1 && allAnswered" class="btn btn-primary" type="button" @click="finishBatch">揭示释义与结果</button>
+      <button v-if="stage === 1 && allAnswered" class="btn btn-primary" type="button" @click="finishBatch">完成本篇</button>
       <template v-if="stage === 2">
-        <button class="btn" type="button" @click="showTranslation = !showTranslation">{{ showTranslation ? '隐藏全文翻译' : '显示全文翻译' }}</button>
+        <button class="btn" type="button" @click="toggleTranslation">{{ showTranslation ? '隐藏全文翻译' : '显示全文翻译' }}</button>
         <p v-if="showTranslation" class="translation-panel">{{ session.translation }}</p>
         <button class="btn btn-primary" type="button" @click="nextBatch">{{ batchIndex + 1 < batches.length ? '下一篇' : '完成今日学习' }}</button>
       </template>

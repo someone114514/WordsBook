@@ -3,8 +3,9 @@ import dayjs from 'dayjs'
 import { computed, onActivated, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { db } from '../db/database'
-import type { DailyLearningSession, StudyPlan } from '../types/models'
+import type { DailyLearningSession, ReadingSession, StudyPlan } from '../types/models'
 import { buildTodayPlanCached, invalidateStudyPlanCache } from '../modules/review/reviewService'
+import { listReadingHistory } from '../modules/reading/readingService'
 
 const router = useRouter()
 const loading = ref(true)
@@ -13,6 +14,9 @@ const plan = ref<StudyPlan | null>(null)
 const session = ref<DailyLearningSession | null>(null)
 const sessionStarted = ref(false)
 const remainingCards = ref(0)
+const readingHistory = ref<ReadingSession[]>([])
+const latestReading = computed(() => readingHistory.value[0] ?? null)
+const canResumeLatestReading = computed(() => latestReading.value?.dayKey === dayjs().format('YYYY-MM-DD'))
 
 const total = computed(() => sessionStarted.value && session.value
   ? session.value.initialWordIds.length
@@ -32,7 +36,7 @@ async function load() {
   error.value = ''
   try {
     session.value = await db.dailyLearningSessions.where('dayKey').equals(dayjs().format('YYYY-MM-DD')).first() ?? null
-    plan.value = await buildTodayPlanCached()
+    ;[plan.value, readingHistory.value] = await Promise.all([buildTodayPlanCached(), listReadingHistory()])
     if (session.value) {
       const [attemptCount, pendingCount] = await Promise.all([
         db.dailyQueueAttempts.where('sessionId').equals(session.value.sessionId).count(),
@@ -89,6 +93,11 @@ onActivated(() => {
         </div>
         <p v-if="recoveryText" class="recovery-note">{{ recoveryText }}</p>
         <button class="btn btn-primary study-primary" :disabled="session?.status === 'completed'" type="button" @click="start">{{ buttonLabel }}</button>
+      </section>
+
+      <section v-if="latestReading" class="panel reading-resume-panel">
+        <div><p class="eyebrow">语境阅读</p><h2>{{ latestReading.title || '已生成的文章' }}</h2><p class="muted">{{ latestReading.dayKey }} · {{ latestReading.targetWordIds.length }} 个目标词</p></div>
+        <div class="actions"><RouterLink v-if="canResumeLatestReading" class="btn btn-primary" :to="{ path: '/review/reading', query: { session: `daily:${latestReading.dayKey}`, batch: latestReading.batchIndex } }">继续阅读</RouterLink><RouterLink class="btn" to="/review/reading/history">文章记录</RouterLink></div>
       </section>
 
       <section class="panel">

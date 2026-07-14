@@ -96,6 +96,9 @@ const dictionarySummary = computed(() => {
   return `词库 ${installedMeta.value.entryCount.toLocaleString()} 条`
 })
 const dictionaryProgress = computed(() => Math.round((progress.value?.ratio ?? 0) * 100))
+const readingReturnTo = computed(() => typeof route.query.returnTo === 'string' && route.query.returnTo.startsWith('/review/reading')
+  ? route.query.returnTo
+  : '')
 
 async function retryDictionaryInstall() {
   await dictionaryStore.installDefaultDictionary()
@@ -226,6 +229,9 @@ onMounted(async () => {
 })
 
 onActivated(async () => {
+  if (typeof route.query.q === 'string' && route.query.q.trim() && route.query.q.trim() !== query.value) {
+    query.value = route.query.q.trim()
+  }
   studyLists.value = (await listStudyLists()).filter((list) => list.systemType !== 'lookup')
   if (!studyLists.value.some((list) => list.listId === selectedStudyListId.value)) {
     selectedStudyListId.value = studyLists.value.find((list) => list.studyEnabled)?.listId ?? studyLists.value[0]?.listId ?? ''
@@ -478,6 +484,10 @@ function parseLines(raw: string): string[] {
 
 <template>
   <section class="panel lookup-panel">
+    <aside v-if="readingReturnTo" class="reading-return-banner">
+      <span>查词不会清除文章进度</span>
+      <button class="btn" type="button" @click="$router.push(readingReturnTo)">返回文章</button>
+    </aside>
     <section v-if="!installedMeta" class="dictionary-setup" aria-live="polite">
       <template v-if="installing">
         <h2>正在安装核心词典</h2>

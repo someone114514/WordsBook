@@ -232,7 +232,7 @@ export interface ReadingSession {
   level: AppSettings['articleLevel']
   topic: string
   targetWordIds: string[]
-  status: 'pending' | 'streaming' | 'ready' | 'failed' | 'completed' | 'skipped'
+  status: 'pending' | 'streaming' | 'enriching' | 'ready' | 'failed' | 'completed' | 'skipped'
   title?: string
   segmentsJson: string
   targetsJson: string
@@ -241,6 +241,9 @@ export interface ReadingSession {
   createdAt: string
   updatedAt: string
   streamedParagraphs?: number
+  readerStage?: 0 | 1 | 2
+  showTranslation?: boolean
+  lastOpenedAt?: string
 }
 
 export interface ContextAttempt {

@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { db } from '../../db/database'
 import type { ReadingTarget, ReviewLog } from '../../types/models'
-import { buildReadingTargetBatches, generateReadingSession, recordContextAttempt } from './readingService'
+import { buildReadingTargetBatches, generateReadingSession, listReadingHistory, recordContextAttempt, resetReadingSessionAttempts, saveReadingProgress } from './readingService'
 
 function log(wordId: string, rating: ReviewLog['rating'], wasNew = false): ReviewLog {
   return {
@@ -59,23 +59,31 @@ describe('reading target selection and context feedback', () => {
     ])
     await db.dictionaryEntries.put({ entryId: 'e1', headword: 'resilient', headwordLower: 'resilient', posList: ['adj'], sensesJson: '["有韧性的"]', examplesJson: '[]', usageJson: '[]' })
     await db.wordbook.put({ wordId: 'w1', entryId: 'e1', addedAt: '2026-07-13T00:00:00.000Z', note: '', tags: [], archived: 0 })
-    const streamResponse = (lines: unknown[]) => new Response(lines.map((line) => `data: ${JSON.stringify({ choices: [{ delta: { content: `${JSON.stringify(line)}\n` } }] })}\n\n`).join(''))
+    const passageStream = (article: string) => {
+      const json = JSON.stringify({ article })
+      const chunks = json.match(/.{1,12}/g) ?? [json]
+      return new Response(chunks.map((content) => `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`).join(''))
+    }
+    const detailsResponse = new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+      title: 'A Test',
+      targets: [{ wordId: 'w1', headword: 'resilient', contextualMeaning: '有韧性的', choices: ['有韧性的', '迟缓的', '安静的'], explanation: '面对困难仍能恢复。' }],
+      translation: '她保持坚韧。',
+    }) } }] }), { headers: { 'Content-Type': 'application/json' } })
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(streamResponse([{ type: 'meta', title: 'Incomplete' }]))
-      .mockResolvedValueOnce(streamResponse([
-        { type: 'meta', title: 'A Test', level: 'B2', targetWordIds: ['w1'] },
-        { type: 'paragraph', text: 'She stayed resilient.' },
-        { type: 'target', wordId: 'w1', headword: 'resilient', contextualMeaning: '有韧性的', choices: ['有韧性的', '迟缓的', '安静的'], explanation: '面对困难仍能恢复。' },
-        { type: 'translation', text: '她保持坚韧。' },
-        { type: 'done' },
-      ]))
+      .mockResolvedValueOnce(passageStream('She stayed calm.'))
+      .mockResolvedValueOnce(passageStream('She stayed resilient.'))
+      .mockResolvedValueOnce(detailsResponse)
     vi.stubGlobal('fetch', fetchMock)
     const staleWordId = 'd7d467fe-fd5e-48e7-81c8-e64b242c8a9b'
-    const session = await generateReadingSession({ dayKey: '2026-07-13', batchIndex: 0, seed: 9, wordIds: ['w1', staleWordId], level: 'B2' })
+    const streamed: string[] = []
+    const session = await generateReadingSession({ dayKey: '2026-07-13', batchIndex: 0, seed: 9, wordIds: ['w1', staleWordId], level: 'B2', onProgress: (progress) => streamed.push(progress.rawText) })
     expect(session.status).toBe('ready')
     expect(session.targetWordIds).toEqual(['w1'])
     expect(String(fetchMock.mock.calls[0]?.[1]?.body)).not.toContain(staleWordId)
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(streamed.some((text) => text.includes('resilient'))).toBe(true)
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).response_format).toEqual({ type: 'json_object' })
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body)).response_format).toEqual({ type: 'json_object' })
     expect((await db.readingSessions.get(session.sessionId))?.title).toBe('A Test')
   })
 
@@ -84,21 +92,53 @@ describe('reading target selection and context feedback', () => {
     await db.settings.bulkPut([{ key: 'deepseekBaseUrl', value: 'https://example.test/chat' }, { key: 'deepseekModel', value: 'test-model' }])
     await db.dictionaryEntries.put({ entryId: 'core:marker', headword: 'marker', headwordLower: 'marker', posList: ['n'], sensesJson: '["标记物"]', examplesJson: '[]', usageJson: '[]' })
     await db.wordbook.put({ wordId: 'stable-marker-id', entryId: 'core:marker', headword: 'marker', headwordLower: 'marker', addedAt: '2026-07-13T00:00:00.000Z', note: '', tags: [], archived: 0 })
-    const stream = (choices: string[]) => new Response([
-      { type: 'meta', title: 'Markers', level: 'B2', targetWordIds: ['stable-marker-id'] },
-      { type: 'paragraph', text: 'A marker showed the path.' },
-      { type: 'target', wordId: 'stable-marker-id', headword: 'marker', contextualMeaning: '标记物', choices, explanation: '用于指示位置。' },
-      { type: 'translation', text: '一个标记物指出了道路。' },
-      { type: 'done' },
-    ].map((line) => `data: ${JSON.stringify({ choices: [{ delta: { content: `${JSON.stringify(line)}\n` } }] })}\n\n`).join(''))
+    const passageJson = JSON.stringify({ article: 'A marker showed the path.' })
+    const stream = new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: passageJson } }] })}\n\n`)
+    const detailsResponse = (choices: string[]) => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ title: 'Markers', targets: [{ wordId: 'stable-marker-id', headword: 'marker', contextualMeaning: '标记物', choices, explanation: '用于指示位置。' }], translation: '一个标记物指出了道路。' }) } }] }), { headers: { 'Content-Type': 'application/json' } })
     const repairResponse = new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ targets: [{ wordId: 'stable-marker-id', choices: ['标记物', '饮用容器', '交通工具'], explanation: '用于指示位置。' }] }) } }] }), { headers: { 'Content-Type': 'application/json' } })
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(stream(['标记物', '标记的物体', '安静地点']))
+      .mockResolvedValueOnce(stream)
+      .mockResolvedValueOnce(detailsResponse(['标记物', '标记的物体', '安静地点']))
       .mockResolvedValueOnce(repairResponse)
     vi.stubGlobal('fetch', fetchMock)
     const session = await generateReadingSession({ dayKey: '2026-07-13', batchIndex: 1, seed: 0, wordIds: ['stable-marker-id'], level: 'B2' })
     expect(session.status).toBe('ready')
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
     expect(session.segmentsJson).not.toMatch(/[0-9a-f]{8}-[0-9a-f-]{27,}/i)
+  })
+
+  it('keeps a valid streamed article when details fail and retries details only', async () => {
+    await db.localSecrets.put({ key: 'deepseekApiKey', value: 'test-key' })
+    await db.settings.bulkPut([{ key: 'deepseekBaseUrl', value: 'https://example.test/chat' }, { key: 'deepseekModel', value: 'test-model' }])
+    await db.dictionaryEntries.put({ entryId: 'e1', headword: 'resilient', headwordLower: 'resilient', posList: ['adj'], sensesJson: '["有韧性的"]', examplesJson: '[]', usageJson: '[]' })
+    await db.wordbook.put({ wordId: 'w1', entryId: 'e1', addedAt: '2026-07-13T00:00:00.000Z', note: '', tags: [], archived: 0 })
+    const stream = new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify({ article: 'She stayed resilient.' }) } }] })}\n\n`)
+    const invalidDetails = () => new Response(JSON.stringify({ choices: [{ message: { content: '{}' } }] }))
+    const validDetails = new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ title: 'Resilience', targets: [{ wordId: 'w1', headword: 'resilient', contextualMeaning: '有韧性的', choices: ['有韧性的', '潮湿的', '昂贵的'], explanation: '能够从困难中恢复。' }], translation: '她保持坚韧。' }) } }] }))
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(stream)
+      .mockResolvedValueOnce(invalidDetails())
+      .mockResolvedValueOnce(invalidDetails())
+      .mockResolvedValueOnce(validDetails)
+    vi.stubGlobal('fetch', fetchMock)
+
+    const failed = await generateReadingSession({ dayKey: '2026-07-13', batchIndex: 2, seed: 0, wordIds: ['w1'] })
+    expect(failed.status).toBe('failed')
+    expect(failed.segmentsJson).toContain('resilient')
+    const recovered = await generateReadingSession({ dayKey: '2026-07-13', batchIndex: 2, seed: 0, wordIds: ['w1'] })
+    expect(recovered.status).toBe('ready')
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+    expect(JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body)).stream).toBe(false)
+  })
+
+  it('persists reader progress and clears old answers before regeneration', async () => {
+    const now = '2026-07-13T08:00:00.000Z'
+    await db.readingSessions.put({ sessionId: 'reading:test', dayKey: '2026-07-13', batchIndex: 0, selectionSeed: 0, level: 'B2', topic: '', targetWordIds: ['w1'], status: 'ready', title: 'Test', segmentsJson: '[{"text":"A word."}]', targetsJson: '[]', translation: '', createdAt: now, updatedAt: now })
+    await db.contextAttempts.put({ attemptId: 'reading:test:w1', sessionId: 'reading:test', wordId: 'w1', selectedMeaning: '旧答案', result: 'wrong', answeredAt: now })
+
+    await saveReadingProgress('reading:test', 1, true)
+    expect(await listReadingHistory()).toEqual([expect.objectContaining({ sessionId: 'reading:test', readerStage: 1, showTranslation: true })])
+    await resetReadingSessionAttempts('reading:test')
+    expect(await db.contextAttempts.where('sessionId').equals('reading:test').count()).toBe(0)
   })
 })

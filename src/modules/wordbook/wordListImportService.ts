@@ -11,6 +11,22 @@ interface ImportRow {
   tags: string[]
 }
 
+export const WORD_LIST_JSON_EXAMPLE = `{
+  "words": [
+    {
+      "word": "resilient",
+      "meaning": "有韧性的；能迅速恢复的",
+      "note": "写作重点词",
+      "tags": ["写作", "B2"]
+    },
+    {
+      "word": "context",
+      "meaning": "语境；上下文",
+      "tags": ["阅读"]
+    }
+  ]
+}`
+
 function normalizeImportedTerm(input: string): string {
   return input.trim().toLowerCase().replace(/[^a-z'\-\s]/g, '').replace(/\s+/g, ' ')
 }
@@ -36,7 +52,38 @@ function parseDelimitedLine(line: string, delimiter: string): string[] {
 }
 
 export function parseWordListText(raw: string): ImportRow[] {
-  const lines = raw.replace(/^\uFEFF/, '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+  const normalizedRaw = raw.replace(/^\uFEFF/, '').trim()
+  if (!normalizedRaw) return []
+  if (normalizedRaw.startsWith('{') || normalizedRaw.startsWith('[')) {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(normalizedRaw)
+    } catch (error) {
+      throw new Error(`JSON 格式错误：${error instanceof Error ? error.message : '无法解析'}`)
+    }
+    const container = Array.isArray(parsed)
+      ? parsed
+      : parsed && typeof parsed === 'object'
+        ? ((parsed as Record<string, unknown>).words ?? (parsed as Record<string, unknown>).items ?? [parsed])
+        : []
+    if (!Array.isArray(container)) throw new Error('JSON 需要是数组，或包含 words/items 数组')
+    return container.map((value) => {
+      if (typeof value === 'string') return { word: value, meaning: '', note: '', tags: [] }
+      if (!value || typeof value !== 'object') return { word: '', meaning: '', note: '', tags: [] }
+      const row = value as Record<string, unknown>
+      const meaningValue = row.meaning ?? row.definition ?? row['释义'] ?? ''
+      const tagsValue = row.tags ?? row['标签'] ?? []
+      return {
+        word: String(row.word ?? row.term ?? row['单词'] ?? '').trim(),
+        meaning: Array.isArray(meaningValue) ? meaningValue.map(String).join('；') : String(meaningValue ?? '').trim(),
+        note: String(row.note ?? row['备注'] ?? '').trim(),
+        tags: Array.isArray(tagsValue)
+          ? tagsValue.map(String).map((tag) => tag.trim()).filter(Boolean)
+          : String(tagsValue ?? '').split(/[;，,]/).map((tag) => tag.trim()).filter(Boolean),
+      }
+    })
+  }
+  const lines = normalizedRaw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
   if (!lines.length) return []
   const delimiter = lines.some((line) => line.includes('\t')) ? '\t' : lines.some((line) => line.includes(',')) ? ',' : ''
   const first = delimiter ? parseDelimitedLine(lines[0]!, delimiter) : [lines[0]!]

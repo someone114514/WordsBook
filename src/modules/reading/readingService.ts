@@ -10,7 +10,7 @@ import type {
 } from '../../types/models'
 import { normalizeReviewRating } from '../review/scheduler'
 import { loadSettings } from '../settings/settingsService'
-import { markPayloadChanged } from '../sync/localSyncStore'
+import { markPayloadChanged, markRecordDeleted } from '../sync/localSyncStore'
 import { parseJsonArray } from '../../utils/json'
 import { enqueueContextRetry } from '../review/dailyQueueService'
 import { dictionaryEntryFromWordbook, isUsableVocabularyHeadword, repairVocabularyIntegrity } from '../wordbook/vocabularyIntegrity'
@@ -22,7 +22,13 @@ interface AiReadingResponse {
   translation?: string
 }
 
-const activeGenerations = new Map<string, Promise<ReadingSession>>()
+interface ActiveGeneration {
+  promise: Promise<ReadingSession>
+  listeners: Set<(progress: StreamProgress) => void>
+  lastProgress?: StreamProgress
+}
+
+const activeGenerations = new Map<string, ActiveGeneration>()
 
 function isUsableHeadword(value: string | undefined): value is string {
   return isUsableVocabularyHeadword(value)
@@ -41,6 +47,15 @@ function cachedSessionHasValidTargets(session: ReadingSession): boolean {
       && targets.length > 0
       && targets.every((target) => isUsableHeadword(target.headword) && target.headword !== target.wordId)
   } catch { return false }
+}
+
+function cachedPassage(session: ReadingSession | undefined): string {
+  if (!session) return ''
+  try {
+    return (JSON.parse(session.segmentsJson) as ReadingSegment[]).map((segment) => segment.text).join('').trim()
+  } catch {
+    return ''
+  }
 }
 
 function hash(input: string): number {
@@ -149,6 +164,7 @@ async function repairTargetChoices(
         model: settings.deepseekModel,
         stream: false,
         response_format: { type: 'json_object' },
+        max_tokens: 1800,
         temperature: 0.4,
         messages: [{ role: 'user', content: `Repair only the multiple-choice options for these vocabulary targets: ${JSON.stringify(targets)}. Return JSON {"targets":[{"wordId":"...","choices":["three concise Simplified Chinese choices including the exact contextualMeaning"],"explanation":"..."}]}. Distractors must have the same part of speech but clearly different meanings. Do not use synonyms, paraphrases, shared two-character meaning stems, or degree-only differences.` }],
       }),
@@ -165,26 +181,79 @@ async function repairTargetChoices(
   }
 }
 
-function buildPrompt(
+function buildPassagePrompt(
   rows: Array<{ wordId: string; headword: string; senses: string[] }>,
   level: AppSettings['articleLevel'],
   topic: string,
 ): string {
-  return `Create one coherent English reading passage at CEFR ${level} level${topic ? ` about ${topic}` : ''}.
-Use every target naturally and do not omit any. Stream newline-delimited JSON (NDJSON). Output one complete JSON object per line and no markdown.
-Targets: ${JSON.stringify(rows)}
-The target event headword must exactly copy the matching Targets.headword. Never display or use wordId as an English word.
-Lines in this exact order:
-{"type":"meta","title":"string","level":"${level}","targetWordIds":["ids"]}
-{"type":"paragraph","text":"one paragraph"} (one or more lines)
-{"type":"target","wordId":"string","headword":"string","contextualMeaning":"concise Simplified Chinese meaning","choices":["exactly three distinct Simplified Chinese choices including contextualMeaning"],"explanation":"concise Simplified Chinese explanation"} (one per target)
-{"type":"translation","text":"complete Simplified Chinese translation"}
-{"type":"done"}
-For each target, make the two distractors plausible and the same part of speech, but from clearly different semantic categories. Never use synonyms, near-synonyms, paraphrases, degree-only differences, or options that differ by just one modifier. Keep all three choices short and easy to distinguish.
-Avoid factual claims that require current information.`
+  return `Write one coherent English reading passage at CEFR ${level}${topic ? ` about ${topic}` : ''}.
+Use every target headword exactly as written and naturally in context: ${JSON.stringify(rows.map((row) => row.headword))}.
+Return exactly one JSON object: {"article":"2-5 short English paragraphs"}. The article value must contain only the passage正文. Do not include a title, markdown, target IDs, vocabulary lists, explanations, translations, or notes. Avoid current-event claims.`
 }
 
-type StreamProgress = { title?: string; paragraphs: string[]; targetCount: number }
+function buildDetailsPrompt(
+  rows: Array<{ wordId: string; headword: string; senses: string[] }>,
+  passage: string,
+): string {
+  return `Based only on this fixed English passage, create vocabulary questions and a Chinese translation.
+PASSAGE:
+${passage}
+TARGETS:
+${JSON.stringify(rows)}
+Return one JSON object with this exact shape:
+{"title":"concise English title","targets":[{"wordId":"copy exact target id","headword":"copy exact target headword","contextualMeaning":"concise Simplified Chinese meaning in this passage","choices":["exactly three distinct Simplified Chinese choices including contextualMeaning"],"explanation":"concise Simplified Chinese explanation"}],"translation":"complete Simplified Chinese translation"}
+Return every target exactly once. Each distractor must have the same part of speech but a clearly different semantic category. Do not use synonyms, near-synonyms, paraphrases, shared two-character meaning stems, or degree-only differences.`
+}
+
+export type StreamProgress = {
+  phase: 'article' | 'details'
+  rawText: string
+  paragraphs: string[]
+  targetCount: number
+}
+
+function splitPassage(raw: string): string[] {
+  const normalized = raw.replace(/^```(?:text|english)?\s*/i, '').replace(/```\s*$/i, '').trim()
+  return normalized ? normalized.split(/\n\s*\n/).map((paragraph) => paragraph.trim()).filter(Boolean) : []
+}
+
+function extractStreamingArticle(rawJson: string): string {
+  const field = /"article"\s*:\s*"/.exec(rawJson)
+  if (!field) return ''
+  let output = ''
+  for (let index = field.index + field[0].length; index < rawJson.length; index += 1) {
+    const char = rawJson[index]!
+    if (char === '"') break
+    if (char !== '\\') {
+      output += char
+      continue
+    }
+    const escaped = rawJson[index + 1]
+    if (!escaped) break
+    if (escaped === 'n') output += '\n'
+    else if (escaped === 'r') output += '\r'
+    else if (escaped === 't') output += '\t'
+    else if (escaped === '"' || escaped === '\\' || escaped === '/') output += escaped
+    else if (escaped === 'u') {
+      const code = rawJson.slice(index + 2, index + 6)
+      if (!/^[0-9a-f]{4}$/i.test(code)) break
+      output += String.fromCharCode(Number.parseInt(code, 16))
+      index += 4
+    }
+    index += 1
+  }
+  return output
+}
+
+function passageIncludesHeadword(passage: string, headword: string): boolean {
+  const escaped = headword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')
+  return new RegExp(`(^|[^A-Za-z])${escaped}(?=$|[^A-Za-z])`, 'i').test(passage)
+}
+
+function apiError(status: number): Error {
+  const messages: Record<number, string> = { 401: 'DeepSeek Key 无效，请到设置中更新', 402: 'DeepSeek 余额不足，请充值后重试', 429: '请求过多，请稍后重试' }
+  return new Error(messages[status] ?? (status >= 500 ? 'DeepSeek 服务暂时不可用，请稍后重试' : `文章生成失败（HTTP ${status}）`))
+}
 
 function buildSegments(paragraphs: string[], targets: ReadingTarget[]): ReadingSegment[] {
   const targetByWord = [...targets].sort((a, b) => b.headword.length - a.headword.length)
@@ -206,12 +275,12 @@ function buildSegments(paragraphs: string[], targets: ReadingTarget[]): ReadingS
   })
 }
 
-async function requestArticle(
+async function requestPassage(
   settings: AppSettings,
   prompt: string,
   onProgress?: (progress: StreamProgress) => void,
   externalSignal?: AbortSignal,
-): Promise<AiReadingResponse> {
+): Promise<string> {
   if (!settings.deepseekApiKey.trim()) throw new Error('请先在设置页填写 DeepSeek API Key')
   const controller = new AbortController()
   externalSignal?.addEventListener('abort', () => controller.abort(), { once: true })
@@ -231,33 +300,22 @@ async function requestArticle(
       model: settings.deepseekModel,
       messages: [{ role: 'user', content: prompt }],
       stream: true,
-      temperature: 0.6,
+      response_format: { type: 'json_object' },
+      max_tokens: 2400,
+      temperature: 0.5,
     }),
     signal: controller.signal,
   })
-  if (!response.ok) {
-    window.clearTimeout(stallTimer); window.clearTimeout(totalTimer)
-    const messages: Record<number, string> = { 401: 'DeepSeek Key 无效，请到设置中更新', 402: 'DeepSeek 余额不足，请充值后重试', 429: '请求过多，请稍后重试' }
-    throw new Error(messages[response.status] ?? (response.status >= 500 ? 'DeepSeek 服务暂时不可用，请稍后重试' : `文章生成失败（HTTP ${response.status}）`))
+  if (!response.ok) { window.clearTimeout(stallTimer); window.clearTimeout(totalTimer); throw apiError(response.status) }
+  if (!response.body) {
+    window.clearTimeout(stallTimer)
+    window.clearTimeout(totalTimer)
+    throw new Error('浏览器无法读取流式响应')
   }
-  if (!response.body) throw new Error('浏览器无法读取流式响应')
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let sseBuffer = ''
-  let ndjsonBuffer = ''
-  let title = ''
-  const paragraphs: string[] = []
-  const targets: ReadingTarget[] = []
-  let translation = ''
-  const consumeEvent = (line: string) => {
-    if (!line.trim()) return
-    const event = JSON.parse(line) as Record<string, unknown>
-    if (event.type === 'meta') title = String(event.title ?? '')
-    if (event.type === 'paragraph') paragraphs.push(String(event.text ?? ''))
-    if (event.type === 'target') targets.push(event as unknown as ReadingTarget)
-    if (event.type === 'translation') translation = String(event.text ?? '')
-    onProgress?.({ title, paragraphs: [...paragraphs], targetCount: targets.length })
-  }
+  let jsonBuffer = ''
   try {
     while (true) {
       const { done, value } = await reader.read()
@@ -272,13 +330,11 @@ async function requestArticle(
         const data = line.slice(5).trim()
         if (!data || data === '[DONE]') continue
         const payload = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> }
-        ndjsonBuffer += payload.choices?.[0]?.delta?.content ?? ''
-        const eventLines = ndjsonBuffer.split(/\r?\n/)
-        ndjsonBuffer = eventLines.pop() ?? ''
-        for (const eventLine of eventLines) consumeEvent(eventLine)
+        jsonBuffer += payload.choices?.[0]?.delta?.content ?? ''
+        const passage = extractStreamingArticle(jsonBuffer)
+        onProgress?.({ phase: 'article', rawText: passage, paragraphs: splitPassage(passage), targetCount: 0 })
       }
     }
-    if (ndjsonBuffer.trim()) consumeEvent(ndjsonBuffer)
   } catch (error) {
     if (timeoutMessage) throw new Error(timeoutMessage)
     if (externalSignal?.aborted) throw new Error('已取消文章生成')
@@ -286,7 +342,62 @@ async function requestArticle(
   } finally {
     window.clearTimeout(stallTimer); window.clearTimeout(totalTimer)
   }
-  return { title, segments: buildSegments(paragraphs, targets), targets, translation }
+  let passage = extractStreamingArticle(jsonBuffer)
+  try {
+    const parsed = JSON.parse(jsonBuffer) as { article?: string }
+    passage = parsed.article ?? passage
+  } catch {
+    // The incremental decoder still provides a useful error/retry path for truncated JSON.
+  }
+  const normalized = splitPassage(passage).join('\n\n')
+  if (!normalized) throw new Error('AI 没有返回文章正文，请重试')
+  return normalized
+}
+
+async function requestDetails(
+  settings: AppSettings,
+  prompt: string,
+  passage: string,
+  onProgress?: (progress: StreamProgress) => void,
+  externalSignal?: AbortSignal,
+): Promise<Pick<Required<AiReadingResponse>, 'title' | 'targets' | 'translation'>> {
+  const controller = new AbortController()
+  externalSignal?.addEventListener('abort', () => controller.abort(), { once: true })
+  const timer = window.setTimeout(() => controller.abort(), 60_000)
+  onProgress?.({ phase: 'details', rawText: passage, paragraphs: splitPassage(passage), targetCount: 0 })
+  try {
+    const response = await fetch(settings.deepseekBaseUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${settings.deepseekApiKey.trim()}` },
+      body: JSON.stringify({
+        model: settings.deepseekModel,
+        messages: [{ role: 'user', content: prompt }],
+        stream: false,
+        response_format: { type: 'json_object' },
+        max_tokens: 4200,
+        temperature: 0.35,
+      }),
+      signal: controller.signal,
+    })
+    if (!response.ok) throw apiError(response.status)
+    const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> }
+    const content = payload.choices?.[0]?.message?.content?.trim()
+    if (!content) throw new Error('AI 没有返回题目与翻译')
+    const json = content.replace(/^```json\s*/i, '').replace(/```\s*$/i, '')
+    const parsed = JSON.parse(json) as { title?: string; targets?: ReadingTarget[]; translation?: string }
+    if (!parsed.title || !Array.isArray(parsed.targets) || !parsed.translation
+      || parsed.targets.some((target) => !target.wordId || !target.contextualMeaning || !Array.isArray(target.choices) || target.choices.length !== 3)) {
+      throw new Error('题目与翻译结构不完整')
+    }
+    onProgress?.({ phase: 'details', rawText: passage, paragraphs: splitPassage(passage), targetCount: parsed.targets.length })
+    return { title: parsed.title, targets: parsed.targets, translation: parsed.translation }
+  } catch (error) {
+    if (externalSignal?.aborted) throw new Error('已取消文章生成')
+    if (controller.signal.aborted) throw new Error('题目与翻译生成超时，请重试')
+    throw error
+  } finally {
+    window.clearTimeout(timer)
+  }
 }
 
 async function generateReadingSessionImpl(options: {
@@ -326,6 +437,7 @@ async function generateReadingSessionImpl(options: {
   }
   const validWordIds = promptRows.map((row) => row.wordId)
   const now = new Date().toISOString()
+  const reusablePassage = options.force ? '' : cachedPassage(existing)
   let session: ReadingSession = {
     sessionId,
     dayKey: options.dayKey,
@@ -334,49 +446,83 @@ async function generateReadingSessionImpl(options: {
     level,
     topic: options.topic?.trim() ?? '',
     targetWordIds: validWordIds,
-    status: 'streaming',
-    segmentsJson: '[]',
+    status: reusablePassage ? 'enriching' : 'streaming',
+    segmentsJson: reusablePassage ? JSON.stringify([{ text: reusablePassage }]) : '[]',
     targetsJson: '[]',
     translation: '',
     createdAt: existing?.createdAt ?? now,
+    readerStage: existing?.readerStage ?? 0,
+    showTranslation: existing?.showTranslation ?? false,
     updatedAt: now,
   }
   await db.readingSessions.put(session)
   await markPayloadChanged('readingSessions', session, session.updatedAt)
   try {
     if (!validWordIds.length) throw new Error('今天的目标词资料不完整，请重新查词或安装词典后重试')
-    let generated: AiReadingResponse | undefined
-    let lastError: unknown
+    let passage = reusablePassage
+    if (!passage) {
+      let passageError: unknown
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const candidate = await requestPassage(settings, buildPassagePrompt(promptRows, level, session.topic), options.onProgress, options.signal)
+          const missing = promptRows.filter((row) => !passageIncludesHeadword(candidate, row.headword))
+          if (missing.length) throw new Error(`正文缺少目标词：${missing.map((row) => row.headword).join('、')}`)
+          passage = candidate
+          break
+        } catch (error) {
+          passageError = error
+          if (options.signal?.aborted) break
+        }
+      }
+      if (!passage) throw passageError
+    }
+    session = {
+      ...session,
+      status: 'enriching',
+      segmentsJson: JSON.stringify([{ text: passage }]),
+      streamedParagraphs: splitPassage(passage).length,
+      error: undefined,
+      updatedAt: new Date().toISOString(),
+    }
+    await db.readingSessions.put(session)
+    await markPayloadChanged('readingSessions', session, session.updatedAt)
+    options.onProgress?.({ phase: 'details', rawText: passage, paragraphs: splitPassage(passage), targetCount: 0 })
+
+    let details: Awaited<ReturnType<typeof requestDetails>> | undefined
+    let detailsError: unknown
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        generated = await requestArticle(settings, buildPrompt(promptRows, level, session.topic), options.onProgress, options.signal)
-        const expectedHeadwords = new Map(promptRows.map((row) => [row.wordId, row.headword]))
-        generated.targets = generated.targets?.map((target) => ({
-          ...target,
-          headword: expectedHeadwords.get(target.wordId) ?? target.headword,
-          choices: [...target.choices].sort((left, right) => hash(`${sessionId}:${target.wordId}:${left}`) - hash(`${sessionId}:${target.wordId}:${right}`)),
-        }))
-        const invalidTargets = generated.targets?.filter((target) => !hasDistinctChoices(target)) ?? []
-        if (invalidTargets.length) {
-          const repairedChoices = await repairTargetChoices(settings, invalidTargets, options.signal)
-          generated.targets = generated.targets?.map((target) => {
-            const repair = repairedChoices.get(target.wordId)
-            if (!repair) return target
-            return {
-              ...target,
-              choices: [...repair.choices].sort((left, right) => hash(`${sessionId}:${target.wordId}:${left}`) - hash(`${sessionId}:${target.wordId}:${right}`)),
-              explanation: repair.explanation || target.explanation,
-            }
-          })
-        }
-        validateResponse(generated, validWordIds)
+        details = await requestDetails(settings, buildDetailsPrompt(promptRows, passage), passage, options.onProgress, options.signal)
         break
       } catch (error) {
-        lastError = error
+        detailsError = error
         if (options.signal?.aborted) break
       }
     }
-    if (!generated) throw lastError
+    if (!details) throw detailsError
+    const generated: AiReadingResponse = {
+      ...details,
+      segments: buildSegments(splitPassage(passage), details.targets),
+    }
+    const expectedHeadwords = new Map(promptRows.map((row) => [row.wordId, row.headword]))
+    generated.targets = generated.targets?.map((target) => ({
+      ...target,
+      headword: expectedHeadwords.get(target.wordId) ?? target.headword,
+      choices: [...target.choices].sort((left, right) => hash(`${sessionId}:${target.wordId}:${left}`) - hash(`${sessionId}:${target.wordId}:${right}`)),
+    }))
+    const invalidTargets = generated.targets?.filter((target) => !hasDistinctChoices(target)) ?? []
+    if (invalidTargets.length) {
+      const repairedChoices = await repairTargetChoices(settings, invalidTargets, options.signal)
+      generated.targets = generated.targets?.map((target) => {
+        const repair = repairedChoices.get(target.wordId)
+        if (!repair) return target
+        return {
+          ...target,
+          choices: [...repair.choices].sort((left, right) => hash(`${sessionId}:${target.wordId}:${left}`) - hash(`${sessionId}:${target.wordId}:${right}`)),
+          explanation: repair.explanation || target.explanation,
+        }
+      })
+    }
     validateResponse(generated, validWordIds)
     session = {
       ...session,
@@ -409,9 +555,36 @@ export function generateReadingSession(options: {
 }): Promise<ReadingSession> {
   const sessionId = `reading:${options.dayKey}:${options.seed}:${options.batchIndex}`
   const active = activeGenerations.get(sessionId)
-  if (active && !options.force) return active
-  const task = generateReadingSessionImpl(options).finally(() => activeGenerations.delete(sessionId))
-  activeGenerations.set(sessionId, task)
+  if (active && !options.force) {
+    if (options.onProgress) {
+      active.listeners.add(options.onProgress)
+      if (active.lastProgress) options.onProgress(active.lastProgress)
+    }
+    if (!options.signal) return active.promise
+    return new Promise<ReadingSession>((resolve, reject) => {
+      const detach = () => {
+        if (options.onProgress) active.listeners.delete(options.onProgress)
+        options.signal?.removeEventListener('abort', onAbort)
+      }
+      const onAbort = () => { detach(); reject(new Error('已取消文章生成')) }
+      if (options.signal!.aborted) return onAbort()
+      options.signal!.addEventListener('abort', onAbort, { once: true })
+      active.promise.then((result) => { detach(); resolve(result) }, (error) => { detach(); reject(error) })
+    })
+  }
+  const listeners = new Set<(progress: StreamProgress) => void>()
+  if (options.onProgress) listeners.add(options.onProgress)
+  const state = {} as ActiveGeneration
+  const onProgress = (progress: StreamProgress) => {
+    state.lastProgress = progress
+    for (const listener of state.listeners) listener(progress)
+  }
+  const task = generateReadingSessionImpl({ ...options, onProgress }).finally(() => {
+    if (activeGenerations.get(sessionId) === state) activeGenerations.delete(sessionId)
+  })
+  state.promise = task
+  state.listeners = listeners
+  activeGenerations.set(sessionId, state)
   return task
 }
 
@@ -451,6 +624,30 @@ export async function recordContextAttempt(
 
 export async function loadContextAttempts(sessionId: string): Promise<ContextAttempt[]> {
   return db.contextAttempts.where('sessionId').equals(sessionId).toArray()
+}
+
+export async function saveReadingProgress(
+  sessionId: string,
+  readerStage: 0 | 1 | 2,
+  showTranslation: boolean,
+): Promise<void> {
+  const session = await db.readingSessions.get(sessionId)
+  if (!session) return
+  const now = new Date().toISOString()
+  const updated: ReadingSession = { ...session, readerStage, showTranslation, lastOpenedAt: now, updatedAt: now }
+  await db.readingSessions.put(updated)
+  await markPayloadChanged('readingSessions', updated, now)
+}
+
+export async function resetReadingSessionAttempts(sessionId: string): Promise<void> {
+  const attempts = await db.contextAttempts.where('sessionId').equals(sessionId).toArray()
+  await db.contextAttempts.where('sessionId').equals(sessionId).delete()
+  const now = new Date().toISOString()
+  for (const attempt of attempts) await markRecordDeleted('contextAttempts', attempt.attemptId, now)
+}
+
+export async function listReadingHistory(): Promise<ReadingSession[]> {
+  return db.readingSessions.orderBy('updatedAt').reverse().toArray()
 }
 
 export function parseReadingSession(session: ReadingSession): { segments: ReadingSegment[]; targets: ReadingTarget[] } {
