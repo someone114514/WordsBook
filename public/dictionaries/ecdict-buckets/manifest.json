@@ -1,0 +1,303 @@
+{
+  "id": "ecdict-full-buckets",
+  "version": "2026.07.13-gzip-prefix-v1",
+  "entryCount": 770611,
+  "buckets": [
+    {
+      "prefix": "0",
+      "path": "bucket-30.jsonl.gz",
+      "count": 1,
+      "size": 263,
+      "sha256": "53c8147fa8f18616f5aba111f0da3e8b2b24b2922f7e87be2efa9e8c339bcb3b",
+      "contentSha256": "4328e620e35e22edaf4c9f07318531c91ad25867be138a0005cc045829cc9a30"
+    },
+    {
+      "prefix": "1",
+      "path": "bucket-31.jsonl.gz",
+      "count": 32,
+      "size": 1290,
+      "sha256": "5c7a960d011050240871047e0a84fafd103a88d32b4a3b2932a20f72382a31d1",
+      "contentSha256": "1c8ed062cbfcb2a461d65849888eaa002acabaf5b0ea7a4b92aae34177f95e18"
+    },
+    {
+      "prefix": "2",
+      "path": "bucket-32.jsonl.gz",
+      "count": 16,
+      "size": 863,
+      "sha256": "344afe3b195d8e9b2f11a2e4d01456d34adac88c1070bdeaf98eb46c493cd56b",
+      "contentSha256": "51da472e681e53b35e2196038de4f847aba5ce61d60bd6d173d51473f7dff621"
+    },
+    {
+      "prefix": "3",
+      "path": "bucket-33.jsonl.gz",
+      "count": 17,
+      "size": 939,
+      "sha256": "1b003c54f06e2ad45cb171473d1be782122299a262ee137288ba2b578653f6e7",
+      "contentSha256": "95c74f20f205a8a2d9e36fdccde0eda35f59669baf3eaa8fb901800e1426d114"
+    },
+    {
+      "prefix": "4",
+      "path": "bucket-34.jsonl.gz",
+      "count": 31,
+      "size": 1213,
+      "sha256": "1afc9b1877944451863c22b137e46af109177665c5580ca319af3832da30ac45",
+      "contentSha256": "864231e15d6a91424a5621d8f7e5dd7c4397b92c97a8666047eda840d9b205ca"
+    },
+    {
+      "prefix": "5",
+      "path": "bucket-35.jsonl.gz",
+      "count": 18,
+      "size": 798,
+      "sha256": "1c9d14bc3f40eee3f99743dbdf7b932afca9a7d1453453f77c43edd4eaedf58e",
+      "contentSha256": "3134b71f6d4bd930d3f316fb23808283ec696f07c2e70e4cd9af0453fe3c9121"
+    },
+    {
+      "prefix": "6",
+      "path": "bucket-36.jsonl.gz",
+      "count": 16,
+      "size": 673,
+      "sha256": "3fe2a84c92fb9e69e466e5f0d569622fa1395d2ad886beae9d257a495274ad6f",
+      "contentSha256": "be68af82dace414b2bd6b857a7a94973c61c5d7d3e17e5fdd982a0a198208811"
+    },
+    {
+      "prefix": "7",
+      "path": "bucket-37.jsonl.gz",
+      "count": 17,
+      "size": 742,
+      "sha256": "c04104caea224495761b28b832813fec57e7faed4c8391cadc19cd8aac89f5bd",
+      "contentSha256": "1170ff18335fbd2ba4db15f8491081fbd613feb43405c8db513a7b3fa67a002b"
+    },
+    {
+      "prefix": "8",
+      "path": "bucket-38.jsonl.gz",
+      "count": 18,
+      "size": 780,
+      "sha256": "10ad776684f2359cb9b08a3b93f2f03ef664d4f800d4c85ca81b10efbbd03317",
+      "contentSha256": "589f0a58904e855e75f68e337f4eeaa2a8ce63221bb6c5ed811eb1bfa0359cf2"
+    },
+    {
+      "prefix": "9",
+      "path": "bucket-39.jsonl.gz",
+      "count": 15,
+      "size": 639,
+      "sha256": "b990c3c14bf9d1e0e8075f4e6c4fc4cb1f82379e723e3dd302998fbbeb72d7f8",
+      "contentSha256": "c9a90b85c7938d79c9ea87accc6a7107a840ba2a94a999fea8d208add450b748"
+    },
+    {
+      "prefix": "_",
+      "path": "bucket-5f.jsonl.gz",
+      "count": 426,
+      "size": 22660,
+      "sha256": "82db055e733ca0b3c21ee6e490762be778926e64564de72a2441c18a8a937211",
+      "contentSha256": "091414729cf619fcb6381d2798c07449344af46c6eedbc28cc2abc1a7c1d067f"
+    },
+    {
+      "prefix": "a",
+      "path": "bucket-61.jsonl.gz",
+      "count": 60478,
+      "size": 2262115,
+      "sha256": "054663484e5eef122236b367b6a49d276fb3c2debc3b11ec5967ada6f0f3233e",
+      "contentSha256": "6ffda4b5acfadef7af535dc0ec373f20c0a60bb48bf2240829e5992e1cd97531"
+    },
+    {
+      "prefix": "b",
+      "path": "bucket-62.jsonl.gz",
+      "count": 45854,
+      "size": 1799587,
+      "sha256": "256e5931e8e7c01b923b0f6b7a70d64fb25ef07850bb4e313885d20858f417bf",
+      "contentSha256": "3b559157ae67ffc0ccc86451322fe4127dc07739cd6df86e4680929aac0b0fc1"
+    },
+    {
+      "prefix": "c",
+      "path": "bucket-63.jsonl.gz",
+      "count": 73385,
+      "size": 2828247,
+      "sha256": "2c8ecdfe6289774990acf8eb26fd99f4baf8e115a93aa127dc40239719289c69",
+      "contentSha256": "7f13873a563a93a5159951ed31e7e85e1e756d539b245a194a71a801884c4b8a"
+    },
+    {
+      "prefix": "d",
+      "path": "bucket-64.jsonl.gz",
+      "count": 39192,
+      "size": 1549876,
+      "sha256": "6adb364cdaa0bbd8a8f0046cca5194babc08c61ab9b744a821ea5f9cd469bb88",
+      "contentSha256": "62f73655872d52ab461ab910d6f7b03da98d4a99d94647f7b788e68c12e7e069"
+    },
+    {
+      "prefix": "e",
+      "path": "bucket-65.jsonl.gz",
+      "count": 29627,
+      "size": 1165160,
+      "sha256": "d624e951dbac27369b6669979a2e05d5703924dc95ac57f14194c0bd103ddeb4",
+      "contentSha256": "a9d409b650342cb7ba8b05120c86a0893038441c76324100cef31d7099bb23d8"
+    },
+    {
+      "prefix": "f",
+      "path": "bucket-66.jsonl.gz",
+      "count": 31657,
+      "size": 1225035,
+      "sha256": "99dd50512feaaed2397481bf6c3ca929aeed1d153bb437ee608ee5c23269f753",
+      "contentSha256": "60283b5b418bbfa948c8d10e02da230997235c265519aca01d8fe97fd458d03b"
+    },
+    {
+      "prefix": "g",
+      "path": "bucket-67.jsonl.gz",
+      "count": 28332,
+      "size": 1062816,
+      "sha256": "d4d908fdd5c31f06233acf16b0860f54b503fdef0a72e3bad7c9666bec3dcdab",
+      "contentSha256": "b952cfc83f6148daefda2a6202f20631cff985a70f3e8ccf19ed51851f29e94e"
+    },
+    {
+      "prefix": "h",
+      "path": "bucket-68.jsonl.gz",
+      "count": 31085,
+      "size": 1237834,
+      "sha256": "61acb2bd79546ea668ce4867f8e9b1e424d1b0e745dcfb3895a7d7328b060c8b",
+      "contentSha256": "f1b8881831c8604e0b7a10df7e2b608d07c2e7c7ec5eeb2a093964798a0a3973"
+    },
+    {
+      "prefix": "i",
+      "path": "bucket-69.jsonl.gz",
+      "count": 28122,
+      "size": 1078817,
+      "sha256": "d810f9ca01e81330766024161cfd4bf5e43ceb299b396b7737523d62e0e6577d",
+      "contentSha256": "bdcab1162840a8f1681e334d175392ffe7b0e1049b41be30fd8e4c381b858698"
+    },
+    {
+      "prefix": "j",
+      "path": "bucket-6a.jsonl.gz",
+      "count": 6123,
+      "size": 266879,
+      "sha256": "21f25265bf33b0af72ca1ce784c307a204c59e54dea52cbb3bb5b9580bcfc65f",
+      "contentSha256": "3bef77dc1efe744ceebbf2b8f2f90eb9c4d1fa3ee2aa637e3551abfa719ddcc9"
+    },
+    {
+      "prefix": "k",
+      "path": "bucket-6b.jsonl.gz",
+      "count": 9349,
+      "size": 383176,
+      "sha256": "25bab14461591338ae3d3caa7cdcdf74d0504e54cea2cfbc29f32e7295345419",
+      "contentSha256": "afb8fbd401238f7bebe19d1d6788063c3f915764e2205f827dc9ed15e099e664"
+    },
+    {
+      "prefix": "l",
+      "path": "bucket-6c.jsonl.gz",
+      "count": 29378,
+      "size": 1133759,
+      "sha256": "869d33a085312253e24203f15cbcbcbe0a1e77bd395b324a22d1ea0698a22962",
+      "contentSha256": "b876131eec82d5d83ee066daada8d66299e57078b6ab28d39cded6745a9e23e2"
+    },
+    {
+      "prefix": "m",
+      "path": "bucket-6d.jsonl.gz",
+      "count": 48246,
+      "size": 1830132,
+      "sha256": "d5bf9694fdf19cb6f84e541396ce94251f678287918fc2bab02bf0db9c77b075",
+      "contentSha256": "c37792fcaabf5aa20671e161c95d4ec7b7f4796c02d93a4ece2d0204a4d5fe3e"
+    },
+    {
+      "prefix": "n",
+      "path": "bucket-6e.jsonl.gz",
+      "count": 21384,
+      "size": 815087,
+      "sha256": "fab5b9463630d37d08c21b4130d6983f538b8c509045f3a4795445d6fb48c529",
+      "contentSha256": "ef8492786a3df76b78d660f1783133d9f90d2c30dc4a640309a8dda4328e93fd"
+    },
+    {
+      "prefix": "o",
+      "path": "bucket-6f.jsonl.gz",
+      "count": 21619,
+      "size": 820308,
+      "sha256": "5878bf42ac5c6b2258e703569f0eb22ee41ec0e838d2a73069879327470af2dd",
+      "contentSha256": "9234b08db496db782839dfb2a079ef20c4c9da8450b24ec45c1359abc3af93b6"
+    },
+    {
+      "prefix": "p",
+      "path": "bucket-70.jsonl.gz",
+      "count": 64985,
+      "size": 2547512,
+      "sha256": "4449021ddf9e18ce54909b0ff633fdac96e81b877522358a884a636c43fce0b4",
+      "contentSha256": "423d4fd61114dcaaf4e8e38ce862125e22053a276b4ecdd672711f1492d88f75"
+    },
+    {
+      "prefix": "q",
+      "path": "bucket-71.jsonl.gz",
+      "count": 3389,
+      "size": 155409,
+      "sha256": "d48b54a959ef4f40602170a19c8136b5cb4364e7cd4297afb34ea4a5a992444f",
+      "contentSha256": "4c481427ef6ab6634c0a7f7e3da8d96c248e17eec762de16e61fba73449a4f45"
+    },
+    {
+      "prefix": "r",
+      "path": "bucket-72.jsonl.gz",
+      "count": 33942,
+      "size": 1351890,
+      "sha256": "74769957139722d75288b856964f5fb4104db7936d5a150ce0284e7fdb9d4dfd",
+      "contentSha256": "ae0c04e2b3f2bc46b42edac846e08b4a6ae29361096452f8d375040e24f3fc15"
+    },
+    {
+      "prefix": "s",
+      "path": "bucket-73.jsonl.gz",
+      "count": 76735,
+      "size": 3086720,
+      "sha256": "ec271054bf4c2290e674162a37c090930e71cc3a5109572e2b36c966c60183ba",
+      "contentSha256": "05c3b4581f49ef5cda08e1931408fb5d4f0fc686c882c7aa1065ae460f2daf09"
+    },
+    {
+      "prefix": "t",
+      "path": "bucket-74.jsonl.gz",
+      "count": 40782,
+      "size": 1622440,
+      "sha256": "130f4667369750c09b7a24dd78261403a7c999e2f6417236224f4d57e57a38f7",
+      "contentSha256": "583a65a08a78d1f08d4268ecac0df9cc56614639c1a83e1325f6ff2a8987279c"
+    },
+    {
+      "prefix": "u",
+      "path": "bucket-75.jsonl.gz",
+      "count": 12920,
+      "size": 546727,
+      "sha256": "6e32412dcd836c4654c42e45a43b6e2462d399f5583baf76d3f0411eff223ff2",
+      "contentSha256": "91ca1c27e4bb4c51cce032eeb54a24dfb3909fd38b938f3be16bac283cd7b3cb"
+    },
+    {
+      "prefix": "v",
+      "path": "bucket-76.jsonl.gz",
+      "count": 11890,
+      "size": 478922,
+      "sha256": "e717a790770f036f57cb933648e9a27f6841e6f99041c2aee6668365d798b860",
+      "contentSha256": "fccd3440ddf1cc68d400c89c32a38026d10b8593979ef47c5698747b38480562"
+    },
+    {
+      "prefix": "w",
+      "path": "bucket-77.jsonl.gz",
+      "count": 15412,
+      "size": 654532,
+      "sha256": "ba87169fac0e894f42bc417a9f99efb982cfa85b58cca4d69c79283a347e0876",
+      "contentSha256": "79efc9b50fb3df8e649334ce1b0d5b92be56ed5e301dfd20fb9226344290c92b"
+    },
+    {
+      "prefix": "x",
+      "path": "bucket-78.jsonl.gz",
+      "count": 1217,
+      "size": 66087,
+      "sha256": "df4dd217a00059533b99c77a724b390d20bb4d6fa45570f005566bb81a33379c",
+      "contentSha256": "fb3b3afb2cce595bd7634f57e2e1aed613331d92d2bfec5323291e2ed7a556df"
+    },
+    {
+      "prefix": "y",
+      "path": "bucket-79.jsonl.gz",
+      "count": 2185,
+      "size": 107500,
+      "sha256": "205cb3e8cb2e902219dbe0e950b81d17a12a478f3352240294ca2463b5daad3e",
+      "contentSha256": "b1c93a3b4771bada6e46221737593fa459e3e000fe1196eec8e1b2e46cfe1607"
+    },
+    {
+      "prefix": "z",
+      "path": "bucket-7a.jsonl.gz",
+      "count": 2716,
+      "size": 128803,
+      "sha256": "380644ff5c9fe3a5cc314eb4b46e95f917deb64e79599665aa5466a6d03d6b87",
+      "contentSha256": "155fc754dc4d8c06b5cf84463fcc1d2745c67f150738f3c19b31d17694e37c68"
+    }
+  ]
+}

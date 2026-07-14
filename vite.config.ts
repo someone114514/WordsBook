@@ -47,6 +47,9 @@ export default defineConfig(() => {
           ],
         },
         workbox: {
+          cleanupOutdatedCaches: true,
+          clientsClaim: true,
+          skipWaiting: true,
           globPatterns: ['**/*.{js,css,html,svg,png,webp,json}'],
           runtimeCaching: [
             {
@@ -78,9 +81,38 @@ export default defineConfig(() => {
         },
         devOptions: {
           enabled: true,
+          // The dev SW folder only contains sw.js/workbox-*.js, which Workbox
+          // intentionally ignores. Use the plugin's dev-only placeholder glob
+          // so an empty precache does not emit a false-positive warning.
+          suppressWarnings: true,
         },
       }),
     ],
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (id.includes('/node_modules/ts-fsrs/') || id.includes('\\node_modules\\ts-fsrs\\')) {
+              return 'fsrs'
+            }
+            if (id.includes('/node_modules/@supabase/') || id.includes('\\node_modules\\@supabase\\')) {
+              return 'supabase'
+            }
+            if (id.includes('/node_modules/dexie/') || id.includes('\\node_modules\\dexie\\')) {
+              return 'storage'
+            }
+            if (
+              id.includes('/node_modules/vue/') || id.includes('\\node_modules\\vue\\')
+              || id.includes('/node_modules/@vue/') || id.includes('\\node_modules\\@vue\\')
+              || id.includes('/node_modules/pinia/') || id.includes('\\node_modules\\pinia\\')
+              || id.includes('/node_modules/vue-router/') || id.includes('\\node_modules\\vue-router\\')
+            ) {
+              return 'vue-vendor'
+            }
+          },
+        },
+      },
+    },
     test: {
       environment: 'jsdom',
       include: ['src/**/*.test.ts'],

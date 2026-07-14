@@ -1,0 +1,17 @@
+{
+  "id": "ecdict-core",
+  "name": "ECDICT 高频核心",
+  "version": "2026.07.13-core-27861",
+  "locale": "en-US,zh-CN",
+  "source": "ECDICT frequency-ranked core",
+  "publishedAt": "2026-07-13",
+  "entryCount": 27861,
+  "entries": [
+    {
+      "path": "entries-1.jsonl.gz",
+      "size": 2785998,
+      "sha256": "7522a75d679a58ae0c8ff4a1db891b2f3943f78626a498af5a4ee30d7dda37c0"
+    }
+  ],
+  "indices": []
+}

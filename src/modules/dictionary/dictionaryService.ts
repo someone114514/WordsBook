@@ -2,11 +2,13 @@
 import type { DictionaryEntry, DictionaryMeta, LookupResult } from '../../types/models'
 import { dedupeEntries, levenshteinDistance, normalizeWord, toLemmaCandidates } from './search'
 import { applyAiOverrides } from './entryOverrideMapper'
+import { lookupRemoteDictionary } from './remoteDictionaryCache'
 
 const DICTIONARY_PRIORITY = new Map<string, number>([
   ['ai-local', 0],
   ['common', 1],
   ['default', 2],
+  ['ecdict-core', 3],
   ['ecdict-full', 3],
 ])
 
@@ -121,11 +123,15 @@ export async function lookupWord(query: string): Promise<LookupResult> {
   const prefixFromIndex = await getEntriesByIds(prefixEntryIds)
   const prefixMatches = dedupeEntries([...prefixFromIndex, ...prefixFromEntries])
 
-  const exact = rankEntries(dedupeEntries(exactMatches))
-  const lemma = rankEntries(dedupeEntries(lemmaMatches)).filter(
+  let remote = { exact: [] as DictionaryEntry[], lemma: [] as DictionaryEntry[], prefix: [] as DictionaryEntry[] }
+  if (exactMatches.length + lemmaMatches.length === 0 && typeof window !== 'undefined' && 'caches' in window && navigator.onLine) {
+    try { remote = await lookupRemoteDictionary(normalized) } catch { /* Core dictionary remains usable offline. */ }
+  }
+  const exact = rankEntries(dedupeEntries([...exactMatches, ...remote.exact]))
+  const lemma = rankEntries(dedupeEntries([...lemmaMatches, ...remote.lemma])).filter(
     (entry) => !exact.some((exactEntry) => exactEntry.entryId === entry.entryId),
   )
-  const prefix = rankEntries(dedupeEntries(prefixMatches)).filter(
+  const prefix = rankEntries(dedupeEntries([...prefixMatches, ...remote.prefix])).filter(
     (entry) =>
       !exact.some((exactEntry) => exactEntry.entryId === entry.entryId) &&
       !lemma.some((lemmaEntry) => lemmaEntry.entryId === entry.entryId),

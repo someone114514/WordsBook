@@ -20,7 +20,22 @@ export const router = createRouter({
       component: () => import('../views/ReviewSessionView.vue'),
       meta: { title: '背诵中', immersive: true },
     },
+    {
+      path: '/review/reading',
+      component: () => import('../views/ReadingSessionView.vue'),
+      meta: { title: '语境阅读', immersive: true },
+    },
     { path: '/wordbook', redirect: '/review' },
+    {
+      path: '/lists',
+      component: () => import('../views/StudyListsView.vue'),
+      meta: { title: '词表' },
+    },
+    {
+      path: '/lists/:listId',
+      component: () => import('../views/StudyListDetailView.vue'),
+      meta: { title: '词表详情' },
+    },
     {
       path: '/settings',
       component: SettingsView,

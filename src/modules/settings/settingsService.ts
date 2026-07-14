@@ -1,6 +1,6 @@
 import { db } from '../../db/database'
 import type { AppSettings } from '../../types/models'
-import { markRecordChanged } from '../sync/localSyncStore'
+import { markRecordChanged, markRecordDeleted } from '../sync/localSyncStore'
 
 export const DEFAULT_SETTINGS: AppSettings = {
   autoPronunciation: false,
@@ -11,11 +11,15 @@ export const DEFAULT_SETTINGS: AppSettings = {
   deepseekApiKey: '',
   deepseekBaseUrl: 'https://api.deepseek.com/v1/chat/completions',
   deepseekModel: 'deepseek-chat',
+  articleLevel: 'B2',
+  syncDeepseekApiKey: false,
 }
 
 export async function loadSettings(): Promise<AppSettings> {
   const rows = await db.settings.toArray()
   const output: AppSettings = { ...DEFAULT_SETTINGS }
+  const storedSecret = await db.localSecrets.get('deepseekApiKey')
+  output.deepseekApiKey = storedSecret?.value ?? ''
 
   for (const row of rows) {
     if (row.key === 'autoPronunciation' && typeof row.value === 'boolean') {
@@ -42,8 +46,16 @@ export async function loadSettings(): Promise<AppSettings> {
       output.dailyReviewLimit = row.value
     }
 
-    if (row.key === 'deepseekApiKey' && typeof row.value === 'string') {
+    if (
+      row.key === 'deepseekApiKey' &&
+      typeof row.value === 'string' &&
+      row.value &&
+      !storedSecret
+    ) {
       output.deepseekApiKey = row.value
+      await db.localSecrets.put({ key: 'deepseekApiKey', value: row.value })
+      await db.settings.delete('deepseekApiKey')
+      await markRecordDeleted('settings', 'deepseekApiKey')
     }
 
     if (row.key === 'deepseekBaseUrl' && typeof row.value === 'string') {
@@ -53,6 +65,18 @@ export async function loadSettings(): Promise<AppSettings> {
     if (row.key === 'deepseekModel' && typeof row.value === 'string') {
       output.deepseekModel = row.value
     }
+
+    if (
+      row.key === 'articleLevel' &&
+      typeof row.value === 'string' &&
+      ['A2', 'B1', 'B2', 'C1'].includes(row.value)
+    ) {
+      output.articleLevel = row.value as AppSettings['articleLevel']
+    }
+
+    if (row.key === 'syncDeepseekApiKey' && typeof row.value === 'boolean') {
+      output.syncDeepseekApiKey = row.value
+    }
   }
 
   return output
@@ -61,13 +85,20 @@ export async function loadSettings(): Promise<AppSettings> {
 export async function saveSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
   const nextSettings = { ...(await loadSettings()), ...patch }
 
+  if (patch.deepseekApiKey !== undefined) {
+    await db.localSecrets.put({ key: 'deepseekApiKey', value: patch.deepseekApiKey, updatedAt: new Date().toISOString() })
+  }
+
   await db.transaction('rw', [db.settings, db.syncMeta, db.syncRecords, db.syncTombstones], async () => {
     await Promise.all(
-      Object.entries(nextSettings).map(async ([key, value]) => {
+      Object.entries(nextSettings)
+        .filter(([key]) => key !== 'deepseekApiKey')
+        .map(async ([key, value]) => {
         await db.settings.put({ key, value })
         await markRecordChanged('settings', key)
       }),
     )
+    await db.settings.delete('deepseekApiKey')
   })
 
   return nextSettings

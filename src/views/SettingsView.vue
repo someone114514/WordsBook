@@ -13,6 +13,7 @@ import {
 import { getLastSuccessfulSyncAt, previewCloudSync, runCloudSync } from '../modules/sync/syncEngine'
 import { getSupabaseClient, isSupabaseConfigured } from '../modules/sync/supabaseClient'
 import { SupabaseCloudSyncRemote } from '../modules/sync/supabaseRemote'
+import { deleteDeepseekSecret, syncDeepseekSecret, unloadDeepseekSecret, uploadDeepseekSecret } from '../modules/sync/cloudSecretService'
 import type { CloudSyncMode, SyncPreview, SyncResult } from '../modules/sync/syncTypes'
 import { getWordbookStats } from '../modules/wordbook/wordbookService'
 
@@ -20,7 +21,8 @@ const settingsStore = useSettingsStore()
 const dictionaryStore = useDictionaryStore()
 
 const { settings } = storeToRefs(settingsStore)
-const { installedMeta, installing, progress, lastError } = storeToRefs(dictionaryStore)
+const { installedMeta, installing, progress, lastError, fullCacheProgress } = storeToRefs(dictionaryStore)
+const fullCachePaused = ref(false)
 
 const message = ref('')
 const wordbookStats = ref({ total: 0, active: 0 })
@@ -158,16 +160,42 @@ async function onUpdateEngine(event: Event): Promise<void> {
   })
 }
 
+async function onUpdateArticleLevel(event: Event): Promise<void> {
+  const target = event.target as HTMLSelectElement
+  await settingsStore.update({ articleLevel: target.value as 'A2' | 'B1' | 'B2' | 'C1' })
+}
+
 async function onUpdateString(
   key: 'deepseekApiKey' | 'deepseekBaseUrl' | 'deepseekModel',
   event: Event,
 ): Promise<void> {
   const target = event.target as HTMLInputElement
   await settingsStore.update({ [key]: target.value.trim() })
+  if (key === 'deepseekApiKey' && settings.value.syncDeepseekApiKey && cloudAuth.value.signedIn) {
+    if (target.value.trim()) await uploadDeepseekSecret(target.value.trim())
+    else await deleteDeepseekSecret()
+    cloudMessage.value = target.value.trim() ? 'DeepSeek Key 已同步到当前账号' : '本地与云端 Key 已删除'
+  }
+}
+
+async function onToggleKeySync(event: Event) {
+  const enabled = (event.target as HTMLInputElement).checked
+  await settingsStore.update({ syncDeepseekApiKey: enabled })
+  if (!enabled) { cloudMessage.value = '已关闭 Key 云同步；云端已有 Key 不会自动删除'; return }
+  if (!cloudAuth.value.signedIn) { cloudMessage.value = '请先登录云同步账号，再开启 Key 同步'; await settingsStore.update({ syncDeepseekApiKey: false }); return }
+  const value = await syncDeepseekSecret()
+  await settingsStore.initialize()
+  cloudMessage.value = value ? 'DeepSeek Key 已与当前账号同步' : '已开启；填写 Key 后会同步到当前账号'
 }
 
 async function onInstallDictionary() {
   await dictionaryStore.installDefaultDictionary()
+}
+
+function toggleFullDictionaryDownload() {
+  fullCachePaused.value = !fullCachePaused.value
+  if (fullCachePaused.value) dictionaryStore.pauseFullDictionaryDownload()
+  else dictionaryStore.resumeFullDictionaryDownload()
 }
 
 async function onExport() {
@@ -231,6 +259,10 @@ async function onCloudSignIn() {
   try {
     cloudAuth.value = await signInCloud(cloudEmail.value.trim(), cloudPassword.value)
     cloudPassword.value = ''
+    if (settings.value.syncDeepseekApiKey) {
+      await syncDeepseekSecret()
+      await settingsStore.initialize()
+    }
     cloudMessage.value = '云同步已登录'
   } catch (error) {
     cloudMessage.value = error instanceof Error ? error.message : String(error)
@@ -243,7 +275,10 @@ async function onCloudSignOut() {
   cloudBusy.value = true
   cloudMessage.value = ''
   try {
+    const userId = cloudAuth.value.userId
+    if (settings.value.syncDeepseekApiKey && userId) await unloadDeepseekSecret(userId)
     await signOutCloud()
+    await settingsStore.initialize()
     await refreshCloudState()
     cloudPreview.value = null
     cloudLastResult.value = null
@@ -280,6 +315,10 @@ async function onRunCloudSync(mode: CloudSyncMode) {
     cloudPreview.value = result
     cloudLastSyncAt.value = result.completedAt
     await Promise.all([settingsStore.initialize(), refreshStats()])
+    if (settings.value.syncDeepseekApiKey) {
+      await syncDeepseekSecret()
+      await settingsStore.initialize()
+    }
     cloudMessage.value = `同步完成：上传 ${result.pushed}，下载 ${result.pulled}，删除 ${result.deleted}`
   } catch (error) {
     cloudMessage.value = error instanceof Error ? error.message : String(error)
@@ -307,6 +346,12 @@ async function onRunCloudSync(mode: CloudSyncMode) {
       <p v-if="installProgressText" class="muted">{{ installProgressText }}</p>
       <p v-if="installProgressDetails" class="muted">{{ installProgressDetails }}</p>
       <p v-if="lastError" class="error">{{ lastError }}</p>
+      <div v-if="installedMeta" class="sync-panel">
+        <strong>完整 ECDICT 后台离线包</strong>
+        <p class="muted">核心词库可用后按前缀分桶缓存；断网或暂停后可继续，完整词条不会批量写入 IndexedDB。</p>
+        <progress :value="fullCacheProgress" max="1" />
+        <button class="btn" type="button" @click="toggleFullDictionaryDownload">{{ fullCachePaused ? '继续下载' : '暂停下载' }}</button>
+      </div>
     </article>
 
     <article class="result-section">
@@ -399,7 +444,19 @@ async function onRunCloudSync(mode: CloudSyncMode) {
         />
       </label>
 
-      <p class="muted">查词页支持：AI 追加释义、AI 替换释义、回退 AI、查不到时 AI 加词。</p>
+      <label class="setting-row">
+        <span>文章默认难度</span>
+        <select class="inline-input" :value="settings.articleLevel" @change="onUpdateArticleLevel">
+          <option value="A2">A2</option><option value="B1">B1</option><option value="B2">B2</option><option value="C1">C1</option>
+        </select>
+      </label>
+
+      <label class="setting-row">
+        <span><strong>API Key 随账号同步</strong><small>默认关闭；仅在登录后可用</small></span>
+        <input type="checkbox" :checked="settings.syncDeepseekApiKey" @change="onToggleKeySync" />
+      </label>
+      <p v-if="settings.syncDeepseekApiKey" class="warning-note">Key 会以明文保存到独立的 Supabase 表。RLS 可阻止其他普通用户访问，但项目数据库管理员和高权限凭据仍可读取。</p>
+      <p class="muted">Key 不会进入普通同步记录、备份、文章会话或日志。AI 同时用于词典增强和今日语境文章。</p>
     </article>
 
     <article class="result-section">

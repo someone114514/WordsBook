@@ -34,10 +34,32 @@ export interface DictionaryIndexRow {
 export interface WordbookItem {
   wordId: string
   entryId: string
+  /** Stable vocabulary identity. Dictionary package entry ids may change between installs. */
+  headword?: string
+  headwordLower?: string
+  entrySnapshot?: Pick<DictionaryEntry, 'headword' | 'headwordLower' | 'phonetic' | 'posList' | 'sensesJson' | 'examplesJson' | 'usageJson' | 'audioKey'>
+  integrityStatus?: 'ready' | 'needs-repair'
   addedAt: string
   note: string
   tags: string[]
   archived: 0 | 1
+}
+
+export interface StudyList {
+  listId: string
+  name: string
+  description: string
+  studyEnabled: 0 | 1
+  systemType?: 'lookup' | 'legacy' | 'default'
+  createdAt: string
+  updatedAt: string
+}
+
+export interface StudyListItem {
+  membershipId: string
+  listId: string
+  wordId: string
+  addedAt: string
 }
 
 export interface ReviewState {
@@ -48,18 +70,44 @@ export interface ReviewState {
   successCount: number
   lapseCount: number
   totalReviews: number
+  fsrsState?: 0 | 1 | 2 | 3
+  stability?: number
+  difficulty?: number
+  elapsedDays?: number
+  scheduledDays?: number
+  learningSteps?: number
+  reps?: number
+  lapses?: number
+  suspendedAt?: string
+  sameDayRelearnAt?: string
+  schedulerVersion?: 'fsrs-5'
 }
 
 export interface ReviewLog {
   id?: number
   wordId: string
   reviewedAt: string
-  rating: 'remember' | 'forget'
+  rating: 'remember' | 'forget' | 'again' | 'hard' | 'good' | 'easy'
+  source?: 'flashcard' | 'context'
+  wasNew?: boolean
   cycleBefore: number
   cycleAfter: number
   nextReviewAtBefore: string
   nextReviewAtAfter: string
+  stateBefore?: number
+  stateAfter?: number
+  stabilityBefore?: number
+  stabilityAfter?: number
+  difficultyBefore?: number
+  difficultyAfter?: number
+  sessionAttemptCount?: number
+  sessionRatings?: ReviewRating[]
+  todayMasteryBefore?: number
+  todayMasteryAfter?: number
 }
+
+export type ReviewRating = 'again' | 'hard' | 'good'
+export type SchedulerRating = ReviewRating | 'easy'
 
 export interface SettingItem {
   key: string
@@ -75,6 +123,8 @@ export interface AppSettings {
   deepseekApiKey: string
   deepseekBaseUrl: string
   deepseekModel: string
+  articleLevel: 'A2' | 'B1' | 'B2' | 'C1'
+  syncDeepseekApiKey: boolean
 }
 
 export interface LookupResult {
@@ -96,6 +146,115 @@ export interface StudyPlan {
   dueCount: number
   newCount: number
   queueWordIds: string[]
+  laterTodayCount?: number
+  listIds?: string[]
+  effectiveNewLimit?: number
+  recoveryDays?: number
+  daysSinceLastStudy?: number
+  listContributions?: Array<{ listId: string; name: string; count: number }>
+}
+
+export type DailyQueueKind = 'card' | 'article-read' | 'context-quiz' | 'summary'
+export type DailyQueueReason =
+  | 'initial'
+  | 'new-repeat'
+  | 'again-repeat'
+  | 'hard-repeat'
+  | 'context-retry'
+
+export interface DailyLearningSession {
+  sessionId: string
+  dayKey: string
+  status: 'active' | 'completed'
+  phase: 'cards' | 'article' | 'summary'
+  selectedListIds: string[]
+  initialWordIds: string[]
+  cardsCompletedAt?: string
+  articleStatus: 'waiting' | 'generating' | 'ready' | 'completed' | 'skipped' | 'failed'
+  createdAt: string
+  updatedAt: string
+  completedAt?: string
+}
+
+export interface DailyQueueItem {
+  itemId: string
+  sessionId: string
+  kind: DailyQueueKind
+  wordId?: string
+  reason: DailyQueueReason
+  position: number
+  status: 'pending' | 'active' | 'completed' | 'skipped'
+  attemptNo: number
+  maxAttempts: number
+  retrievability: number
+  startingLongTermRetrievability?: number
+  todayMastery?: number
+  attemptCount?: number
+  nextGap?: number
+  tomorrowPriority?: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export interface DailyQueueAttempt {
+  attemptId: string
+  sessionId: string
+  itemId: string
+  wordId: string
+  rating: ReviewRating
+  committedToFsrs: boolean
+  masteryBefore?: number
+  masteryAfter?: number
+  reinsertionGap?: number
+  effectiveFsrsRating?: ReviewRating
+  answeredAt: string
+}
+
+export interface ReadingTarget {
+  wordId: string
+  headword: string
+  contextualMeaning: string
+  choices: string[]
+  explanation: string
+}
+
+export interface ReadingSegment {
+  text: string
+  wordId?: string
+}
+
+export interface ReadingSession {
+  sessionId: string
+  dayKey: string
+  batchIndex: number
+  selectionSeed: number
+  level: AppSettings['articleLevel']
+  topic: string
+  targetWordIds: string[]
+  status: 'pending' | 'streaming' | 'ready' | 'failed' | 'completed' | 'skipped'
+  title?: string
+  segmentsJson: string
+  targetsJson: string
+  translation: string
+  error?: string
+  createdAt: string
+  updatedAt: string
+  streamedParagraphs?: number
+}
+
+export interface ContextAttempt {
+  attemptId: string
+  sessionId: string
+  wordId: string
+  selectedMeaning?: string
+  result: 'correct' | 'wrong' | 'uncertain'
+  answeredAt: string
+}
+
+export interface LocalSecret {
+  key: string
+  value: string
+  updatedAt?: string
 }
 
 export interface ReviewCard {
@@ -123,6 +282,13 @@ export interface BackupPayload {
   settings: SettingItem[]
   aiOverrides?: AiOverrideRecord[]
   aiOverrideHistory?: AiOverrideHistoryRecord[]
+  studyLists?: StudyList[]
+  studyListItems?: StudyListItem[]
+  readingSessions?: ReadingSession[]
+  contextAttempts?: ContextAttempt[]
+  dailyLearningSessions?: DailyLearningSession[]
+  dailyQueueItems?: DailyQueueItem[]
+  dailyQueueAttempts?: DailyQueueAttempt[]
 }
 
 export interface ImportReport {
@@ -133,6 +299,18 @@ export interface ImportReport {
   importedSettings: number
   importedAiOverrides: number
   importedAiOverrideHistory: number
+  importedStudyLists?: number
+  importedStudyListItems?: number
+  importedReadingSessions?: number
+  importedContextAttempts?: number
+}
+
+export interface WordListImportReport {
+  matched: number
+  created: number
+  pending: number
+  duplicates: number
+  invalid: number
 }
 
 export interface AiOverrideRecord {
@@ -172,6 +350,13 @@ export type SyncEntity =
   | 'settings'
   | 'aiOverrides'
   | 'aiOverrideHistory'
+  | 'studyLists'
+  | 'studyListItems'
+  | 'readingSessions'
+  | 'contextAttempts'
+  | 'dailyLearningSessions'
+  | 'dailyQueueItems'
+  | 'dailyQueueAttempts'
 
 export interface SyncMetaRecord {
   key: string

@@ -109,7 +109,17 @@ async function fetchText(url: string): Promise<string> {
   if (!response.ok) {
     throw new Error(`Failed to fetch ${url}: ${response.status}`)
   }
-  return response.text()
+  const buffer = await response.arrayBuffer()
+  const bytes = new Uint8Array(buffer)
+  if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
+    if (typeof DecompressionStream === 'undefined') {
+      if (url.endsWith('.gz')) return fetchText(url.slice(0, -3))
+      throw new Error('当前浏览器无法解压词典包')
+    }
+    const decompressed = new Response(new Blob([buffer]).stream().pipeThrough(new DecompressionStream('gzip')))
+    return decompressed.text()
+  }
+  return new TextDecoder().decode(buffer)
 }
 
 function parseJsonLines<T>(raw: string): T[] {
@@ -271,8 +281,14 @@ function isLocalUserDictionaryEntry(entry: DictionaryEntry): boolean {
   return entry.dictionaryId === 'ai-local' || entry.entryId.startsWith('ai:')
 }
 
-async function listLocalUserDictionaryEntries(): Promise<DictionaryEntry[]> {
-  return db.dictionaryEntries.filter(isLocalUserDictionaryEntry).toArray()
+async function listPreservedDictionaryEntries(): Promise<DictionaryEntry[]> {
+  const [localEntries, words] = await Promise.all([
+    db.dictionaryEntries.filter(isLocalUserDictionaryEntry).toArray(),
+    db.wordbook.toArray(),
+  ])
+  const referencedEntries = (await db.dictionaryEntries.bulkGet(words.map((word) => word.entryId)))
+    .filter((entry): entry is DictionaryEntry => Boolean(entry))
+  return [...new Map([...localEntries, ...referencedEntries].map((entry) => [entry.entryId, entry])).values()]
 }
 
 async function restoreLocalUserDictionaryEntries(entries: DictionaryEntry[]): Promise<void> {
@@ -521,7 +537,7 @@ export async function installDictionaryBundle(
     throw new Error(`All dictionaries failed to install: ${failedDictionaries.join(' || ')}`)
   }
 
-  const preservedLocalEntries = await listLocalUserDictionaryEntries()
+  const preservedLocalEntries = await listPreservedDictionaryEntries()
 
   await db.transaction('rw', db.dictionaryMeta, db.dictionaryEntries, db.dictionaryIndex, async () => {
     await db.dictionaryEntries.clear()

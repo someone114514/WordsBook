@@ -7,13 +7,14 @@ const router = useRouter()
 
 const tabs = [
   { to: '/lookup', label: '查词' },
-  { to: '/review', label: '背词' },
+  { to: '/review', label: '学习' },
+  { to: '/lists', label: '词表' },
   { to: '/settings', label: '设置' },
 ]
 
 const title = computed(() => String(route.meta.title ?? 'WordsBook'))
 const immersiveMode = computed(() => Boolean(route.meta.immersive))
-const keepAliveViews = ['LookupView', 'ReviewView', 'SettingsView']
+const keepAliveViews = ['LookupView', 'ReviewView', 'StudyListsView', 'SettingsView']
 
 function navigateTab(path: string, event: MouseEvent): void {
   event.preventDefault()

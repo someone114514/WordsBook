@@ -1,6 +1,7 @@
 ﻿<script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useRoute } from 'vue-router'
 import type { DictionaryEntry, LookupResult } from '../types/models'
 import { parseJsonArray } from '../utils/json'
 import { playEntryPronunciation } from '../modules/dictionary/audioService'
@@ -16,25 +17,33 @@ import { useSettingsStore } from '../modules/settings/settingsStore'
 import {
   addToWordbook,
   getWordbookEntryStatus,
-  removeWordFromWordbook,
+  removeFromLookupCollection,
+  type WordbookEntryStatus,
 } from '../modules/wordbook/wordbookService'
+import { addEntryToStudyList, listStudyLists } from '../modules/wordbook/studyListService'
+
+const route = useRoute()
 
 const dictionaryStore = useDictionaryStore()
 const settingsStore = useSettingsStore()
 
-const { installedMeta } = storeToRefs(dictionaryStore)
+const { installedMeta, installing, progress, lastError } = storeToRefs(dictionaryStore)
 const { settings } = storeToRefs(settingsStore)
 
 const query = ref('')
 const searchInputRef = ref<HTMLInputElement | null>(null)
 const loading = ref(false)
 const lookupResult = ref<LookupResult | null>(null)
-const entryStatusMap = ref(new Map<string, string>())
+const entryStatusMap = ref(new Map<string, WordbookEntryStatus>())
 const message = ref('')
 const messageType = ref<'success' | 'error'>('success')
+const studyLists = ref<Awaited<ReturnType<typeof listStudyLists>>>([])
+const selectedStudyListId = ref('')
+const manageEntryId = ref('')
 const aiBusyAction = ref<string | null>(null)
 const aiBusyNoResult = ref(false)
 const deletingEntryId = ref<string | null>(null)
+const addingEntryId = ref<string | null>(null)
 const sectionExpanded = ref<Record<string, boolean>>({})
 
 const MAX_VISIBLE_ENTRIES = 8
@@ -77,12 +86,21 @@ const totalMatchCount = computed(() =>
 )
 const disableResultMotion = computed(() => totalMatchCount.value > RESULT_MOTION_THRESHOLD)
 const dictionarySummary = computed(() => {
+  if (installing.value) {
+    return progress.value?.message ?? '正在安装高频核心词库'
+  }
   if (!installedMeta.value) {
     return '词库未安装'
   }
 
   return `词库 ${installedMeta.value.entryCount.toLocaleString()} 条`
 })
+const dictionaryProgress = computed(() => Math.round((progress.value?.ratio ?? 0) * 100))
+
+async function retryDictionaryInstall() {
+  await dictionaryStore.installDefaultDictionary()
+  if (installedMeta.value && query.value.trim()) scheduleLookup(query.value.trim())
+}
 const flowState = computed(() => {
   const hasQuery = query.value.trim().length > 0
   if (!hasQuery) {
@@ -110,7 +128,7 @@ function getAiConfig() {
   }
 }
 
-async function loadEntryStatus(entries: DictionaryEntry[]): Promise<Map<string, string>> {
+async function loadEntryStatus(entries: DictionaryEntry[]): Promise<Map<string, WordbookEntryStatus>> {
   return getWordbookEntryStatus(entries.map((entry) => entry.entryId))
 }
 
@@ -123,7 +141,7 @@ function clearLookupTimer(): void {
 
 function resetLookupState(): void {
   lookupResult.value = null
-  entryStatusMap.value = new Map<string, string>()
+  entryStatusMap.value = new Map<string, WordbookEntryStatus>()
   loading.value = false
 }
 
@@ -157,7 +175,7 @@ async function performLookup(raw: string, currentToken: number) {
   } catch (error) {
     if (currentToken === lookupToken) {
       lookupResult.value = null
-      entryStatusMap.value = new Map<string, string>()
+      entryStatusMap.value = new Map<string, WordbookEntryStatus>()
       messageType.value = 'error'
       message.value = error instanceof Error ? error.message : String(error)
     }
@@ -195,7 +213,16 @@ watch(query, () => {
 })
 
 onMounted(async () => {
+  if (typeof route.query.q === 'string' && route.query.q.trim()) query.value = route.query.q.trim()
   await Promise.all([dictionaryStore.refreshInstalledMeta(), settingsStore.initialize()])
+  studyLists.value = (await listStudyLists()).filter((list) => list.systemType !== 'lookup')
+  const lastListId = window.localStorage.getItem('wordsbook:last-study-list')
+  selectedStudyListId.value = studyLists.value.find((list) => list.listId === lastListId)?.listId
+    ?? studyLists.value.find((list) => list.studyEnabled)?.listId ?? studyLists.value[0]?.listId ?? ''
+  if (!installedMeta.value) {
+    await dictionaryStore.installDefaultDictionary()
+    if (query.value.trim()) scheduleLookup(query.value.trim())
+  }
 })
 
 onBeforeUnmount(() => {
@@ -205,7 +232,11 @@ onBeforeUnmount(() => {
 })
 
 function isAdded(entryId: string): boolean {
-  return entryStatusMap.value.has(entryId)
+  return entryStatusMap.value.get(entryId)?.listIds.some((listId) => listId !== 'system:lookup') ?? false
+}
+
+function isSaved(entryId: string): boolean {
+  return entryStatusMap.value.get(entryId)?.listIds.includes('system:lookup') ?? false
 }
 
 function isAiActionBusy(entryId: string, mode: 'add' | 'replace' | 'rollback'): boolean {
@@ -233,29 +264,62 @@ function onClearQuery() {
 
 async function onAddWord(entryId: string) {
   const result = await addToWordbook(entryId)
-  entryStatusMap.value = new Map(entryStatusMap.value).set(entryId, result.wordId)
+  const previous = entryStatusMap.value.get(entryId)
+  entryStatusMap.value = new Map(entryStatusMap.value).set(entryId, {
+    wordId: result.wordId,
+    listIds: [...new Set([...(previous?.listIds ?? []), 'system:lookup'])],
+  })
   messageType.value = 'success'
-  message.value = result.alreadyExists ? '该单词已在单词本中' : '已加入单词本'
+  message.value = result.alreadyExists ? '已保存在“仅保存”中' : '已保存，不会进入每日学习'
+}
+
+async function onAddToStudyList(entry: DictionaryEntry) {
+  if (!selectedStudyListId.value) {
+    messageType.value = 'error'
+    message.value = '请先在“词表”页创建学习词表'
+    return
+  }
+  addingEntryId.value = entry.entryId
+  try {
+    const wordId = await addEntryToStudyList(selectedStudyListId.value, entry)
+    const previous = entryStatusMap.value.get(entry.entryId)
+    entryStatusMap.value = new Map(entryStatusMap.value).set(entry.entryId, {
+      wordId,
+      listIds: [...new Set([...(previous?.listIds ?? []), selectedStudyListId.value])],
+    })
+    window.localStorage.setItem('wordsbook:last-study-list', selectedStudyListId.value)
+    messageType.value = 'success'
+    const listName = studyLists.value.find((list) => list.listId === selectedStudyListId.value)?.name ?? '学习词表'
+    message.value = `已加入「${listName}」· 将进入每日队列`
+    manageEntryId.value = ''
+  } catch (error) {
+    messageType.value = 'error'
+    message.value = error instanceof Error ? `加入失败：${error.message}` : '加入失败，请重试'
+  } finally {
+    addingEntryId.value = null
+  }
 }
 
 async function onRemoveWord(entry: DictionaryEntry) {
-  const wordId = entryStatusMap.value.get(entry.entryId)
-  if (!wordId) {
+  const status = entryStatusMap.value.get(entry.entryId)
+  if (!status?.listIds.includes('system:lookup')) {
     return
   }
 
-  if (!window.confirm(`确认从单词本删除 ${entry.headword} 吗？`)) {
+  if (!window.confirm(`确认取消保存「${entry.headword}」吗？学习词表中的归属不会受影响。`)) {
     return
   }
 
   deletingEntryId.value = entry.entryId
   try {
-    await removeWordFromWordbook(wordId)
+    await removeFromLookupCollection(status.wordId)
     const nextStatusMap = new Map(entryStatusMap.value)
-    nextStatusMap.delete(entry.entryId)
+    const remainingListIds = status.listIds.filter((listId) => listId !== 'system:lookup')
+    if (remainingListIds.length) nextStatusMap.set(entry.entryId, { ...status, listIds: remainingListIds })
+    else nextStatusMap.delete(entry.entryId)
     entryStatusMap.value = nextStatusMap
     messageType.value = 'success'
-    message.value = '已从单词本删除'
+    message.value = '已取消仅保存'
   } finally {
     deletingEntryId.value = null
   }
@@ -384,6 +448,20 @@ function parseLines(raw: string): string[] {
 
 <template>
   <section class="panel lookup-panel">
+    <section v-if="!installedMeta" class="dictionary-setup" aria-live="polite">
+      <template v-if="installing">
+        <h2>正在安装核心词典</h2>
+        <p>{{ progress?.message || '正在准备词典文件' }}</p>
+        <progress :value="progress?.ratio ?? 0" max="1" />
+        <span>{{ dictionaryProgress }}%</span>
+      </template>
+      <template v-else>
+        <h2>词典尚未就绪</h2>
+        <p v-if="lastError" class="error" role="alert">{{ lastError }}</p>
+        <p v-else>安装高频核心词典后即可查词。</p>
+        <button class="btn btn-primary" type="button" @click="retryDictionaryInstall">安装核心词典</button>
+      </template>
+    </section>
     <Transition name="soft-fade-slide">
       <p
         v-if="message"
@@ -441,7 +519,8 @@ function parseLines(raw: string): string[] {
                       <div class="entry-badges">
                         <span v-if="entry.dictionaryName" class="chip chip-secondary">{{ entry.dictionaryName }}</span>
                         <span v-if="entry.aiEnhanced" class="chip">AI {{ entry.aiEnhanceMode === 'replace' ? '替换' : '增强' }}</span>
-                        <span v-if="isAdded(entry.entryId)" class="chip">已加入</span>
+                        <span v-if="isAdded(entry.entryId)" class="chip">学习中</span>
+                        <span v-else-if="isSaved(entry.entryId)" class="chip chip-secondary">仅保存</span>
                       </div>
                     </div>
                     <p class="muted">{{ entry.phonetic || '无音标' }}</p>
@@ -456,20 +535,22 @@ function parseLines(raw: string): string[] {
                     <div class="actions">
                       <button class="btn" @click="onPlay(entry)">发音</button>
                       <button
-                        v-if="!isAdded(entry.entryId)"
                         class="btn btn-primary"
-                        @click="onAddWord(entry.entryId)"
+                        type="button"
+                        :disabled="addingEntryId === entry.entryId"
+                        @click="onAddToStudyList(entry)"
                       >
-                        加入单词本
+                        {{ addingEntryId === entry.entryId ? '加入中…' : isAdded(entry.entryId) ? '加入其他词表' : '加入学习' }}
                       </button>
-                      <button
-                        v-else
-                        class="btn btn-danger"
-                        :disabled="deletingEntryId === entry.entryId"
-                        @click="onRemoveWord(entry)"
-                      >
-                        {{ deletingEntryId === entry.entryId ? '删除中...' : '从词本删除' }}
-                      </button>
+                      <button class="btn btn-quiet" type="button" @click="manageEntryId = manageEntryId === entry.entryId ? '' : entry.entryId">选择词表与更多</button>
+                    </div>
+                    <div v-if="manageEntryId === entry.entryId" class="lookup-add-panel">
+                      <h4>加入哪些学习词表？</h4>
+                      <select v-if="studyLists.length" v-model="selectedStudyListId" class="inline-input" aria-label="选择学习词表"><option v-for="list in studyLists" :key="list.listId" :value="list.listId">{{ list.name }}</option></select>
+                      <button class="btn btn-primary" :disabled="addingEntryId === entry.entryId" type="button" @click="onAddToStudyList(entry)">{{ addingEntryId === entry.entryId ? '加入中…' : '确认加入学习' }}</button>
+                      <hr><p class="muted">只想留作参考，不安排复习？</p>
+                      <button v-if="!isSaved(entry.entryId)" class="btn" type="button" @click="onAddWord(entry.entryId)">仅保存</button>
+                      <button v-else class="btn btn-danger" :disabled="deletingEntryId === entry.entryId" type="button" @click="onRemoveWord(entry)">{{ deletingEntryId === entry.entryId ? '处理中…' : '取消仅保存' }}</button>
                     </div>
 
                     <details class="ai-details">
@@ -522,6 +603,7 @@ function parseLines(raw: string): string[] {
         <input
           ref="searchInputRef"
           v-model="query"
+          :disabled="!installedMeta || installing"
           class="search-input"
           type="text"
           placeholder="查询单词"

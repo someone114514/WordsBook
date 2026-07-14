@@ -45,7 +45,7 @@ function isTombstoneNewer(
 
 function reviewStateRank(state: ReviewState, updatedAt: string): string {
   return [
-    String(state.totalReviews).padStart(8, '0'),
+    String(state.reps ?? state.totalReviews).padStart(8, '0'),
     state.lastReviewedAt ?? '',
     updatedAt,
   ].join('|')
@@ -290,5 +290,12 @@ export function summarizeDataset(dataset: SyncDataset): Record<SyncEntity, numbe
     settings: dataset.records.filter((row) => row.entity === 'settings').length,
     aiOverrides: dataset.records.filter((row) => row.entity === 'aiOverrides').length,
     aiOverrideHistory: dataset.records.filter((row) => row.entity === 'aiOverrideHistory').length,
+    studyLists: dataset.records.filter((row) => row.entity === 'studyLists').length,
+    studyListItems: dataset.records.filter((row) => row.entity === 'studyListItems').length,
+    readingSessions: dataset.records.filter((row) => row.entity === 'readingSessions').length,
+    contextAttempts: dataset.records.filter((row) => row.entity === 'contextAttempts').length,
+    dailyLearningSessions: dataset.records.filter((row) => row.entity === 'dailyLearningSessions').length,
+    dailyQueueItems: dataset.records.filter((row) => row.entity === 'dailyQueueItems').length,
+    dailyQueueAttempts: dataset.records.filter((row) => row.entity === 'dailyQueueAttempts').length,
   }
 }

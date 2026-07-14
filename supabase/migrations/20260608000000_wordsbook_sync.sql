@@ -24,7 +24,11 @@ create table if not exists public.wordsbook_sync_records (
       'reviewLogs',
       'settings',
       'aiOverrides',
-      'aiOverrideHistory'
+      'aiOverrideHistory',
+      'studyLists',
+      'studyListItems',
+      'readingSessions',
+      'contextAttempts'
     )
   ),
   record_id text not null,

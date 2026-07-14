@@ -7,6 +7,13 @@ import type {
   SettingItem,
   SyncEntity,
   WordbookItem,
+  StudyList,
+  StudyListItem,
+  ReadingSession,
+  ContextAttempt,
+  DailyLearningSession,
+  DailyQueueItem,
+  DailyQueueAttempt,
 } from '../../types/models'
 
 export type SyncPayloadByEntity = {
@@ -17,6 +24,13 @@ export type SyncPayloadByEntity = {
   settings: SettingItem
   aiOverrides: AiOverrideRecord
   aiOverrideHistory: AiOverrideHistoryRecord
+  studyLists: StudyList
+  studyListItems: StudyListItem
+  readingSessions: ReadingSession
+  contextAttempts: ContextAttempt
+  dailyLearningSessions: DailyLearningSession
+  dailyQueueItems: DailyQueueItem
+  dailyQueueAttempts: DailyQueueAttempt
 }
 
 export type SyncPayload = SyncPayloadByEntity[SyncEntity]

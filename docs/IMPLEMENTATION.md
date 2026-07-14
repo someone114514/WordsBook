@@ -6,8 +6,10 @@ WordsBook 是一个可在 iPhone Safari 添加到主屏幕的离线优先背单�
 核心功能：
 1. 查词：本地词典极速检索，支持精确、词形还原、前缀、模糊匹配。
 2. 单词本：将词条加入本地学习库，支持备注/标签维护与删除。
-3. 复习：艾宾浩斯节奏（0/1/2/4/7/15/30/60 天）推进周期。
-4. 数据能力：支持备份导出、备份导入。
+3. 复习：FSRS 个体化调度，支持忘记/模糊/记得/太简单四档与当天短时学习。
+4. 词表：查词收藏、词表成员和学习计划解耦，统一保存单词与记忆状态。
+5. 阅读：按当天新词和薄弱词生成分级语境文章，测义后渐进揭示释义与翻译。
+6. 数据能力：支持备份导出、备份导入与可选云同步。
 
 ## 2. 技术栈
 1. Vue 3 + TypeScript + Vite
@@ -56,9 +58,11 @@ src/
 2. dictionary_entries: 词条数据。
 3. dictionary_index: 预构建 token -> entryIds 索引。
 4. wordbook: 用户加入的学习词。
-5. review_state: 每个词当前周期、下次复习时间。
-6. review_logs: 每次评分日志。
-7. settings: 应用配置（自动发音、每日上限等）。
+5. review_state: 每个词的 FSRS 难度、稳定性、状态、下次复习时间和短时重学覆盖。
+6. review_logs: 四档评分及评分前后状态。
+7. study_lists / study_list_items: 词表及多对多成员关系。
+8. reading_sessions / context_attempts: AI 文章缓存与语境测义记录。
+9. settings / local_secrets: 可同步设置与仅设备保存的 API 密钥。
 
 ## 5. 查词链路
 1. 输入 250ms 防抖。
@@ -67,9 +71,9 @@ src/
 4. 发音：音频优先，失败后 TTS。
 
 ## 6. 背词链路
-1. buildTodayPlan：到期优先 + 新词补齐。
-2. 卡片评分：remember / forget。
-3. gradeCard：周期推进或回退，并写 review_logs。
+1. buildTodayPlan：合并启用词表、去重、到期优先并按上限补充新词。
+2. 卡片评分：again / hard / good / easy，并预览各自间隔。
+3. gradeCard：由 FSRS 更新记忆状态并写 review_logs；当天学习/重学按分钟级步进再次到期。
 
 ## 7. 词典安装链路
 1. 读取 manifest。

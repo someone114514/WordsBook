@@ -27,7 +27,9 @@ npm run test:e2e
 
 - First launch: install mixed dictionaries, now including ECDICT full generated from `asserts/ECDICT-master/ecdict.csv`.
 - Lookup order: exact -> lemma -> prefix -> fuzzy.
-- Review schedule: `[0, 1, 2, 4, 7, 15, 30, 60]` days.
+- Review schedule: FSRS 5 with Again / Hard / Good / Easy grading and same-day learning steps.
+- Study lists: lookup collection and study membership are independent; TXT/CSV/TSV imports are supported.
+- Context reading: DeepSeek can generate resumable graded passages from today's new and difficult words.
 - Backup: export/import available in Settings.
 
 ## Dictionary Source

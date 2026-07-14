@@ -13,10 +13,11 @@ import type {
   SyncPayloadByEntity,
   SyncRecord,
 } from './syncTypes'
+import { buildPrefixTokens } from '../dictionary/search'
 
 const CLIENT_ID_KEY = 'clientId'
 const SENSITIVE_SETTING_KEYS = new Set(['deepseekApiKey'])
-const LOCAL_DICTIONARY_IDS = new Set(['ai-local'])
+const LOCAL_DICTIONARY_IDS = new Set(['ai-local', 'user-import'])
 const EPOCH = '1970-01-01T00:00:00.000Z'
 
 export function syncRecordKey(entity: SyncEntity, recordId: string): string {
@@ -59,6 +60,20 @@ export function getPayloadRecordId(entity: SyncEntity, payload: SyncPayload): st
       return (payload as SyncPayloadByEntity['aiOverrides']).entryId
     case 'aiOverrideHistory':
       return aiOverrideHistorySyncId(payload as SyncPayloadByEntity['aiOverrideHistory'])
+    case 'studyLists':
+      return (payload as SyncPayloadByEntity['studyLists']).listId
+    case 'studyListItems':
+      return (payload as SyncPayloadByEntity['studyListItems']).membershipId
+    case 'readingSessions':
+      return (payload as SyncPayloadByEntity['readingSessions']).sessionId
+    case 'contextAttempts':
+      return (payload as SyncPayloadByEntity['contextAttempts']).attemptId
+    case 'dailyLearningSessions':
+      return (payload as SyncPayloadByEntity['dailyLearningSessions']).sessionId
+    case 'dailyQueueItems':
+      return (payload as SyncPayloadByEntity['dailyQueueItems']).itemId
+    case 'dailyQueueAttempts':
+      return (payload as SyncPayloadByEntity['dailyQueueAttempts']).attemptId
   }
 }
 
@@ -81,6 +96,20 @@ function getPayloadTimestamp(entity: SyncEntity, payload: SyncPayload): string {
       return (payload as SyncPayloadByEntity['aiOverrides']).createdAt
     case 'aiOverrideHistory':
       return (payload as SyncPayloadByEntity['aiOverrideHistory']).createdAt
+    case 'studyLists':
+      return (payload as SyncPayloadByEntity['studyLists']).updatedAt
+    case 'studyListItems':
+      return (payload as SyncPayloadByEntity['studyListItems']).addedAt
+    case 'readingSessions':
+      return (payload as SyncPayloadByEntity['readingSessions']).updatedAt
+    case 'contextAttempts':
+      return (payload as SyncPayloadByEntity['contextAttempts']).answeredAt
+    case 'dailyLearningSessions':
+      return (payload as SyncPayloadByEntity['dailyLearningSessions']).updatedAt
+    case 'dailyQueueItems':
+      return (payload as SyncPayloadByEntity['dailyQueueItems']).updatedAt
+    case 'dailyQueueAttempts':
+      return (payload as SyncPayloadByEntity['dailyQueueAttempts']).answeredAt
   }
 }
 
@@ -193,6 +222,13 @@ export async function collectLocalSyncDataset(): Promise<SyncDataset> {
   for (const history of await db.aiOverrideHistory.toArray()) {
     records.push(await collectRecord('aiOverrideHistory', history, sourceClientId, metaMap))
   }
+  for (const row of await db.studyLists.toArray()) records.push(await collectRecord('studyLists', row, sourceClientId, metaMap))
+  for (const row of await db.studyListItems.toArray()) records.push(await collectRecord('studyListItems', row, sourceClientId, metaMap))
+  for (const row of await db.readingSessions.toArray()) records.push(await collectRecord('readingSessions', row, sourceClientId, metaMap))
+  for (const row of await db.contextAttempts.toArray()) records.push(await collectRecord('contextAttempts', row, sourceClientId, metaMap))
+  for (const row of await db.dailyLearningSessions.toArray()) records.push(await collectRecord('dailyLearningSessions', row, sourceClientId, metaMap))
+  for (const row of await db.dailyQueueItems.toArray()) records.push(await collectRecord('dailyQueueItems', row, sourceClientId, metaMap))
+  for (const row of await db.dailyQueueAttempts.toArray()) records.push(await collectRecord('dailyQueueAttempts', row, sourceClientId, metaMap))
 
   const tombstones = (await db.syncTombstones.toArray()).map((row) => ({
     entity: row.entity,
@@ -269,6 +305,27 @@ export async function applyRemoteRecord(record: SyncRecord): Promise<void> {
         record.sourceClientId,
       )
       return
+    case 'studyLists':
+      await db.studyLists.put(record.payload as SyncPayloadByEntity['studyLists'])
+      break
+    case 'studyListItems':
+      await db.studyListItems.put(record.payload as SyncPayloadByEntity['studyListItems'])
+      break
+    case 'readingSessions':
+      await db.readingSessions.put(record.payload as SyncPayloadByEntity['readingSessions'])
+      break
+    case 'contextAttempts':
+      await db.contextAttempts.put(record.payload as SyncPayloadByEntity['contextAttempts'])
+      break
+    case 'dailyLearningSessions':
+      await db.dailyLearningSessions.put(record.payload as SyncPayloadByEntity['dailyLearningSessions'])
+      break
+    case 'dailyQueueItems':
+      await db.dailyQueueItems.put(record.payload as SyncPayloadByEntity['dailyQueueItems'])
+      break
+    case 'dailyQueueAttempts':
+      await db.dailyQueueAttempts.put(record.payload as SyncPayloadByEntity['dailyQueueAttempts'])
+      break
   }
 
   await markRecordChanged(record.entity, record.recordId, record.updatedAt)
@@ -309,6 +366,13 @@ export async function applyRemoteRecords(records: SyncRecord[]): Promise<void> {
   const aiOverrides = safeRecords
     .filter((record) => record.entity === 'aiOverrides')
     .map((record) => record.payload as SyncPayloadByEntity['aiOverrides'])
+  const studyLists = safeRecords.filter((record) => record.entity === 'studyLists').map((record) => record.payload as SyncPayloadByEntity['studyLists'])
+  const studyListItems = safeRecords.filter((record) => record.entity === 'studyListItems').map((record) => record.payload as SyncPayloadByEntity['studyListItems'])
+  const readingSessions = safeRecords.filter((record) => record.entity === 'readingSessions').map((record) => record.payload as SyncPayloadByEntity['readingSessions'])
+  const contextAttempts = safeRecords.filter((record) => record.entity === 'contextAttempts').map((record) => record.payload as SyncPayloadByEntity['contextAttempts'])
+  const dailyLearningSessions = safeRecords.filter((record) => record.entity === 'dailyLearningSessions').map((record) => record.payload as SyncPayloadByEntity['dailyLearningSessions'])
+  const dailyQueueItems = safeRecords.filter((record) => record.entity === 'dailyQueueItems').map((record) => record.payload as SyncPayloadByEntity['dailyQueueItems'])
+  const dailyQueueAttempts = safeRecords.filter((record) => record.entity === 'dailyQueueAttempts').map((record) => record.payload as SyncPayloadByEntity['dailyQueueAttempts'])
 
   const reviewLogRecords = safeRecords.filter((record) => record.entity === 'reviewLogs')
   const historyRecords = safeRecords.filter((record) => record.entity === 'aiOverrideHistory')
@@ -333,18 +397,40 @@ export async function applyRemoteRecords(records: SyncRecord[]): Promise<void> {
     'rw',
     [
       db.dictionaryEntries,
+      db.dictionaryIndex,
       db.wordbook,
       db.reviewState,
       db.reviewLogs,
       db.settings,
       db.aiOverrides,
       db.aiOverrideHistory,
+      db.studyLists,
+      db.studyListItems,
+      db.readingSessions,
+      db.contextAttempts,
+      db.dailyLearningSessions,
+      db.dailyQueueItems,
+      db.dailyQueueAttempts,
       db.syncRecords,
       db.syncTombstones,
     ],
     async () => {
       if (dictionaryEntries.length > 0) {
         await db.dictionaryEntries.bulkPut(dictionaryEntries)
+        const tokenMap = new Map<string, Set<string>>()
+        for (const entry of dictionaryEntries) {
+          for (const token of buildPrefixTokens(entry.headwordLower || entry.headword)) {
+            const bucket = tokenMap.get(token) ?? new Set<string>()
+            bucket.add(entry.entryId)
+            tokenMap.set(token, bucket)
+          }
+        }
+        const tokens = [...tokenMap.keys()]
+        const current = await db.dictionaryIndex.bulkGet(tokens)
+        await db.dictionaryIndex.bulkPut(tokens.map((token, index) => ({
+          token,
+          entryIds: [...new Set([...(current[index]?.entryIds ?? []), ...(tokenMap.get(token) ?? [])])],
+        })))
       }
       if (wordbook.length > 0) {
         await db.wordbook.bulkPut(wordbook)
@@ -364,6 +450,13 @@ export async function applyRemoteRecords(records: SyncRecord[]): Promise<void> {
       if (history.length > 0) {
         await db.aiOverrideHistory.bulkPut(history)
       }
+      if (studyLists.length > 0) await db.studyLists.bulkPut(studyLists)
+      if (studyListItems.length > 0) await db.studyListItems.bulkPut(studyListItems)
+      if (readingSessions.length > 0) await db.readingSessions.bulkPut(readingSessions)
+      if (contextAttempts.length > 0) await db.contextAttempts.bulkPut(contextAttempts)
+      if (dailyLearningSessions.length > 0) await db.dailyLearningSessions.bulkPut(dailyLearningSessions)
+      if (dailyQueueItems.length > 0) await db.dailyQueueItems.bulkPut(dailyQueueItems)
+      if (dailyQueueAttempts.length > 0) await db.dailyQueueAttempts.bulkPut(dailyQueueAttempts)
       if (metadata.length > 0) {
         await db.syncRecords.bulkPut(metadata)
         await db.syncTombstones.bulkDelete(metadataKeys)
@@ -417,6 +510,27 @@ export async function applyRemoteDeletion(tombstone: SyncDeletedRecord): Promise
     case 'aiOverrideHistory':
       await deleteAiOverrideHistoryBySyncId(tombstone.recordId)
       break
+    case 'studyLists':
+      await db.studyLists.delete(tombstone.recordId)
+      break
+    case 'studyListItems':
+      await db.studyListItems.delete(tombstone.recordId)
+      break
+    case 'readingSessions':
+      await db.readingSessions.delete(tombstone.recordId)
+      break
+    case 'contextAttempts':
+      await db.contextAttempts.delete(tombstone.recordId)
+      break
+    case 'dailyLearningSessions':
+      await db.dailyLearningSessions.delete(tombstone.recordId)
+      break
+    case 'dailyQueueItems':
+      await db.dailyQueueItems.delete(tombstone.recordId)
+      break
+    case 'dailyQueueAttempts':
+      await db.dailyQueueAttempts.delete(tombstone.recordId)
+      break
   }
 
   const row: SyncTombstone = {
@@ -444,6 +558,13 @@ export async function applyRemoteDeletions(tombstones: SyncDeletedRecord[]): Pro
     .filter((row) => row.entity === 'settings' && !SENSITIVE_SETTING_KEYS.has(row.recordId))
     .map((row) => row.recordId)
   const aiOverrideIds = tombstones.filter((row) => row.entity === 'aiOverrides').map((row) => row.recordId)
+  const studyListIds = tombstones.filter((row) => row.entity === 'studyLists').map((row) => row.recordId)
+  const studyListItemIds = tombstones.filter((row) => row.entity === 'studyListItems').map((row) => row.recordId)
+  const readingSessionIds = tombstones.filter((row) => row.entity === 'readingSessions').map((row) => row.recordId)
+  const contextAttemptIds = tombstones.filter((row) => row.entity === 'contextAttempts').map((row) => row.recordId)
+  const dailyLearningSessionIds = tombstones.filter((row) => row.entity === 'dailyLearningSessions').map((row) => row.recordId)
+  const dailyQueueItemIds = tombstones.filter((row) => row.entity === 'dailyQueueItems').map((row) => row.recordId)
+  const dailyQueueAttemptIds = tombstones.filter((row) => row.entity === 'dailyQueueAttempts').map((row) => row.recordId)
 
   const reviewLogIds = new Set(tombstones.filter((row) => row.entity === 'reviewLogs').map((row) => row.recordId))
   const reviewLogLocalIds = (await db.reviewLogs.toArray())
@@ -475,6 +596,13 @@ export async function applyRemoteDeletions(tombstones: SyncDeletedRecord[]): Pro
       db.settings,
       db.aiOverrides,
       db.aiOverrideHistory,
+      db.studyLists,
+      db.studyListItems,
+      db.readingSessions,
+      db.contextAttempts,
+      db.dailyLearningSessions,
+      db.dailyQueueItems,
+      db.dailyQueueAttempts,
       db.syncRecords,
       db.syncTombstones,
     ],
@@ -487,6 +615,13 @@ export async function applyRemoteDeletions(tombstones: SyncDeletedRecord[]): Pro
         db.settings.bulkDelete(settingIds),
         db.aiOverrides.bulkDelete(aiOverrideIds),
         db.aiOverrideHistory.bulkDelete(historyLocalIds),
+        db.studyLists.bulkDelete(studyListIds),
+        db.studyListItems.bulkDelete(studyListItemIds),
+        db.readingSessions.bulkDelete(readingSessionIds),
+        db.contextAttempts.bulkDelete(contextAttemptIds),
+        db.dailyLearningSessions.bulkDelete(dailyLearningSessionIds),
+        db.dailyQueueItems.bulkDelete(dailyQueueItemIds),
+        db.dailyQueueAttempts.bulkDelete(dailyQueueAttemptIds),
       ])
       await db.syncTombstones.bulkPut(rows)
       await db.syncRecords.bulkDelete(rows.map((row) => row.key))
