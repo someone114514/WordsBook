@@ -317,7 +317,7 @@ async function onAddToStudyList(entry: DictionaryEntry) {
   }
   addingEntryId.value = entry.entryId
   try {
-    const wordId = await addEntryToStudyList(selectedStudyListId.value, entry)
+    const wordId = await addEntryToStudyList(selectedStudyListId.value, entry, 'lookup')
     const previous = entryStatusMap.value.get(entry.entryId)
     entryStatusMap.value = new Map(entryStatusMap.value).set(entry.entryId, {
       wordId,

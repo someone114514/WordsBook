@@ -59,6 +59,7 @@ export interface StudyListItem {
   membershipId: string
   listId: string
   wordId: string
+  source?: 'lookup' | 'article' | 'manual' | 'import' | 'migration'
   addedAt: string
 }
 
@@ -161,6 +162,8 @@ export type DailyQueueReason =
   | 'again-repeat'
   | 'hard-repeat'
   | 'context-retry'
+  | 'list-change'
+  | 'extra-batch'
 
 export interface DailyLearningSession {
   sessionId: string
@@ -169,8 +172,14 @@ export interface DailyLearningSession {
   phase: 'cards' | 'article' | 'summary'
   selectedListIds: string[]
   initialWordIds: string[]
+  sourceRevision?: string
+  sourceEligibleWordIds?: string[]
+  dismissedSourceRevision?: string
+  baseWordCount?: number
+  extensionBatchCount?: number
+  articleGenerationWordCount?: number
   cardsCompletedAt?: string
-  articleStatus: 'waiting' | 'generating' | 'ready' | 'completed' | 'skipped' | 'failed'
+  articleStatus: 'waiting' | 'generating' | 'ready' | 'completed' | 'skipped' | 'failed' | 'stale'
   createdAt: string
   updatedAt: string
   completedAt?: string

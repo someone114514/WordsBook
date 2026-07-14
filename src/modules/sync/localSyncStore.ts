@@ -14,6 +14,7 @@ import type {
   SyncRecord,
 } from './syncTypes'
 import { buildPrefixTokens } from '../dictionary/search'
+import { markStudyDataChanged } from '../review/studyDataRevision'
 
 const CLIENT_ID_KEY = 'clientId'
 const SENSITIVE_SETTING_KEYS = new Set(['deepseekApiKey'])
@@ -463,6 +464,9 @@ export async function applyRemoteRecords(records: SyncRecord[]): Promise<void> {
       }
     },
   )
+  if (safeRecords.some((record) => ['wordbook', 'reviewState', 'settings', 'studyLists', 'studyListItems'].includes(record.entity))) {
+    await markStudyDataChanged({ affectsQueue: safeRecords.some((record) => ['wordbook', 'reviewState', 'studyLists', 'studyListItems'].includes(record.entity)) })
+  }
 }
 
 async function deleteReviewLogBySyncId(recordId: string): Promise<void> {
@@ -627,6 +631,9 @@ export async function applyRemoteDeletions(tombstones: SyncDeletedRecord[]): Pro
       await db.syncRecords.bulkDelete(rows.map((row) => row.key))
     },
   )
+  if (tombstones.some((row) => ['wordbook', 'reviewState', 'settings', 'studyLists', 'studyListItems'].includes(row.entity))) {
+    await markStudyDataChanged({ affectsQueue: tombstones.some((row) => ['wordbook', 'reviewState', 'studyLists', 'studyListItems'].includes(row.entity)) })
+  }
 }
 
 export function compareIso(left: string | undefined, right: string | undefined): number {

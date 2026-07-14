@@ -5,6 +5,7 @@ import { dictionaryEntryFromWordbook, repairVocabularyIntegrity } from '../wordb
 import { applyAiOverrides } from '../dictionary/entryOverrideMapper'
 import { loadSettings } from '../settings/settingsService'
 import { markPayloadChanged, markRecordChanged } from '../sync/localSyncStore'
+import { getStudyDataRevision, markStudyDataChanged } from './studyDataRevision'
 import {
   cardToReviewState,
   formatInterval,
@@ -24,15 +25,31 @@ interface BuildPlanOptions {
 
 interface PlanCache {
   plan: StudyPlan
-  createdAt: number
-  fingerprint: string
+  revision: string
+  dailyNewLimit: number
+  dailyReviewLimit: number
   dayKey: string
 }
 
-const PLAN_CACHE_REFRESH_MS = 3 * 60 * 1000
 let planCache: PlanCache | null = null
 
-async function getStudyWordbookRows(listIds?: string[]): Promise<Array<{ word: WordbookItem; listIds: string[] }>> {
+type ActiveStateRow = {
+  wordId: string
+  state: ReviewState
+  listIds: string[]
+  sourcePriority: number
+  joinedAt: string
+}
+
+const SOURCE_PRIORITY = {
+  lookup: 5,
+  article: 4,
+  manual: 3,
+  import: 2,
+  migration: 1,
+} as const
+
+async function getStudyWordbookRows(listIds?: string[]): Promise<Array<{ word: WordbookItem; listIds: string[]; sourcePriority: number; joinedAt: string }>> {
   const enabledLists = listIds?.length
     ? await db.studyLists.where('listId').anyOf(listIds).toArray()
     : await db.studyLists.where('studyEnabled').equals(1).toArray()
@@ -41,20 +58,28 @@ async function getStudyWordbookRows(listIds?: string[]): Promise<Array<{ word: W
     .map((list) => list.listId)
   if (activeListIds.length === 0) return []
   const memberships = await db.studyListItems.where('listId').anyOf(activeListIds).toArray()
-  const membershipMap = new Map<string, string[]>()
+  const membershipMap = new Map<string, typeof memberships>()
   for (const membership of memberships) {
     const bucket = membershipMap.get(membership.wordId) ?? []
-    bucket.push(membership.listId)
+    bucket.push(membership)
     membershipMap.set(membership.wordId, bucket)
   }
   const wordIds = [...membershipMap.keys()]
   const words = await db.wordbook.bulkGet(wordIds)
   return words
     .filter((row): row is WordbookItem => Boolean(row && row.archived === 0 && row.integrityStatus !== 'needs-repair'))
-    .map((word) => ({ word, listIds: membershipMap.get(word.wordId) ?? [] }))
+    .map((word) => {
+      const rows = membershipMap.get(word.wordId) ?? []
+      return {
+        word,
+        listIds: rows.map((row) => row.listId),
+        sourcePriority: Math.max(...rows.map((row) => SOURCE_PRIORITY[row.source ?? 'migration']), 0),
+        joinedAt: rows.map((row) => row.addedAt).sort().slice(-1)[0] ?? word.addedAt,
+      }
+    })
 }
 
-async function getActiveStateRows(listIds?: string[]): Promise<Array<{ wordId: string; state: ReviewState; listIds: string[] }>> {
+async function getActiveStateRows(listIds?: string[]): Promise<ActiveStateRow[]> {
   const wordbookRows = await getStudyWordbookRows(listIds)
   const stateRows = await db.reviewState.bulkGet(wordbookRows.map((row) => row.word.wordId))
   const stateMap = new Map(
@@ -63,12 +88,12 @@ async function getActiveStateRows(listIds?: string[]): Promise<Array<{ wordId: s
       .map((state) => [state.wordId, state]),
   )
   const missingStates: ReviewState[] = []
-  const activeRows: Array<{ wordId: string; state: ReviewState; listIds: string[] }> = []
+  const activeRows: ActiveStateRow[] = []
 
   for (const wordbookRow of wordbookRows) {
     const existingState = stateMap.get(wordbookRow.word.wordId)
     if (existingState) {
-      activeRows.push({ wordId: wordbookRow.word.wordId, state: existingState, listIds: wordbookRow.listIds })
+      activeRows.push({ wordId: wordbookRow.word.wordId, state: existingState, listIds: wordbookRow.listIds, sourcePriority: wordbookRow.sourcePriority, joinedAt: wordbookRow.joinedAt })
       continue
     }
 
@@ -81,7 +106,7 @@ async function getActiveStateRows(listIds?: string[]): Promise<Array<{ wordId: s
       totalReviews: 0,
     }
     missingStates.push(fallbackState)
-    activeRows.push({ wordId: wordbookRow.word.wordId, state: fallbackState, listIds: wordbookRow.listIds })
+    activeRows.push({ wordId: wordbookRow.word.wordId, state: fallbackState, listIds: wordbookRow.listIds, sourcePriority: wordbookRow.sourcePriority, joinedAt: wordbookRow.joinedAt })
   }
 
   if (missingStates.length > 0) {
@@ -143,7 +168,9 @@ export async function buildTodayPlan(options: BuildPlanOptions = {}): Promise<St
 
   const newRows = rows
     .filter((row) => !row.state.suspendedAt && (row.state.reps ?? row.state.totalReviews) === 0)
-    .sort((left, right) => left.state.nextReviewAt.localeCompare(right.state.nextReviewAt))
+    .sort((left, right) => right.sourcePriority - left.sourcePriority
+      || right.joinedAt.localeCompare(left.joinedAt)
+      || left.state.nextReviewAt.localeCompare(right.state.nextReviewAt))
 
   const selectedDue = dueRows.slice(0, dailyReviewLimit)
   const effectiveNewLimit = dueRows.length > dailyReviewLimit
@@ -152,24 +179,18 @@ export async function buildTodayPlan(options: BuildPlanOptions = {}): Promise<St
       ? Math.ceil(dailyNewLimit / 2)
       : dailyNewLimit
   const enabledListIds = [...new Set(rows.flatMap((row) => row.listIds))]
-  const newByList = new Map(enabledListIds.map((listId) => [listId, newRows.filter((row) => row.listIds.includes(listId))]))
-  const selectedNew: typeof newRows = []
-  const selectedNewIds = new Set<string>()
-  while (selectedNew.length < effectiveNewLimit) {
-    let added = false
-    for (const listId of enabledListIds) {
-      const bucket = newByList.get(listId) ?? []
-      const row = bucket.find((candidate) => !selectedNewIds.has(candidate.wordId))
-      if (!row) continue
-      selectedNew.push(row)
-      selectedNewIds.add(row.wordId)
-      added = true
-      if (selectedNew.length >= effectiveNewLimit) break
-    }
-    if (!added) break
-  }
+  const selectedNew = newRows.slice(0, effectiveNewLimit)
 
-  const selectedRows = [...selectedDue, ...selectedNew]
+  const selectedRows: typeof rows = []
+  let dueIndex = 0
+  let newIndex = 0
+  const selectedTotal = selectedDue.length + selectedNew.length
+  while (selectedRows.length < selectedTotal) {
+    const desiredNewCount = Math.round((selectedRows.length + 1) * selectedNew.length / selectedTotal)
+    if (newIndex < desiredNewCount && selectedNew[newIndex]) selectedRows.push(selectedNew[newIndex++]!)
+    else if (selectedDue[dueIndex]) selectedRows.push(selectedDue[dueIndex++]!)
+    else if (selectedNew[newIndex]) selectedRows.push(selectedNew[newIndex++]!)
+  }
   const activeLists = await db.studyLists.bulkGet(enabledListIds)
   const listContributions = activeLists.flatMap((list, index) => list ? [{
     listId: enabledListIds[index]!,
@@ -198,33 +219,13 @@ function getTodayKey(date = new Date()): string {
   return dayjs(date).format('YYYY-MM-DD')
 }
 
-async function getPlanFingerprint(
-  dailyNewLimit: number,
-  dailyReviewLimit: number,
-): Promise<string> {
-  const [activeCount, latestWordbookRow, latestReviewLog] = await Promise.all([
-    db.wordbook.where('archived').equals(0).count(),
-    db.wordbook.orderBy('addedAt').last(),
-    db.reviewLogs.orderBy('id').last(),
-  ])
-
-  return [
-    activeCount,
-    latestWordbookRow?.addedAt ?? '-',
-    latestReviewLog?.id ?? 0,
-    dailyNewLimit,
-    dailyReviewLimit,
-  ].join('|')
-}
-
 export function getCachedStudyPlan(): StudyPlan | null {
   if (!planCache) {
     return null
   }
 
   const isToday = planCache.dayKey === getTodayKey()
-  const isFresh = Date.now() - planCache.createdAt < PLAN_CACHE_REFRESH_MS
-  if (isToday && isFresh) {
+  if (isToday) {
     return planCache.plan
   }
 
@@ -236,20 +237,15 @@ export function invalidateStudyPlanCache(): void {
 }
 
 export async function buildTodayPlanCached(): Promise<StudyPlan> {
-  if (planCache && planCache.dayKey === getTodayKey() && Date.now() - planCache.createdAt < PLAN_CACHE_REFRESH_MS) {
-    return planCache.plan
-  }
-
-  const settings = await loadSettings()
+  const [settings, revision] = await Promise.all([loadSettings(), getStudyDataRevision()])
   const dayKey = getTodayKey()
-  const fingerprint = await getPlanFingerprint(settings.dailyNewLimit, settings.dailyReviewLimit)
-  const now = Date.now()
 
   if (
     planCache &&
     planCache.dayKey === dayKey &&
-    planCache.fingerprint === fingerprint &&
-    now - planCache.createdAt < PLAN_CACHE_REFRESH_MS
+    planCache.revision === revision &&
+    planCache.dailyNewLimit === settings.dailyNewLimit &&
+    planCache.dailyReviewLimit === settings.dailyReviewLimit
   ) {
     return planCache.plan
   }
@@ -261,12 +257,67 @@ export async function buildTodayPlanCached(): Promise<StudyPlan> {
 
   planCache = {
     plan,
-    createdAt: now,
-    fingerprint,
+    revision,
+    dailyNewLimit: settings.dailyNewLimit,
+    dailyReviewLimit: settings.dailyReviewLimit,
     dayKey,
   }
 
   return plan
+}
+
+export async function listEligibleStudyWordIds(
+  excludeWordIds: string[] = [],
+  listIds?: string[],
+  at = new Date(),
+): Promise<string[]> {
+  const plan = await buildTodayPlan({
+    at,
+    listIds,
+    excludeWordIds,
+    dailyNewLimit: Number.MAX_SAFE_INTEGER,
+    dailyReviewLimit: Number.MAX_SAFE_INTEGER,
+  })
+  return plan.queueWordIds
+}
+
+export async function buildAdditionalStudyWordIds(
+  count: number,
+  excludeWordIds: string[] = [],
+  listIds?: string[],
+  at = new Date(),
+): Promise<string[]> {
+  const normalizedCount = Math.max(0, Math.floor(count))
+  if (!normalizedCount) return []
+  const excluded = new Set(excludeWordIds)
+  const rows = (await getActiveStateRows(listIds)).filter((row) => !excluded.has(row.wordId) && !row.state.suspendedAt)
+  const due = rows
+    .filter((row) => (row.state.reps ?? row.state.totalReviews) > 0 && !dayjs(row.state.nextReviewAt).isAfter(at))
+    .sort((left, right) => getReviewRetrievability(left.state, at) - getReviewRetrievability(right.state, at)
+      || left.state.nextReviewAt.localeCompare(right.state.nextReviewAt))
+  const fresh = rows
+    .filter((row) => (row.state.reps ?? row.state.totalReviews) === 0)
+    .sort((left, right) => right.sourcePriority - left.sourcePriority || right.joinedAt.localeCompare(left.joinedAt))
+  let dueTarget = due.length && fresh.length ? Math.max(1, Math.ceil(normalizedCount * 0.6)) : normalizedCount
+  let newTarget = due.length && fresh.length ? Math.max(1, normalizedCount - dueTarget) : 0
+  if (!due.length) { dueTarget = 0; newTarget = normalizedCount }
+  if (!fresh.length) { dueTarget = normalizedCount; newTarget = 0 }
+  const pickedDue = due.slice(0, dueTarget)
+  const pickedNew = fresh.slice(0, newTarget)
+  const remaining = normalizedCount - pickedDue.length - pickedNew.length
+  if (remaining > 0) {
+    const dueRest = due.slice(pickedDue.length)
+    const newRest = fresh.slice(pickedNew.length)
+    for (const row of [...dueRest, ...newRest].slice(0, remaining)) {
+      if ((row.state.reps ?? row.state.totalReviews) === 0) pickedNew.push(row)
+      else pickedDue.push(row)
+    }
+  }
+  const result: string[] = []
+  while (pickedDue.length || pickedNew.length) {
+    for (const row of [pickedDue.shift(), pickedNew.shift()]) if (row) result.push(row.wordId)
+  }
+  return result.slice(0, normalizedCount)
 }
 
 export async function loadReviewCards(wordIds: string[]): Promise<ReviewCard[]> {
@@ -370,8 +421,6 @@ export async function gradeCard(
     await db.reviewLogs.add(log)
     await markRecordChanged('reviewState', wordId, reviewedAtIso)
     await markPayloadChanged('reviewLogs', log, reviewedAtIso)
-    invalidateStudyPlanCache()
-
     return updatedState
   })
 }
@@ -395,5 +444,6 @@ export async function setWordSuspended(wordId: string, suspended: boolean): Prom
   if (!state) throw new Error('Review state missing')
   await db.reviewState.put({ ...state, suspendedAt: suspended ? new Date().toISOString() : undefined })
   await markRecordChanged('reviewState', wordId)
+  await markStudyDataChanged()
   invalidateStudyPlanCache()
 }

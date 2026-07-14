@@ -14,7 +14,7 @@ const tabs = [
 
 const title = computed(() => String(route.meta.title ?? 'WordsBook'))
 const immersiveMode = computed(() => Boolean(route.meta.immersive))
-const keepAliveViews = ['LookupView', 'ReviewView', 'StudyListsView', 'SettingsView']
+const keepAliveViews = ['LookupView', 'ReviewView', 'StudyListsView', 'StudyListDetailView', 'SettingsView']
 
 function navigateTab(path: string, event: MouseEvent): void {
   event.preventDefault()

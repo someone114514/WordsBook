@@ -9,10 +9,10 @@ import type {
   ReviewState,
 } from '../../types/models'
 import { markPayloadChanged, markRecordChanged } from '../sync/localSyncStore'
-import { buildTodayPlan, gradeCard } from './reviewService'
+import { buildAdditionalStudyWordIds, buildTodayPlan, gradeCard, listEligibleStudyWordIds } from './reviewService'
 import { getReviewRetrievability } from './scheduler'
+import { getStudyQueueRevision } from './studyDataRevision'
 import { repairVocabularyIntegrity } from '../wordbook/vocabularyIntegrity'
-import { loadSettings } from '../settings/settingsService'
 
 const MAX_DAILY_ATTEMPTS = 5
 
@@ -23,6 +23,14 @@ export interface DailyQueueSnapshot {
   current?: DailyQueueItem
   completedCards: number
   totalCards: number
+}
+
+export interface DailyQueueChangePreview {
+  revision: string
+  eligibleWordIds: string[]
+  addedWordIds: string[]
+  removedWordIds: string[]
+  dismissed: boolean
 }
 
 function dayKey(at = new Date()): string {
@@ -88,93 +96,136 @@ function createInitialQueueItems(
   })
 }
 
-async function refreshCurrentSession(
-  existing: DailyLearningSession,
-  listIds: string[] | undefined,
-  at: Date,
-): Promise<DailyLearningSession> {
-  if (existing.status !== 'active' || existing.articleStatus !== 'waiting') return existing
-  const requestedListIds = listIds ?? (existing.selectedListIds.length ? existing.selectedListIds : undefined)
-  const [attempts, existingItems, settings] = await Promise.all([
-    db.dailyQueueAttempts.where('sessionId').equals(existing.sessionId).toArray(),
-    db.dailyQueueItems.where('sessionId').equals(existing.sessionId).toArray(),
-    loadSettings(),
+export async function previewDailyQueueChanges(sessionId: string, at = new Date()): Promise<DailyQueueChangePreview> {
+  const session = await db.dailyLearningSessions.get(sessionId)
+  if (!session) throw new Error('今日学习会话不存在')
+  const revision = await getStudyQueueRevision()
+  if (revision === (session.sourceRevision ?? revision)) {
+    return { revision, eligibleWordIds: session.sourceEligibleWordIds ?? session.initialWordIds, addedWordIds: [], removedWordIds: [], dismissed: false }
+  }
+  const [eligibleWordIds, attempts, items] = await Promise.all([
+    listEligibleStudyWordIds([], session.selectedListIds.length ? session.selectedListIds : undefined, at),
+    db.dailyQueueAttempts.where('sessionId').equals(sessionId).toArray(),
+    db.dailyQueueItems.where('sessionId').equals(sessionId).toArray(),
   ])
-  const attemptedWordIds = [...new Set(attempts.map((attempt) => attempt.wordId))]
-  const attemptedSet = new Set(attemptedWordIds)
-  const firstItems = new Map<string, DailyQueueItem>()
-  for (const item of existingItems.slice().sort((left, right) => left.attemptNo - right.attemptNo)) {
-    if (item.wordId && !firstItems.has(item.wordId)) firstItems.set(item.wordId, item)
+  const eligible = new Set(eligibleWordIds)
+  const attempted = new Set(attempts.map((attempt) => attempt.wordId))
+  const baseline = new Set(session.sourceEligibleWordIds ?? eligibleWordIds)
+  const included = new Set(session.initialWordIds)
+  const pendingWordIds = new Set(items.filter((item) => item.wordId && (item.status === 'pending' || item.status === 'active')).map((item) => item.wordId!))
+  return {
+    revision,
+    eligibleWordIds,
+    addedWordIds: eligibleWordIds.filter((wordId) => !baseline.has(wordId) && !included.has(wordId)),
+    removedWordIds: session.initialWordIds.filter((wordId) => pendingWordIds.has(wordId) && !attempted.has(wordId) && !eligible.has(wordId)),
+    dismissed: session.dismissedSourceRevision === revision,
   }
-  const [attemptedStates, attemptedLogs] = await Promise.all([
-    db.reviewState.bulkGet(attemptedWordIds),
-    attemptedWordIds.length ? db.reviewLogs.where('wordId').anyOf(attemptedWordIds).toArray() : [],
-  ])
-  let attemptedNew = 0
-  let attemptedReview = 0
-  for (const [index, wordId] of attemptedWordIds.entries()) {
-    const item = firstItems.get(wordId)
-    const state = attemptedStates[index]
-    const sameDayLog = attemptedLogs.find((log) => log.wordId === wordId && dayKey(new Date(log.reviewedAt)) === existing.dayKey)
-    const wasNew = item?.wasNew ?? sameDayLog?.wasNew ?? (state?.reps ?? state?.totalReviews ?? 0) === 0
-    if (wasNew) attemptedNew += 1
-    else attemptedReview += 1
-  }
+}
 
-  const plan = await buildTodayPlan({
-    listIds: requestedListIds,
-    at,
-    dailyNewLimit: Math.max(0, settings.dailyNewLimit - attemptedNew),
-    dailyReviewLimit: Math.max(0, settings.dailyReviewLimit - attemptedReview),
-    excludeWordIds: attemptedWordIds,
-  })
-  const plannedSet = new Set(plan.queueWordIds)
-  const activeItems = existingItems
-    .filter((item) => item.kind === 'card' && (item.status === 'pending' || item.status === 'active'))
-    .sort((left, right) => left.position - right.position)
-  const retained = activeItems.filter((item) => Boolean(item.wordId && (attemptedSet.has(item.wordId) || plannedSet.has(item.wordId))))
-  const retainedWordIds = new Set(retained.flatMap((item) => item.wordId ? [item.wordId] : []))
-  const addedWordIds = plan.queueWordIds.filter((wordId) => !retainedWordIds.has(wordId))
-  const states = await db.reviewState.bulkGet(addedWordIds)
-  const placeholderSession = { ...existing, selectedListIds: requestedListIds ?? [] }
-  const addedItems = createInitialQueueItems(placeholderSession, addedWordIds, states, at)
-    .map((item) => ({ ...item, itemId: `${existing.sessionId}:card:refresh:${crypto.randomUUID()}` }))
-  const pendingItems = [...retained, ...addedItems]
-    .map((item, position) => ({ ...item, position, updatedAt: at.toISOString() }))
-  const removedItems = activeItems.filter((item) => !pendingItems.some((pending) => pending.itemId === item.itemId))
-    .map((item) => ({ ...item, status: 'skipped' as const, updatedAt: at.toISOString() }))
-  const initialWordIds = [
-    ...existing.initialWordIds.filter((wordId) => attemptedSet.has(wordId)),
-    ...plan.queueWordIds,
-  ].filter((wordId, index, rows) => rows.indexOf(wordId) === index)
-  const unchanged = initialWordIds.length === existing.initialWordIds.length
-    && initialWordIds.every((wordId, index) => wordId === existing.initialWordIds[index])
-    && addedItems.length === 0
-    && removedItems.length === 0
-  if (unchanged) return existing
-
-  const now = at.toISOString()
-  const updated: DailyLearningSession = {
-    ...existing,
-    phase: pendingItems.length ? 'cards' : 'article',
-    selectedListIds: requestedListIds ?? [],
-    initialWordIds,
-    cardsCompletedAt: pendingItems.length ? undefined : existing.cardsCompletedAt ?? now,
-    updatedAt: now,
-  }
-  await db.transaction('rw', [db.dailyLearningSessions, db.dailyQueueItems], async () => {
-    if (removedItems.length) await db.dailyQueueItems.bulkPut(removedItems)
-    if (pendingItems.length) await db.dailyQueueItems.bulkPut(pendingItems)
-    await db.dailyLearningSessions.put(updated)
-  })
-  for (const item of removedItems) await markPayloadChanged('dailyQueueItems', item, now)
-  for (const item of pendingItems) await markPayloadChanged('dailyQueueItems', item, now)
-  await markPayloadChanged('dailyLearningSessions', updated, now)
-  return updated
+export async function dismissDailyQueueChanges(sessionId: string, revision: string): Promise<void> {
+  const session = await db.dailyLearningSessions.get(sessionId)
+  if (!session) return
+  const updated = { ...session, dismissedSourceRevision: revision, updatedAt: new Date().toISOString() }
+  await db.dailyLearningSessions.put(updated)
+  await markPayloadChanged('dailyLearningSessions', updated, updated.updatedAt)
 }
 
 async function orderedItems(sessionId: string): Promise<DailyQueueItem[]> {
   return db.dailyQueueItems.where('sessionId').equals(sessionId).sortBy('position')
+}
+
+function articleStatusAfterExtension(status: DailyLearningSession['articleStatus']): DailyLearningSession['articleStatus'] {
+  if (status === 'ready' || status === 'completed' || status === 'generating' || status === 'stale') return 'stale'
+  if (status === 'failed' || status === 'skipped') return 'waiting'
+  return status
+}
+
+async function createAppendedItems(
+  session: DailyLearningSession,
+  wordIds: string[],
+  reason: 'list-change' | 'extra-batch',
+  at: Date,
+): Promise<DailyQueueItem[]> {
+  if (!wordIds.length) return []
+  const [states, existingItems] = await Promise.all([
+    db.reviewState.bulkGet(wordIds),
+    orderedItems(session.sessionId),
+  ])
+  const startPosition = existingItems.reduce((max, item) => Math.max(max, item.position), -1) + 1
+  return createInitialQueueItems(session, wordIds, states, at).map((item, index) => ({
+    ...item,
+    itemId: `${session.sessionId}:card:${reason}:${crypto.randomUUID()}`,
+    reason,
+    position: startPosition + index,
+  }))
+}
+
+export async function applyDailyQueueChanges(sessionId: string, at = new Date()): Promise<DailyQueueSnapshot> {
+  const session = await db.dailyLearningSessions.get(sessionId)
+  if (!session) throw new Error('今日学习会话不存在')
+  const preview = await previewDailyQueueChanges(sessionId, at)
+  const now = at.toISOString()
+  const removedSet = new Set(preview.removedWordIds)
+  const existingItems = await db.dailyQueueItems.where('sessionId').equals(sessionId).toArray()
+  const skippedItems = existingItems
+    .filter((item) => item.wordId && removedSet.has(item.wordId) && (item.status === 'pending' || item.status === 'active'))
+    .map((item) => ({ ...item, status: 'skipped' as const, updatedAt: now }))
+  const addedItems = await createAppendedItems(session, preview.addedWordIds, 'list-change', at)
+  const updated: DailyLearningSession = {
+    ...session,
+    status: addedItems.length ? 'active' : session.status,
+    phase: addedItems.length ? 'cards' : session.phase,
+    initialWordIds: [...session.initialWordIds.filter((wordId) => !removedSet.has(wordId)), ...preview.addedWordIds]
+      .filter((wordId, index, rows) => rows.indexOf(wordId) === index),
+    sourceRevision: preview.revision,
+    sourceEligibleWordIds: preview.eligibleWordIds,
+    dismissedSourceRevision: undefined,
+    cardsCompletedAt: addedItems.length ? undefined : session.cardsCompletedAt,
+    articleStatus: addedItems.length ? articleStatusAfterExtension(session.articleStatus) : session.articleStatus,
+    completedAt: addedItems.length ? undefined : session.completedAt,
+    updatedAt: now,
+  }
+  await db.transaction('rw', [db.dailyLearningSessions, db.dailyQueueItems], async () => {
+    if (skippedItems.length) await db.dailyQueueItems.bulkPut(skippedItems)
+    if (addedItems.length) await db.dailyQueueItems.bulkPut(addedItems)
+    await db.dailyLearningSessions.put(updated)
+  })
+  for (const item of [...skippedItems, ...addedItems]) await markPayloadChanged('dailyQueueItems', item, now)
+  await markPayloadChanged('dailyLearningSessions', updated, now)
+  await advanceSessionIfCardsDone(sessionId)
+  return loadDailyQueueSnapshot(sessionId)
+}
+
+export async function extendDailyQueue(sessionId: string, count: number, at = new Date()): Promise<DailyQueueSnapshot> {
+  const session = await db.dailyLearningSessions.get(sessionId)
+  if (!session) throw new Error('今日学习会话不存在')
+  const wordIds = await buildAdditionalStudyWordIds(
+    count,
+    session.initialWordIds,
+    session.selectedListIds.length ? session.selectedListIds : undefined,
+    at,
+  )
+  if (!wordIds.length) return loadDailyQueueSnapshot(sessionId)
+  const now = at.toISOString()
+  const items = await createAppendedItems(session, wordIds, 'extra-batch', at)
+  const updated: DailyLearningSession = {
+    ...session,
+    status: 'active',
+    phase: 'cards',
+    initialWordIds: [...session.initialWordIds, ...wordIds],
+    extensionBatchCount: (session.extensionBatchCount ?? 0) + 1,
+    cardsCompletedAt: undefined,
+    articleStatus: articleStatusAfterExtension(session.articleStatus),
+    completedAt: undefined,
+    updatedAt: now,
+  }
+  await db.transaction('rw', [db.dailyLearningSessions, db.dailyQueueItems], async () => {
+    await db.dailyQueueItems.bulkPut(items)
+    await db.dailyLearningSessions.put(updated)
+  })
+  for (const item of items) await markPayloadChanged('dailyQueueItems', item, now)
+  await markPayloadChanged('dailyLearningSessions', updated, now)
+  return loadDailyQueueSnapshot(sessionId)
 }
 
 export async function loadDailyQueueSnapshot(sessionId: string): Promise<DailyQueueSnapshot> {
@@ -199,7 +250,19 @@ export async function getOrCreateDailySession(listIds?: string[], at = new Date(
   const today = dayKey(at)
   const storedSession = await db.dailyLearningSessions.where('dayKey').equals(today).first()
   if (storedSession) {
-    const existing = await refreshCurrentSession(storedSession, listIds, at)
+    const revision = await getStudyQueueRevision()
+    const existing: DailyLearningSession = storedSession.sourceRevision ? storedSession : {
+      ...storedSession,
+      sourceRevision: revision,
+      sourceEligibleWordIds: await listEligibleStudyWordIds([], storedSession.selectedListIds.length ? storedSession.selectedListIds : undefined, at),
+      baseWordCount: storedSession.initialWordIds.length,
+      extensionBatchCount: 0,
+      updatedAt: at.toISOString(),
+    }
+    if (existing !== storedSession) {
+      await db.dailyLearningSessions.put(existing)
+      await markPayloadChanged('dailyLearningSessions', existing, existing.updatedAt)
+    }
     await repairVocabularyIntegrity(existing.initialWordIds)
     const words = await db.wordbook.bulkGet(existing.initialWordIds)
     const validIds = words.filter((word) => word && word.integrityStatus !== 'needs-repair').map((word) => word!.wordId)
@@ -220,7 +283,11 @@ export async function getOrCreateDailySession(listIds?: string[], at = new Date(
   }
 
   const plan = await buildTodayPlan({ listIds, at })
-  const states = await db.reviewState.bulkGet(plan.queueWordIds)
+  const [states, revision, eligibleWordIds] = await Promise.all([
+    db.reviewState.bulkGet(plan.queueWordIds),
+    getStudyQueueRevision(),
+    listEligibleStudyWordIds([], listIds, at),
+  ])
   const now = at.toISOString()
   const session: DailyLearningSession = {
     sessionId: `daily:${today}`,
@@ -229,6 +296,10 @@ export async function getOrCreateDailySession(listIds?: string[], at = new Date(
     phase: plan.queueWordIds.length ? 'cards' : 'article',
     selectedListIds: listIds ?? plan.listIds ?? [],
     initialWordIds: plan.queueWordIds,
+    sourceRevision: revision,
+    sourceEligibleWordIds: eligibleWordIds,
+    baseWordCount: plan.queueWordIds.length,
+    extensionBatchCount: 0,
     articleStatus: 'waiting',
     createdAt: now,
     updatedAt: now,
@@ -295,14 +366,33 @@ async function advanceSessionIfCardsDone(sessionId: string): Promise<void> {
   const now = new Date().toISOString()
   const updated: DailyLearningSession = {
     ...session,
-    phase: session.articleStatus === 'completed' ? 'summary' : 'article',
-    status: session.articleStatus === 'completed' ? 'completed' : session.status,
     cardsCompletedAt: session.cardsCompletedAt ?? now,
-    completedAt: session.articleStatus === 'completed' ? now : session.completedAt,
     updatedAt: now,
   }
   await db.dailyLearningSessions.put(updated)
   await markPayloadChanged('dailyLearningSessions', updated, now)
+}
+
+export async function finishCardPhase(sessionId: string): Promise<DailyQueueSnapshot> {
+  const pending = await db.dailyQueueItems.where('sessionId').equals(sessionId)
+    .filter((item) => item.kind === 'card' && (item.status === 'pending' || item.status === 'active'))
+    .count()
+  if (pending) throw new Error('当前队列还有未完成的单词')
+  const session = await db.dailyLearningSessions.get(sessionId)
+  if (!session) throw new Error('今日学习会话不存在')
+  const now = new Date().toISOString()
+  const alreadyFinishedArticle = session.articleStatus === 'completed' || session.articleStatus === 'skipped'
+  const updated: DailyLearningSession = {
+    ...session,
+    phase: alreadyFinishedArticle ? 'summary' : 'article',
+    status: alreadyFinishedArticle ? 'completed' : 'active',
+    cardsCompletedAt: session.cardsCompletedAt ?? now,
+    completedAt: alreadyFinishedArticle ? now : undefined,
+    updatedAt: now,
+  }
+  await db.dailyLearningSessions.put(updated)
+  await markPayloadChanged('dailyLearningSessions', updated, now)
+  return loadDailyQueueSnapshot(sessionId)
 }
 
 export async function answerDailyCard(
@@ -423,7 +513,17 @@ export async function setArticleStatus(
   const session = await db.dailyLearningSessions.get(sessionId)
   if (!session) return
   const now = new Date().toISOString()
-  const updated = { ...session, articleStatus, updatedAt: now }
+  const resolvedStatus = articleStatus === 'ready'
+    && session.articleGenerationWordCount !== undefined
+    && session.articleGenerationWordCount !== session.initialWordIds.length
+    ? 'stale'
+    : articleStatus
+  const updated = {
+    ...session,
+    articleStatus: resolvedStatus,
+    articleGenerationWordCount: articleStatus === 'generating' ? session.initialWordIds.length : session.articleGenerationWordCount,
+    updatedAt: now,
+  }
   await db.dailyLearningSessions.put(updated)
   await markPayloadChanged('dailyLearningSessions', updated, now)
 }

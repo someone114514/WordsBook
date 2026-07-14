@@ -1,6 +1,7 @@
 import { db } from '../../db/database'
 import type { AppSettings } from '../../types/models'
 import { markRecordChanged, markRecordDeleted } from '../sync/localSyncStore'
+import { markStudyDataChanged } from '../review/studyDataRevision'
 
 export const DEFAULT_SETTINGS: AppSettings = {
   autoPronunciation: true,
@@ -88,7 +89,8 @@ export async function loadSettings(): Promise<AppSettings> {
 }
 
 export async function saveSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
-  const nextSettings = { ...(await loadSettings()), ...patch }
+  const previousSettings = await loadSettings()
+  const nextSettings = { ...previousSettings, ...patch }
 
   if (patch.deepseekApiKey !== undefined) {
     await db.localSecrets.put({ key: 'deepseekApiKey', value: patch.deepseekApiKey, updatedAt: new Date().toISOString() })
@@ -109,6 +111,11 @@ export async function saveSettings(patch: Partial<AppSettings>): Promise<AppSett
     }
     await db.settings.delete('deepseekApiKey')
   })
+
+  if ((patch.dailyNewLimit !== undefined && patch.dailyNewLimit !== previousSettings.dailyNewLimit)
+    || (patch.dailyReviewLimit !== undefined && patch.dailyReviewLimit !== previousSettings.dailyReviewLimit)) {
+    await markStudyDataChanged({ affectsQueue: false })
+  }
 
   return nextSettings
 }

@@ -2,6 +2,7 @@ import { db } from '../../db/database'
 import type { BackupPayload, DictionaryEntry, ImportReport } from '../../types/models'
 import { buildPrefixTokens } from '../dictionary/search'
 import { ensureSystemStudyLists } from '../wordbook/studyListService'
+import { markStudyDataChanged } from '../review/studyDataRevision'
 import { repairVocabularyIntegrity } from '../wordbook/vocabularyIntegrity'
 
 const BACKUP_SCHEMA_VERSION = 5
@@ -160,11 +161,13 @@ export async function importUserData(input: Blob): Promise<ImportReport> {
       membershipId: `system:legacy:${word.wordId}`,
       listId: 'system:legacy',
       wordId: word.wordId,
+      source: 'migration' as const,
       addedAt: word.addedAt,
     })))
   }
 
   await repairVocabularyIntegrity(payload.wordbook.map((word) => word.wordId))
+  await markStudyDataChanged()
 
   return {
     importedDictionaryEntries: dictionaryEntries.length,

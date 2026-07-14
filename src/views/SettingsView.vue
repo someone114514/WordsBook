@@ -389,7 +389,7 @@ async function onRunCloudSync(mode: CloudSyncMode) {
       </label>
 
       <label class="setting-row">
-        <span>每日新词上限</span>
+        <span>每日新词目标</span>
         <input
           type="number"
           min="0"
@@ -400,7 +400,7 @@ async function onRunCloudSync(mode: CloudSyncMode) {
       </label>
 
       <label class="setting-row">
-        <span>每日复习上限</span>
+        <span>每日复习目标</span>
         <input
           type="number"
           min="0"
@@ -409,6 +409,7 @@ async function onRunCloudSync(mode: CloudSyncMode) {
           @change="onUpdateNumber('dailyReviewLimit', $event)"
         />
       </label>
+      <p class="muted settings-hint">用于首次安排；完成后仍可继续加学。</p>
     </article>
 
     <article class="result-section">

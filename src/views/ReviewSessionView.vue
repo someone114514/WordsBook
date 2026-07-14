@@ -5,6 +5,8 @@ import type { DailyQueueSnapshot } from '../modules/review/dailyQueueService'
 import type { ReviewCard, ReviewRating } from '../types/models'
 import {
   answerDailyCard,
+  extendDailyQueue,
+  finishCardPhase,
   getOrCreateDailySession,
   nextTodayMastery,
   setArticleStatus,
@@ -27,6 +29,9 @@ const card = ref<ReviewCard | null>(null)
 const error = ref('')
 const showWordMenu = ref(false)
 const actionBusy = ref(false)
+const showMoreSheet = ref(false)
+const customCount = ref(15)
+const noMoreWords = ref(false)
 const autoPronunciation = ref(true)
 const speechRate = ref(1)
 const ttsEngine = ref<'auto' | 'browser' | 'youdao' | 'google' | 'dictionaryapi'>('auto')
@@ -35,6 +40,8 @@ const selectedListIds = computed(() => typeof route.query.lists === 'string'
   ? route.query.lists.split(',').filter(Boolean)
   : undefined)
 const currentItem = computed(() => snapshot.value?.current)
+const atQueueCheckpoint = computed(() => Boolean(snapshot.value && !snapshot.value.current
+  && (snapshot.value.session.phase === 'cards' || snapshot.value.session.phase === 'summary')))
 const progress = computed(() => {
   if (!snapshot.value?.totalCards) return 0
   return Math.min(100, Math.round(snapshot.value.completedCards / snapshot.value.totalCards * 100))
@@ -49,6 +56,8 @@ const reasonLabel = computed(() => ({
   'again-repeat': '重新回忆',
   'hard-repeat': '再确认一次',
   'context-retry': '文章错词',
+  'list-change': '今日新增',
+  'extra-batch': '继续学习',
 }[currentItem.value?.reason ?? 'initial']))
 const todayMastery = computed(() => currentItem.value?.todayMastery ?? 0)
 const masteryPreview = computed(() => ({
@@ -83,10 +92,6 @@ async function initialize() {
     speechRate.value = settings.speechRate
     ttsEngine.value = settings.ttsEngine
     snapshot.value = await getOrCreateDailySession(selectedListIds.value)
-    if (snapshot.value.session.phase === 'summary') {
-      await router.replace('/review')
-      return
-    }
     await loadCurrentCard()
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : String(reason)
@@ -163,6 +168,31 @@ async function deleteCurrentWord() {
     actionBusy.value = false
   }
 }
+
+async function addMore(count: number) {
+  if (!snapshot.value || actionBusy.value) return
+  actionBusy.value = true
+  error.value = ''
+  try {
+    const previousTotal = snapshot.value.totalCards
+    snapshot.value = await extendDailyQueue(snapshot.value.session.sessionId, count)
+    noMoreWords.value = snapshot.value.totalCards === previousTotal
+    showMoreSheet.value = false
+    await loadCurrentCard()
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : String(reason)
+  } finally { actionBusy.value = false }
+}
+
+async function enterArticle() {
+  if (!snapshot.value) return
+  snapshot.value = await finishCardPhase(snapshot.value.session.sessionId)
+  if (snapshot.value.session.phase === 'article') {
+    await router.replace({ path: '/review/reading', query: { session: snapshot.value.session.sessionId } })
+  } else {
+    await router.replace('/review')
+  }
+}
 </script>
 
 <template>
@@ -203,7 +233,18 @@ async function deleteCurrentWord() {
       </section>
     </article>
 
-    <div v-else class="immersive-empty">正在进入今日文章…</div>
+    <section v-else-if="atQueueCheckpoint" class="immersive-empty queue-checkpoint" aria-live="polite">
+      <p class="eyebrow">本组完成</p>
+      <h1>{{ snapshot?.session.status === 'completed' ? '今天还想再学一点？' : '今日卡片已完成' }}</h1>
+      <p class="muted">可以继续进入文章，也可以再加一组到同一个队列。</p>
+      <p v-if="noMoreWords" class="muted">暂无更多可学单词。</p>
+      <div class="actions">
+        <button v-if="snapshot?.session.status !== 'completed'" class="btn btn-primary" type="button" @click="enterArticle">进入今日文章</button>
+        <button class="btn" :disabled="actionBusy || noMoreWords" type="button" @click="showMoreSheet = true">再学一组</button>
+        <button v-if="snapshot?.session.status === 'completed'" class="btn btn-quiet" type="button" @click="router.push('/review')">返回学习首页</button>
+      </div>
+    </section>
+    <div v-else class="immersive-empty">正在恢复今日进度…</div>
 
     <footer v-if="card" :class="['review-grade-dock', revealMeaning ? 'review-grade-dock-three' : 'review-reveal-dock']">
       <button v-if="!revealMeaning" class="btn btn-primary review-reveal-action" type="button" @click="revealMeaning = true">显示释义</button>
@@ -220,6 +261,16 @@ async function deleteCurrentWord() {
         <button class="btn" :disabled="actionBusy" type="button" @click="pauseCurrentWord">暂停学习</button>
         <button class="btn btn-danger" :disabled="actionBusy" type="button" @click="deleteCurrentWord">彻底删除</button>
         <button class="btn btn-quiet" :disabled="actionBusy" type="button" @click="showWordMenu = false">取消</button>
+      </section>
+    </div>
+
+    <div v-if="showMoreSheet" class="sheet-backdrop" role="presentation" @click.self="showMoreSheet = false">
+      <section class="bottom-action-sheet more-study-sheet" role="dialog" aria-modal="true" aria-label="继续学习">
+        <div><strong>再学一组</strong><p class="muted">继续加入当前队列，不会改变已经完成的进度。</p></div>
+        <div class="more-study-presets"><button class="btn btn-primary" :disabled="actionBusy" type="button" @click="addMore(5)">再学 5 个</button><button class="btn" :disabled="actionBusy" type="button" @click="addMore(10)">再学 10 个</button></div>
+        <label class="more-study-custom"><span>自定义数量</span><input v-model.number="customCount" class="inline-input" type="number" min="1" max="100" inputmode="numeric" /></label>
+        <button class="btn" :disabled="actionBusy || customCount < 1" type="button" @click="addMore(customCount)">加入队列</button>
+        <button class="btn btn-quiet" :disabled="actionBusy" type="button" @click="showMoreSheet = false">取消</button>
       </section>
     </div>
   </section>

@@ -1,5 +1,19 @@
 ﻿import { expect, test } from '@playwright/test'
 
+import type { Page } from '@playwright/test'
+
+async function finishCardsUntilCheckpoint(page: Page): Promise<void> {
+  for (let step = 0; step < 20; step += 1) {
+    const checkpoint = page.getByRole('heading', { name: '今日卡片已完成' })
+    const reveal = page.getByRole('button', { name: '显示释义' })
+    await expect(checkpoint.or(reveal)).toBeVisible()
+    if (await checkpoint.isVisible()) return
+    await reveal.click()
+    await page.getByRole('button', { name: /记得/ }).click()
+  }
+  throw new Error('Daily queue did not reach its checkpoint')
+}
+
 test('home page loads', async ({ page }) => {
   await page.goto('/lookup')
   await expect(page.getByRole('heading', { level: 1, name: '查词' })).toBeVisible()
@@ -44,9 +58,11 @@ test('installs the core dictionary and completes lookup to daily review', async 
   await page.getByRole('button', { name: /记得\s*60%/ }).click()
   await page.getByRole('button', { name: '显示释义' }).click()
   await page.getByRole('button', { name: /记得\s*100%/ }).click()
+  await expect(page.getByRole('heading', { name: '今日卡片已完成' })).toBeVisible()
+  await page.getByRole('button', { name: '进入今日文章' }).click()
   await expect(page.getByRole('heading', { name: '需要配置 DeepSeek Key' })).toBeVisible()
   await page.getByRole('button', { name: '跳过文章并完成今日学习' }).click()
-  await expect(page.getByRole('button', { name: '今日已完成' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '查看今日学习' })).toBeVisible()
 })
 
 test('imports a list and completes the three-grade daily queue without an AI key', async ({ page }) => {
@@ -84,7 +100,61 @@ test('imports a list and completes the three-grade daily queue without an AI key
   await expect(page.getByRole('button', { name: '显示释义' })).toBeVisible()
   await page.getByRole('button', { name: '显示释义' }).click()
   await page.getByRole('button', { name: /记得/ }).click()
+  await expect(page.getByRole('heading', { name: '今日卡片已完成' })).toBeVisible()
+  await page.getByRole('button', { name: '再学一组' }).click()
+  await page.getByRole('button', { name: '再学 5 个' }).click()
+  await expect(page.getByText('暂无更多可学单词。')).toBeVisible()
+  await page.getByRole('button', { name: '进入今日文章' }).click()
   await expect(page.getByRole('heading', { name: '需要配置 DeepSeek Key' })).toBeVisible()
   await page.getByRole('button', { name: '跳过文章并完成今日学习' }).click()
-  await expect(page.getByRole('button', { name: '今日已完成' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '查看今日学习' })).toBeVisible()
+})
+
+test('keeps the started queue stable, applies list changes, and adds another group', async ({ page }) => {
+  test.setTimeout(60_000)
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/lists')
+  await page.getByLabel('词表名称').fill('稳定队列表')
+  await page.getByRole('button', { name: '创建', exact: true }).click()
+  await page.getByRole('link', { name: '管理词表', exact: true }).last().click()
+  await page.getByRole('button', { name: '导入', exact: true }).click()
+  await page.getByPlaceholder(/粘贴 JSON/).fill(JSON.stringify({ words: [
+    { word: 'stableone', meaning: '稳定一' },
+    { word: 'stabletwo', meaning: '稳定二' },
+    { word: 'stablethree', meaning: '稳定三' },
+  ] }))
+  await page.getByRole('button', { name: '预览导入' }).click()
+  await page.getByRole('button', { name: '确认导入' }).click()
+
+  await page.getByRole('link', { name: '设置' }).click()
+  await page.getByLabel('每日新词目标').fill('1')
+  await page.getByLabel('每日新词目标').press('Tab')
+  await page.getByRole('link', { name: '学习' }).click()
+  await expect(page.locator('.study-total strong')).toHaveText('1')
+  await expect(page.getByText(/修订号|查词优先|混合比例/)).toHaveCount(0)
+  await page.getByRole('button', { name: '开始今日学习' }).click()
+  const firstWord = await page.locator('.review-word').textContent()
+  await page.getByRole('button', { name: '退出' }).click()
+  await page.getByRole('button', { name: '继续今日学习' }).click()
+  await expect(page.locator('.review-word')).toHaveText(firstWord ?? '')
+  await page.getByRole('button', { name: '退出' }).click()
+
+  await page.getByRole('link', { name: '词表' }).click()
+  await page.getByRole('link', { name: '管理词表', exact: true }).last().click()
+  await page.getByRole('button', { name: '导入', exact: true }).click()
+  await page.getByPlaceholder(/粘贴 JSON/).fill(JSON.stringify({ words: [{ word: 'stablefour', meaning: '稳定四' }] }))
+  await page.getByRole('button', { name: '预览导入' }).click()
+  await page.getByRole('button', { name: '确认导入' }).click()
+  await page.getByRole('link', { name: '学习' }).click()
+  await expect(page.getByText('词表有 1 个变化')).toBeVisible()
+  await page.getByRole('button', { name: '更新今日队列' }).click()
+  await expect(page.locator('.study-total strong')).toHaveText('2')
+  await page.getByRole('button', { name: '继续今日学习' }).click()
+  await finishCardsUntilCheckpoint(page)
+
+  await page.getByRole('button', { name: '再学一组' }).click()
+  await page.getByRole('button', { name: '再学 5 个' }).click()
+  await expect(page.locator('.review-word')).toBeVisible()
+  await finishCardsUntilCheckpoint(page)
+  await expect(page.getByRole('heading', { name: '今日卡片已完成' })).toBeVisible()
 })

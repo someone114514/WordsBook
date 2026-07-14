@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onActivated, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { addWordToStudyList, deleteStudyList, listStudyLists, listStudyListWords, removeWordFromStudyList, updateStudyList } from '../modules/wordbook/studyListService'
 import { importWordList, previewWordList, WORD_LIST_JSON_EXAMPLE } from '../modules/wordbook/wordListImportService'
@@ -29,7 +29,7 @@ async function moveSelected(copy = false) { if (!targetListId.value) return; awa
 async function saveSettings() { if (!current.value) return; await updateStudyList(listId.value, { name: draftName.value, description: draftDescription.value, studyEnabled: current.value.studyEnabled }); message.value = '词表设置已保存'; await load() }
 async function toggleStudy() { if (!current.value) return; await updateStudyList(listId.value, { studyEnabled: current.value.studyEnabled ? 0 : 1 }); await load() }
 async function removeList() { if (!current.value || !confirm(`删除“${current.value.name}”？单词和复习历史会保留。`)) return; await deleteStudyList(listId.value); await router.replace('/lists') }
-onMounted(() => void load())
+onActivated(() => void load())
 </script>
 
 <template>

@@ -2,6 +2,7 @@ import { db } from '../../db/database'
 import type { DictionaryEntry, WordListImportReport } from '../../types/models'
 import { buildPrefixTokens, toLemmaCandidates } from '../dictionary/search'
 import { addWordToStudyList, ensureVocabularyItem } from './studyListService'
+import { markStudyDataChanged } from '../review/studyDataRevision'
 import { markPayloadChanged } from '../sync/localSyncStore'
 
 interface ImportRow {
@@ -162,6 +163,7 @@ export async function importWordList(listId: string, raw: string): Promise<WordL
   const rows = parseWordListText(raw)
   const report: WordListImportReport = { matched: 0, created: 0, pending: 0, duplicates: 0, invalid: 0 }
   const seen = new Set<string>()
+  let membershipChanged = false
   for (const row of rows) {
     const normalized = normalizeImportedTerm(row.word)
     if (!normalized) { report.invalid += 1; continue }
@@ -182,7 +184,12 @@ export async function importWordList(listId: string, raw: string): Promise<WordL
       if (!row.meaning) report.pending += 1
     }
     const { item } = await ensureVocabularyItem(entry, row.note, row.tags)
-    if (!(await addWordToStudyList(listId, item.wordId))) report.duplicates += 1
+    if (!(await addWordToStudyList(listId, item.wordId, 'import', true))) report.duplicates += 1
+    else membershipChanged = true
+  }
+  if (membershipChanged) {
+    const list = await db.studyLists.get(listId)
+    await markStudyDataChanged({ affectsQueue: list?.studyEnabled === 1 })
   }
   return report
 }

@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { db } from '../../db/database'
-import { buildTodayPlan } from '../review/reviewService'
+import { buildTodayPlan, buildTodayPlanCached, invalidateStudyPlanCache } from '../review/reviewService'
 import { getWordbookEntryStatus, removeFromLookupCollection } from './wordbookService'
 import {
   LOOKUP_LIST_ID,
@@ -16,6 +16,7 @@ describe('study list membership', () => {
     db.close()
     await db.delete()
     await db.open()
+    invalidateStudyPlanCache()
   })
 
   it('deduplicates one word across lists while keeping one review state', async () => {
@@ -78,5 +79,29 @@ describe('study list membership', () => {
     const entry = { entryId: 'entry:proxy', headword: 'proxy', headwordLower: 'proxy', posList: reactivePosList, sensesJson: '["代理"]', examplesJson: '[]', usageJson: '[]' }
     const { item } = await ensureVocabularyItem(entry)
     expect((await db.wordbook.get(item.wordId))?.entrySnapshot?.posList).toEqual(['noun'])
+  })
+
+  it('prioritizes a lookup-added new word ahead of a later bulk-import word', async () => {
+    const list = await createStudyList('Priority')
+    const imported = await ensureVocabularyItem({ entryId: 'entry:imported', headword: 'imported', headwordLower: 'imported', posList: [], sensesJson: '[]', examplesJson: '[]', usageJson: '[]' })
+    const lookedUp = await ensureVocabularyItem({ entryId: 'entry:lookedup', headword: 'lookedup', headwordLower: 'lookedup', posList: [], sensesJson: '[]', examplesJson: '[]', usageJson: '[]' })
+    await addWordToStudyList(list.listId, imported.item.wordId, 'import')
+    await addWordToStudyList(list.listId, lookedUp.item.wordId, 'lookup')
+    const plan = await buildTodayPlan({ dailyNewLimit: 1, dailyReviewLimit: 20 })
+    expect(plan.queueWordIds).toEqual([lookedUp.item.wordId])
+  })
+
+  it('reuses the daily plan until study data actually changes', async () => {
+    const list = await createStudyList('Cached')
+    const firstWord = await ensureVocabularyItem({ entryId: 'entry:first', headword: 'first', headwordLower: 'first', posList: [], sensesJson: '[]', examplesJson: '[]', usageJson: '[]' })
+    await addWordToStudyList(list.listId, firstWord.item.wordId, 'lookup')
+    const first = await buildTodayPlanCached()
+    expect(await buildTodayPlanCached()).toBe(first)
+
+    const secondWord = await ensureVocabularyItem({ entryId: 'entry:second', headword: 'second', headwordLower: 'second', posList: [], sensesJson: '[]', examplesJson: '[]', usageJson: '[]' })
+    await addWordToStudyList(list.listId, secondWord.item.wordId, 'lookup')
+    const changed = await buildTodayPlanCached()
+    expect(changed).not.toBe(first)
+    expect(changed.queueWordIds).toContain(secondWord.item.wordId)
   })
 })

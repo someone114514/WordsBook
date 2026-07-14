@@ -38,14 +38,16 @@ function headwordFromEntryId(entryId: string): string | undefined {
   return entryId.split(':').reverse().find((part) => /^[a-z][a-z' -]{1,79}$/i.test(part))
 }
 
-function cachedSessionHasValidTargets(session: ReadingSession): boolean {
+function cachedSessionHasValidTargets(session: ReadingSession, expectedWordIds?: string[]): boolean {
   try {
     const targets = JSON.parse(session.targetsJson) as ReadingTarget[]
     const segments = JSON.parse(session.segmentsJson) as ReadingSegment[]
     const visible = [session.title, session.translation, ...segments.map((segment) => segment.text)].join(' ')
+    const targetIds = new Set(targets.map((target) => target.wordId))
     return !/[0-9a-f]{8}-[0-9a-f-]{27,}/i.test(visible)
       && targets.length > 0
       && targets.every((target) => isUsableHeadword(target.headword) && target.headword !== target.wordId)
+      && (!expectedWordIds || (targetIds.size === expectedWordIds.length && expectedWordIds.every((wordId) => targetIds.has(wordId))))
   } catch { return false }
 }
 
@@ -413,7 +415,7 @@ async function generateReadingSessionImpl(options: {
 }): Promise<ReadingSession> {
   const sessionId = `reading:${options.dayKey}:${options.seed}:${options.batchIndex}`
   const existing = await db.readingSessions.get(sessionId)
-  if ((existing?.status === 'ready' || existing?.status === 'completed') && !options.force && cachedSessionHasValidTargets(existing)) return existing
+  if ((existing?.status === 'ready' || existing?.status === 'completed') && !options.force && cachedSessionHasValidTargets(existing, options.wordIds)) return existing
   const settings = await loadSettings()
   const level = options.level ?? settings.articleLevel
   await repairVocabularyIntegrity(options.wordIds)

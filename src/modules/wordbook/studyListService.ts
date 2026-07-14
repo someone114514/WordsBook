@@ -6,11 +6,17 @@ import type {
   WordbookItem,
 } from '../../types/models'
 import { invalidateStudyPlanCache } from '../review/reviewService'
+import { getStudyDataRevision, markStudyDataChanged } from '../review/studyDataRevision'
 import { markPayloadChanged, markRecordChanged, markRecordDeleted } from '../sync/localSyncStore'
 import { dictionaryEntryFromWordbook, snapshotDictionaryEntry, unresolvedVocabularyEntry } from './vocabularyIntegrity'
 
 const LOOKUP_LIST_ID = 'system:lookup'
 const LEGACY_LIST_ID = 'system:legacy'
+type MembershipSource = NonNullable<StudyListItem['source']>
+type ListRow = StudyList & { wordCount: number }
+type ListWordRow = { item: WordbookItem; entry: DictionaryEntry }
+let listCache: { revision: string; rows: ListRow[] } | null = null
+const wordCaches = new Map<string, { revision: string; rows: ListWordRow[] }>()
 
 function createId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `list-${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -53,19 +59,24 @@ export async function ensureSystemStudyLists(): Promise<void> {
     await db.studyLists.bulkPut(renames)
     for (const list of renames) await markPayloadChanged('studyLists', list, now)
   }
+  if (missing.length || renames.length) await markStudyDataChanged({ affectsQueue: false })
 }
 
-export async function listStudyLists(): Promise<Array<StudyList & { wordCount: number }>> {
+export async function listStudyLists(): Promise<ListRow[]> {
   await ensureSystemStudyLists()
+  const revision = await getStudyDataRevision()
+  if (listCache?.revision === revision) return listCache.rows
   const [lists, memberships] = await Promise.all([
     db.studyLists.toArray(),
     db.studyListItems.toArray(),
   ])
   const counts = new Map<string, number>()
   for (const row of memberships) counts.set(row.listId, (counts.get(row.listId) ?? 0) + 1)
-  return lists
+  const rows = lists
     .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
     .map((list) => ({ ...list, wordCount: counts.get(list.listId) ?? 0 }))
+  listCache = { revision, rows }
+  return rows
 }
 
 export async function createStudyList(name: string, description = ''): Promise<StudyList> {
@@ -82,6 +93,7 @@ export async function createStudyList(name: string, description = ''): Promise<S
   }
   await db.studyLists.add(list)
   await markPayloadChanged('studyLists', list, now)
+  await markStudyDataChanged({ affectsQueue: false })
   invalidateStudyPlanCache()
   return list
 }
@@ -95,6 +107,7 @@ export async function updateStudyList(
   const next = { ...current, ...patch, updatedAt: new Date().toISOString() }
   await db.studyLists.put(next)
   await markPayloadChanged('studyLists', next, next.updatedAt)
+  await markStudyDataChanged({ affectsQueue: current.studyEnabled !== next.studyEnabled })
   invalidateStudyPlanCache()
   return next
 }
@@ -110,6 +123,7 @@ export async function deleteStudyList(listId: string): Promise<void> {
   })
   await markRecordDeleted('studyLists', listId)
   for (const membership of memberships) await markRecordDeleted('studyListItems', membership.membershipId)
+  await markStudyDataChanged({ affectsQueue: list.studyEnabled === 1 })
   invalidateStudyPlanCache()
 }
 
@@ -177,40 +191,61 @@ export async function ensureVocabularyItem(
   return { item, created: true }
 }
 
-export async function addWordToStudyList(listId: string, wordId: string): Promise<boolean> {
+export async function addWordToStudyList(
+  listId: string,
+  wordId: string,
+  source: MembershipSource = 'manual',
+  deferRevision = false,
+): Promise<boolean> {
   const membershipId = `${listId}:${wordId}`
   if (await db.studyListItems.get(membershipId)) return false
   const row: StudyListItem = {
     membershipId,
     listId,
     wordId,
+    source,
     addedAt: new Date().toISOString(),
   }
   await db.studyListItems.add(row)
   await markPayloadChanged('studyListItems', row, row.addedAt)
+  if (!deferRevision) {
+    const list = await db.studyLists.get(listId)
+    await markStudyDataChanged({ affectsQueue: list?.studyEnabled === 1 })
+  }
   invalidateStudyPlanCache()
   return true
 }
 
-export async function addEntryToStudyList(listId: string, entry: DictionaryEntry): Promise<string> {
+export async function addEntryToStudyList(
+  listId: string,
+  entry: DictionaryEntry,
+  source: MembershipSource = 'manual',
+): Promise<string> {
   const { item } = await ensureVocabularyItem(entry)
-  await addWordToStudyList(listId, item.wordId)
+  await addWordToStudyList(listId, item.wordId, source)
   return item.wordId
 }
 
 export async function removeWordFromStudyList(listId: string, wordId: string): Promise<void> {
   const membershipId = `${listId}:${wordId}`
+  const list = await db.studyLists.get(listId)
   await db.studyListItems.delete(membershipId)
   await markRecordDeleted('studyListItems', membershipId)
+  await markStudyDataChanged({ affectsQueue: list?.studyEnabled === 1 })
   invalidateStudyPlanCache()
 }
 
 export async function listStudyListWords(listId: string) {
+  const revision = await getStudyDataRevision()
+  const cached = wordCaches.get(listId)
+  if (cached?.revision === revision) return cached.rows
   const memberships = await db.studyListItems.where('listId').equals(listId).toArray()
   const items = await db.wordbook.bulkGet(memberships.map((row) => row.wordId))
   const words = items.filter((row): row is WordbookItem => Boolean(row))
   const entries = await db.dictionaryEntries.bulkGet(words.map((row) => row.entryId))
-  return words.map((item, index) => ({ item, entry: entries[index] ?? dictionaryEntryFromWordbook(item) ?? unresolvedVocabularyEntry(item) }))
+  const rows = words.map((item, index) => ({ item, entry: entries[index] ?? dictionaryEntryFromWordbook(item) ?? unresolvedVocabularyEntry(item) }))
+  wordCaches.set(listId, { revision, rows })
+  return rows
 }
 
 export { LOOKUP_LIST_ID }

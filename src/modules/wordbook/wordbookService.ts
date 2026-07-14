@@ -4,6 +4,7 @@ import { applyAiOverrides } from '../dictionary/entryOverrideMapper'
 import { invalidateStudyPlanCache } from '../review/reviewService'
 import { dictionaryEntryFromWordbook, repairVocabularyIntegrity, snapshotDictionaryEntry, unresolvedVocabularyEntry } from './vocabularyIntegrity'
 import { addWordToStudyList, ensureSystemStudyLists, LOOKUP_LIST_ID, removeWordFromStudyList } from './studyListService'
+import { markStudyDataChanged } from '../review/studyDataRevision'
 import {
   markPayloadChanged,
   markRecordChanged,
@@ -90,7 +91,7 @@ export async function addToWordbook(entryId: string): Promise<AddToWordbookResul
     })
     invalidateStudyPlanCache()
     await ensureSystemStudyLists()
-    await addWordToStudyList(LOOKUP_LIST_ID, existing.wordId)
+    await addWordToStudyList(LOOKUP_LIST_ID, existing.wordId, 'lookup')
     emitWordbookUpdatedEvent()
     return { wordId: existing.wordId, alreadyExists: true }
   }
@@ -127,7 +128,7 @@ export async function addToWordbook(entryId: string): Promise<AddToWordbookResul
   })
   invalidateStudyPlanCache()
   await ensureSystemStudyLists()
-  await addWordToStudyList(LOOKUP_LIST_ID, wordId)
+  await addWordToStudyList(LOOKUP_LIST_ID, wordId, 'lookup')
   emitWordbookUpdatedEvent()
 
   return { wordId, alreadyExists: false }
@@ -166,6 +167,7 @@ export async function removeWordFromWordbook(wordId: string): Promise<void> {
       for (const attempt of queueAttempts) await markRecordDeleted('dailyQueueAttempts', attempt.attemptId, deletedAt)
     },
   )
+  await markStudyDataChanged()
   invalidateStudyPlanCache()
   emitWordbookUpdatedEvent()
 }
@@ -183,6 +185,7 @@ export async function updateWordbookItem(
   await db.wordbook.put(next)
   await markPayloadChanged('wordbook', next)
   if (patch.archived !== undefined) {
+    await markStudyDataChanged()
     invalidateStudyPlanCache()
     emitWordbookUpdatedEvent()
   }

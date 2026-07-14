@@ -19,6 +19,7 @@ import { lookupWord } from '../modules/dictionary/dictionaryService'
 import { addEntryToStudyList, listStudyLists, LOOKUP_LIST_ID } from '../modules/wordbook/studyListService'
 import type { DictionaryEntry, StudyList } from '../types/models'
 import { parseJsonArray } from '../utils/json'
+import { db } from '../db/database'
 
 const route = useRoute()
 const router = useRouter()
@@ -35,6 +36,8 @@ const noKey = ref(false)
 const paragraphs = ref<string[]>([])
 const generatedTargets = ref(0)
 const generationPhase = ref<'article' | 'details'>('article')
+const staleArticle = ref(false)
+const usingPreviousArticle = ref(false)
 const topic = ref('')
 const level = ref<'A2' | 'B1' | 'B2' | 'C1'>('B2')
 const showTranslation = ref(false)
@@ -105,7 +108,28 @@ async function initialize() {
   if (Number.isInteger(requestedBatch) && requestedBatch >= 0 && requestedBatch < batches.value.length) {
     batchIndex.value = requestedBatch
   }
+  const dailySession = await db.dailyLearningSessions.get(dailySessionId.value)
+  if (dailySession?.articleStatus === 'stale') {
+    staleArticle.value = true
+    return
+  }
   if (!noKey.value) await loadBatch()
+}
+
+async function continuePreviousArticle() {
+  const cached = await db.readingSessions.get(`reading:${dayKey}:0:${batchIndex.value}`)
+  if (!cached) {
+    staleArticle.value = false
+    await loadBatch(true)
+    return
+  }
+  session.value = cached
+  const attempts = await loadContextAttempts(cached.sessionId)
+  results.value = Object.fromEntries(attempts.map((attempt) => [attempt.wordId, attempt.result]))
+  stage.value = cached.readerStage ?? (attempts.length ? 1 : 0)
+  showTranslation.value = cached.showTranslation ?? false
+  staleArticle.value = false
+  usingPreviousArticle.value = true
 }
 
 async function answer(target: ReadingTarget, choice?: string) {
@@ -138,6 +162,14 @@ async function regenerate() {
   stage.value = 0
   showTranslation.value = false
   hadRetry.value = false
+  staleArticle.value = false
+  usingPreviousArticle.value = false
+  await loadBatch(true)
+}
+
+async function regenerateStaleArticle() {
+  staleArticle.value = false
+  usingPreviousArticle.value = false
   await loadBatch(true)
 }
 
@@ -211,7 +243,7 @@ async function addSelectedWord(listId = selectedListId.value) {
     choosingList.value = true
     return
   }
-  await addEntryToStudyList(listId, selectedEntry.value)
+  await addEntryToStudyList(listId, selectedEntry.value, 'article')
   window.localStorage.setItem('wordsbook:last-study-list', listId)
   const listName = studyLists.value.find((list) => list.listId === listId)?.name ?? '词表'
   selectionMessage.value = `已加入「${listName}」`
@@ -219,7 +251,7 @@ async function addSelectedWord(listId = selectedListId.value) {
 
 async function saveSelectedWord() {
   if (!selectedEntry.value) return openSelectedLookup()
-  await addEntryToStudyList(LOOKUP_LIST_ID, selectedEntry.value)
+  await addEntryToStudyList(LOOKUP_LIST_ID, selectedEntry.value, 'article')
   selectionMessage.value = '已仅保存，不进入每日学习'
 }
 
@@ -249,7 +281,13 @@ onBeforeUnmount(() => {
       <span class="progress-chip">{{ batches[batchIndex]?.length ?? 0 }} 词</span>
     </header>
 
-    <div v-if="noKey" class="immersive-empty">
+    <div v-if="staleArticle" class="immersive-empty article-stale-state">
+      <h1>文章需要更新</h1>
+      <p>新增词尚未包含在原文章中，可以重新生成，也可以继续阅读原文。</p>
+      <div class="action-row"><button class="btn btn-primary" :disabled="noKey" type="button" @click="regenerateStaleArticle">重新生成</button><button class="btn" type="button" @click="continuePreviousArticle">继续原文</button><button v-if="noKey" class="btn" type="button" @click="router.push('/settings')">配置 DeepSeek Key</button></div>
+    </div>
+
+    <div v-else-if="noKey" class="immersive-empty">
       <h1>需要配置 DeepSeek Key</h1>
       <p>文章是今日学习的可选步骤；不配置也可以完成卡片学习。</p>
       <div class="action-row"><button class="btn btn-primary" type="button" @click="router.push('/settings')">配置 DeepSeek Key</button><button class="btn" type="button" @click="skip">跳过文章并完成今日学习</button></div>
@@ -271,6 +309,7 @@ onBeforeUnmount(() => {
     </div>
 
     <article v-else-if="session" class="reading-card">
+      <p v-if="usingPreviousArticle" class="reading-coverage-note">原文章未包含后来加入的单词</p>
       <div class="reading-title-row"><h1>{{ session.title }}</h1><button class="btn btn-quiet" type="button" @click="regenerate">重新生成</button></div>
       <div ref="readingCopy" class="reading-copy reading-copy-selectable"><template v-for="(segment, index) in parsed.segments" :key="index"><mark v-if="stage >= 1 && segment.wordId" class="target-word">{{ segment.text }}</mark><span v-else>{{ segment.text }}</span></template></div>
       <button v-if="stage === 0" class="btn btn-primary" type="button" @click="revealTargets">我已读完，标出目标词</button>
