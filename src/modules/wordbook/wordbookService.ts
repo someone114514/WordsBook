@@ -2,6 +2,8 @@
 import type { AddToWordbookResult, WordbookItem, WordbookWithEntry } from '../../types/models'
 import { applyAiOverrides } from '../dictionary/entryOverrideMapper'
 import { invalidateStudyPlanCache } from '../review/reviewService'
+import { cardToReviewState } from '../review/scheduler'
+import { createEmptyCard } from 'ts-fsrs'
 import { dictionaryEntryFromWordbook, repairVocabularyIntegrity, snapshotDictionaryEntry, unresolvedVocabularyEntry } from './vocabularyIntegrity'
 import { addWordToStudyList, ensureSystemStudyLists, LOOKUP_LIST_ID, removeWordFromStudyList } from './studyListService'
 import { markStudyDataChanged } from '../review/studyDataRevision'
@@ -132,6 +134,120 @@ export async function addToWordbook(entryId: string): Promise<AddToWordbookResul
   emitWordbookUpdatedEvent()
 
   return { wordId, alreadyExists: false }
+}
+
+export async function resetWordForRelearning(wordId: string, listId?: string, at = new Date()): Promise<void> {
+  const item = await db.wordbook.get(wordId)
+  if (!item) throw new Error('单词不存在')
+  await ensureSystemStudyLists()
+  if (listId) await addWordToStudyList(listId, wordId, 'lookup')
+
+  const [memberships, lists, logs] = await Promise.all([
+    db.studyListItems.where('wordId').equals(wordId).toArray(),
+    db.studyLists.toArray(),
+    db.reviewLogs.where('wordId').equals(wordId).toArray(),
+  ])
+  const listMap = new Map(lists.map((list) => [list.listId, list]))
+  const learningMemberships = memberships.filter((membership) => listMap.get(membership.listId)?.systemType !== 'lookup')
+  if (!learningMemberships.length) throw new Error('请先选择一个学习词表')
+
+  const now = at.toISOString()
+  const dayKey = `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, '0')}-${String(at.getDate()).padStart(2, '0')}`
+  const dailySession = await db.dailyLearningSessions.where('dayKey').equals(dayKey).first()
+  const oldQueueItems = dailySession
+    ? await db.dailyQueueItems.where('sessionId').equals(dailySession.sessionId).filter((row) => row.wordId === wordId).toArray()
+    : []
+  const oldQueueAttempts = dailySession
+    ? await db.dailyQueueAttempts.where('[sessionId+wordId]').equals([dailySession.sessionId, wordId]).toArray()
+    : []
+  const refreshedMemberships = learningMemberships.map((membership) => ({
+    ...membership,
+    learningEnabled: 1 as const,
+    autoActivate: 0 as const,
+    addedAt: now,
+  }))
+  const refreshedItem: WordbookItem = { ...item, addedAt: now, archived: 0 }
+  const freshState = cardToReviewState(wordId, createEmptyCard(now), {
+    wordId,
+    cycle: 0,
+    nextReviewAt: now,
+    successCount: 0,
+    lapseCount: 0,
+    totalReviews: 0,
+  })
+  freshState.successCount = 0
+  freshState.lapseCount = 0
+  freshState.totalReviews = 0
+
+  let newQueueItem: import('../../types/models').DailyQueueItem | undefined
+  let updatedSession: import('../../types/models').DailyLearningSession | undefined
+  let reorderedPending: import('../../types/models').DailyQueueItem[] = []
+  if (dailySession?.status === 'active' && dailySession.phase === 'cards') {
+    const oldIds = new Set(oldQueueItems.map((row) => row.itemId))
+    const pending = (await db.dailyQueueItems.where('sessionId').equals(dailySession.sessionId).sortBy('position'))
+      .filter((row) => !oldIds.has(row.itemId) && (row.status === 'pending' || row.status === 'active'))
+    newQueueItem = {
+      itemId: `${dailySession.sessionId}:reencounter:${wordId}:${crypto.randomUUID()}`,
+      sessionId: dailySession.sessionId,
+      kind: 'card',
+      wordId,
+      reason: 'reencounter',
+      position: Math.min(2, pending.length),
+      status: 'pending',
+      attemptNo: 1,
+      maxAttempts: 5,
+      retrievability: 0,
+      startingLongTermRetrievability: 0,
+      wasNew: true,
+      todayMastery: 0,
+      recallStreak: 0,
+      weakSeen: false,
+      attemptCount: 0,
+      nextGap: 0,
+      tomorrowPriority: false,
+      createdAt: now,
+      updatedAt: now,
+    }
+    pending.splice(Math.min(2, pending.length), 0, newQueueItem)
+    reorderedPending = pending.map((row, position) => ({ ...row, position, updatedAt: now }))
+    updatedSession = {
+      ...dailySession,
+      status: 'active',
+      phase: 'cards',
+      initialWordIds: [...new Set([...dailySession.initialWordIds, wordId])],
+      cardsCompletedAt: undefined,
+      articleStatus: dailySession.articleStatus === 'ready' || dailySession.articleStatus === 'generating' || dailySession.articleStatus === 'completed'
+        ? 'stale'
+        : dailySession.articleStatus,
+      completedAt: undefined,
+      updatedAt: now,
+    }
+  }
+
+  await db.transaction('rw', [db.wordbook, db.reviewState, db.reviewLogs, db.studyListItems, db.dailyLearningSessions, db.dailyQueueItems, db.dailyQueueAttempts], async () => {
+    await db.wordbook.put(refreshedItem)
+    await db.reviewState.put(freshState)
+    await db.reviewLogs.where('wordId').equals(wordId).delete()
+    await db.studyListItems.bulkPut(refreshedMemberships)
+    if (dailySession) {
+      await db.dailyQueueItems.where('sessionId').equals(dailySession.sessionId).filter((row) => row.wordId === wordId).delete()
+      await db.dailyQueueAttempts.where('[sessionId+wordId]').equals([dailySession.sessionId, wordId]).delete()
+    }
+    if (reorderedPending.length) await db.dailyQueueItems.bulkPut(reorderedPending)
+    if (updatedSession) await db.dailyLearningSessions.put(updatedSession)
+  })
+
+  await markPayloadChanged('wordbook', refreshedItem, now)
+  await markRecordChanged('reviewState', wordId, now)
+  for (const membership of refreshedMemberships) await markPayloadChanged('studyListItems', membership, now)
+  for (const log of logs) await markRecordDeleted('reviewLogs', reviewLogSyncId(log), now)
+  for (const row of oldQueueItems) await markRecordDeleted('dailyQueueItems', row.itemId, now)
+  for (const row of oldQueueAttempts) await markRecordDeleted('dailyQueueAttempts', row.attemptId, now)
+  for (const row of reorderedPending) await markPayloadChanged('dailyQueueItems', row, now)
+  if (updatedSession) await markPayloadChanged('dailyLearningSessions', updatedSession, now)
+  await markStudyDataChanged()
+  invalidateStudyPlanCache()
+  emitWordbookUpdatedEvent()
 }
 
 export async function removeWordFromWordbook(wordId: string): Promise<void> {

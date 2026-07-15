@@ -19,7 +19,7 @@ interface SyncTableRow {
 async function getCurrentUserId(client: SupabaseClient): Promise<string> {
   const { data, error } = await client.auth.getUser()
   if (error) {
-    throw error
+    throw new Error(`云同步登录已失效，请重新登录后再同步（${error.message}）`)
   }
 
   const userId = data.user?.id

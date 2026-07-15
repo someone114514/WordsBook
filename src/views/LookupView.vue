@@ -18,6 +18,7 @@ import {
   addToWordbook,
   getWordbookEntryStatus,
   removeFromLookupCollection,
+  resetWordForRelearning,
   type WordbookEntryStatus,
 } from '../modules/wordbook/wordbookService'
 import { addEntryToStudyList, listStudyLists } from '../modules/wordbook/studyListService'
@@ -44,6 +45,7 @@ const aiBusyAction = ref<string | null>(null)
 const aiBusyNoResult = ref(false)
 const deletingEntryId = ref<string | null>(null)
 const addingEntryId = ref<string | null>(null)
+const relearningEntryId = ref<string | null>(null)
 const sectionExpanded = ref<Record<string, boolean>>({})
 
 const MAX_VISIBLE_ENTRIES = 8
@@ -336,6 +338,37 @@ async function onAddToStudyList(entry: DictionaryEntry) {
   }
 }
 
+async function onRelearn(entry: DictionaryEntry) {
+  const status = entryStatusMap.value.get(entry.entryId)
+  if (!status) return
+  const hasLearningList = status.listIds.some((id) => id !== 'system:lookup')
+  if (!hasLearningList && !selectedStudyListId.value) {
+    messageType.value = 'error'
+    message.value = '请先选择一个学习词表'
+    manageEntryId.value = entry.entryId
+    return
+  }
+  if (!window.confirm(`将「${entry.headword}」按全新单词重新学习？原复习进度和复习日志会被清除。`)) return
+  relearningEntryId.value = entry.entryId
+  try {
+    await resetWordForRelearning(status.wordId, hasLearningList ? undefined : selectedStudyListId.value)
+    if (!hasLearningList && selectedStudyListId.value) {
+      entryStatusMap.value = new Map(entryStatusMap.value).set(entry.entryId, {
+        ...status,
+        listIds: [...new Set([...status.listIds, selectedStudyListId.value])],
+      })
+    }
+    messageType.value = 'success'
+    message.value = '已重置为新词，将优先重新学习'
+    manageEntryId.value = ''
+  } catch (error) {
+    messageType.value = 'error'
+    message.value = error instanceof Error ? error.message : '重新学习失败，请重试'
+  } finally {
+    relearningEntryId.value = null
+  }
+}
+
 async function onRemoveWord(entry: DictionaryEntry) {
   const status = entryStatusMap.value.get(entry.entryId)
   if (!status?.listIds.includes('system:lookup')) {
@@ -574,6 +607,7 @@ function parseLines(raw: string): string[] {
 
                     <div class="actions">
                       <button class="btn" @click="onPlay(entry)">发音</button>
+                      <button v-if="entryStatusMap.has(entry.entryId)" class="btn lookup-relearn-action" type="button" :disabled="relearningEntryId === entry.entryId" @click="onRelearn(entry)">{{ relearningEntryId === entry.entryId ? '重置中…' : '重新学习' }}</button>
                       <button
                         :class="['btn', 'btn-primary', 'lookup-study-action', { added: isAdded(entry.entryId) }]"
                         type="button"

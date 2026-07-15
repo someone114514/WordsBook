@@ -6,6 +6,7 @@ import {
   aggregateSessionRating,
   applyDailyQueueChanges,
   answerDailyCard,
+  computeShortTermReview,
   extendDailyQueue,
   finishCardPhase,
   getOrCreateDailySession,
@@ -52,25 +53,35 @@ describe('daily learning queue', () => {
   })
 
   it('uses separate session mastery and long-term trajectory ratings', () => {
-    expect([0.2, 0.6, 0.8, 0.95].map((value) => initialTodayMastery(value, false))).toEqual([0, 20, 30, 40])
+    expect([0.2, 0.6, 0.8, 0.95].map((value) => initialTodayMastery(value, false))).toEqual([20, 60, 80, 95])
     expect(initialTodayMastery(0.95, true)).toBe(0)
-    expect(nextTodayMastery(0, 'hard')).toBe(40)
-    expect(nextTodayMastery(40, 'good')).toBe(100)
+    expect(nextTodayMastery(0, 'hard')).toBe(25)
+    expect(nextTodayMastery(40, 'good')).toBe(75)
     expect(nextTodayMastery(80, 'again')).toBe(0)
-    expect([0, 40, 80, 100].map(masteryReinsertionGap)).toEqual([2, 4, 7, 0])
+    expect([0, 40, 60, 80, 100].map(masteryReinsertionGap)).toEqual([2, 3, 5, 7, 0])
+    const afterHard = computeShortTermReview({ mastery: 0, wasNew: true }, 'hard')
+    const firstGood = computeShortTermReview({ ...afterHard, wasNew: true }, 'good')
+    const secondGood = computeShortTermReview({ ...firstGood, wasNew: true }, 'good')
+    expect(afterHard).toEqual(expect.objectContaining({ mastery: 25, recallStreak: 0, weakSeen: true, passed: false }))
+    expect(firstGood).toEqual(expect.objectContaining({ mastery: 65, recallStreak: 1, passed: false }))
+    expect(secondGood).toEqual(expect.objectContaining({ mastery: 100, recallStreak: 2, passed: true }))
     expect(aggregateSessionRating(['hard', 'good'])).toBe('hard')
     expect(aggregateSessionRating(['good', 'again', 'good'])).toBe('again')
   })
 
-  it('distinguishes hard then good from a clean recall in the FSRS log', async () => {
+  it('requires two consecutive good recalls after hard before committing FSRS', async () => {
     await seed()
     let snapshot = await answerDailyCard('daily:test', 'i-w1', 'hard', new Date('2026-07-13T08:01:00.000Z'))
-    expect(snapshot.current?.todayMastery).toBe(40)
-    expect(snapshot.current?.nextGap).toBe(4)
+    expect(snapshot.current?.todayMastery).toBe(25)
+    expect(snapshot.current?.nextGap).toBe(3)
     snapshot = await answerDailyCard('daily:test', snapshot.current!.itemId, 'good', new Date('2026-07-13T08:02:00.000Z'))
+    expect(snapshot.current?.todayMastery).toBe(65)
+    expect(snapshot.current?.recallStreak).toBe(1)
+    expect(await db.reviewLogs.where('wordId').equals('w1').count()).toBe(0)
+    snapshot = await answerDailyCard('daily:test', snapshot.current!.itemId, 'good', new Date('2026-07-13T08:03:00.000Z'))
     const log = await db.reviewLogs.where('wordId').equals('w1').first()
     expect(log?.rating).toBe('hard')
-    expect(log?.sessionAttemptCount).toBe(2)
+    expect(log?.sessionAttemptCount).toBe(3)
     expect(log?.todayMasteryAfter).toBe(100)
     expect(snapshot.session.phase).toBe('cards')
     snapshot = await finishCardPhase('daily:test')
@@ -154,5 +165,52 @@ describe('daily learning queue', () => {
     expect(added.some((item) => item.wasNew)).toBe(true)
     expect(added.some((item) => !item.wasNew)).toBe(true)
     expect(snapshot.session.articleStatus).toBe('stale')
+  })
+
+  it('never hot-adds a bulk import to an already started daily queue', async () => {
+    const now = '2026-07-13T08:00:00.000Z'
+    await db.studyLists.put({ listId: 'list', name: 'List', description: '', studyEnabled: 1, createdAt: now, updatedAt: now })
+    await db.settings.bulkPut([{ key: 'dailyNewLimit', value: 1 }, { key: 'dailyReviewLimit', value: 200 }])
+    for (const wordId of ['base', ...Array.from({ length: 300 }, (_, index) => `import-${index}`)]) {
+      await db.dictionaryEntries.put({ entryId: `e-${wordId}`, headword: wordId, headwordLower: wordId, posList: [], sensesJson: '[]', examplesJson: '[]', usageJson: '[]' })
+      await db.wordbook.put({ wordId, entryId: `e-${wordId}`, addedAt: now, note: '', tags: [], archived: 0 })
+      await db.reviewState.put({ wordId, cycle: 0, nextReviewAt: now, successCount: 0, lapseCount: 0, totalReviews: 0 })
+    }
+    await db.studyListItems.put({ membershipId: 'list:base', listId: 'list', wordId: 'base', source: 'manual', addedAt: now })
+    await markStudyDataChanged()
+    const snapshot = await getOrCreateDailySession(undefined, new Date('2026-07-13T08:01:00.000Z'))
+    const importedAt = '2026-07-13T08:02:00.000Z'
+    await db.studyListItems.bulkPut(Array.from({ length: 300 }, (_, index) => ({ membershipId: `list:import-${index}`, listId: 'list', wordId: `import-${index}`, source: 'import' as const, learningEnabled: 0 as const, autoActivate: 1 as const, addedAt: importedAt })))
+    await markStudyDataChanged()
+    const changes = await previewDailyQueueChanges(snapshot.session.sessionId, new Date('2026-07-13T08:03:00.000Z'))
+    expect(changes.addedWordIds).toEqual([])
+    const applied = await applyDailyQueueChanges(snapshot.session.sessionId, new Date('2026-07-13T08:03:00.000Z'))
+    expect(applied.totalCards).toBe(1)
+  })
+
+  it('fills only a started session new-word shortfall from a later import', async () => {
+    const now = '2026-07-13T08:00:00.000Z'
+    await db.studyLists.put({ listId: 'list', name: 'List', description: '', studyEnabled: 1, createdAt: now, updatedAt: now })
+    await db.settings.bulkPut([{ key: 'dailyNewLimit', value: 3 }, { key: 'dailyReviewLimit', value: 20 }])
+    await db.dictionaryEntries.put({ entryId: 'e-base', headword: 'base', headwordLower: 'base', posList: [], sensesJson: '[]', examplesJson: '[]', usageJson: '[]' })
+    await db.wordbook.put({ wordId: 'base', entryId: 'e-base', addedAt: now, note: '', tags: [], archived: 0 })
+    await db.reviewState.put({ wordId: 'base', cycle: 0, nextReviewAt: now, successCount: 0, lapseCount: 0, totalReviews: 0 })
+    await db.studyListItems.put({ membershipId: 'list:base', listId: 'list', wordId: 'base', source: 'manual', learningEnabled: 1, autoActivate: 0, addedAt: now })
+    await markStudyDataChanged()
+    const snapshot = await getOrCreateDailySession(undefined, new Date('2026-07-13T08:01:00.000Z'))
+    for (let index = 0; index < 20; index += 1) {
+      const wordId = `later-${index}`
+      await db.dictionaryEntries.put({ entryId: `e-${wordId}`, headword: wordId, headwordLower: wordId, posList: [], sensesJson: '[]', examplesJson: '[]', usageJson: '[]' })
+      await db.wordbook.put({ wordId, entryId: `e-${wordId}`, addedAt: now, note: '', tags: [], archived: 0 })
+      await db.reviewState.put({ wordId, cycle: 0, nextReviewAt: now, successCount: 0, lapseCount: 0, totalReviews: 0 })
+      await db.studyListItems.put({ membershipId: `list:${wordId}`, listId: 'list', wordId, source: 'import', learningEnabled: 0, autoActivate: 1, addedAt: '2026-07-13T08:02:00.000Z' })
+    }
+    await markStudyDataChanged()
+    const changes = await previewDailyQueueChanges(snapshot.session.sessionId, new Date('2026-07-13T08:03:00.000Z'))
+    expect(changes.addedWordIds).toHaveLength(2)
+    expect((await db.studyListItems.where('learningEnabled').equals(1).count())).toBe(1)
+    const applied = await applyDailyQueueChanges(snapshot.session.sessionId, new Date('2026-07-13T08:03:00.000Z'))
+    expect(applied.totalCards).toBe(3)
+    expect((await db.studyListItems.where('learningEnabled').equals(1).count())).toBe(3)
   })
 })

@@ -13,8 +13,8 @@ import { dictionaryEntryFromWordbook, snapshotDictionaryEntry, unresolvedVocabul
 const LOOKUP_LIST_ID = 'system:lookup'
 const LEGACY_LIST_ID = 'system:legacy'
 type MembershipSource = NonNullable<StudyListItem['source']>
-type ListRow = StudyList & { wordCount: number }
-type ListWordRow = { item: WordbookItem; entry: DictionaryEntry }
+type ListRow = StudyList & { wordCount: number; activeWordCount: number }
+type ListWordRow = { item: WordbookItem; entry: DictionaryEntry; membership: StudyListItem }
 let listCache: { revision: string; rows: ListRow[] } | null = null
 const wordCaches = new Map<string, { revision: string; rows: ListWordRow[] }>()
 
@@ -71,10 +71,14 @@ export async function listStudyLists(): Promise<ListRow[]> {
     db.studyListItems.toArray(),
   ])
   const counts = new Map<string, number>()
-  for (const row of memberships) counts.set(row.listId, (counts.get(row.listId) ?? 0) + 1)
+  const activeCounts = new Map<string, number>()
+  for (const row of memberships) {
+    counts.set(row.listId, (counts.get(row.listId) ?? 0) + 1)
+    if (row.learningEnabled !== 0) activeCounts.set(row.listId, (activeCounts.get(row.listId) ?? 0) + 1)
+  }
   const rows = lists
     .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
-    .map((list) => ({ ...list, wordCount: counts.get(list.listId) ?? 0 }))
+    .map((list) => ({ ...list, wordCount: counts.get(list.listId) ?? 0, activeWordCount: activeCounts.get(list.listId) ?? 0 }))
   listCache = { revision, rows }
   return rows
 }
@@ -204,6 +208,8 @@ export async function addWordToStudyList(
     listId,
     wordId,
     source,
+    learningEnabled: source === 'import' ? 0 : 1,
+    autoActivate: source === 'import' ? 1 : 0,
     addedAt: new Date().toISOString(),
   }
   await db.studyListItems.add(row)
@@ -235,15 +241,37 @@ export async function removeWordFromStudyList(listId: string, wordId: string): P
   invalidateStudyPlanCache()
 }
 
+export async function setStudyListWordsLearningEnabled(
+  listId: string,
+  wordIds: string[],
+  enabled: boolean,
+): Promise<number> {
+  const ids = [...new Set(wordIds)]
+  if (!ids.length) return 0
+  const memberships = await db.studyListItems.where('listId').equals(listId).toArray()
+  const selected = new Set(ids)
+  const now = new Date().toISOString()
+  const changed = memberships
+    .filter((membership) => selected.has(membership.wordId) && membership.learningEnabled !== (enabled ? 1 : 0))
+    .map((membership) => ({ ...membership, learningEnabled: enabled ? 1 as const : 0 as const, autoActivate: 0 as const }))
+  if (!changed.length) return 0
+  await db.studyListItems.bulkPut(changed)
+  for (const membership of changed) await markPayloadChanged('studyListItems', membership, now)
+  const list = await db.studyLists.get(listId)
+  await markStudyDataChanged({ affectsQueue: list?.studyEnabled === 1 })
+  invalidateStudyPlanCache()
+  return changed.length
+}
+
 export async function listStudyListWords(listId: string) {
   const revision = await getStudyDataRevision()
   const cached = wordCaches.get(listId)
   if (cached?.revision === revision) return cached.rows
   const memberships = await db.studyListItems.where('listId').equals(listId).toArray()
   const items = await db.wordbook.bulkGet(memberships.map((row) => row.wordId))
-  const words = items.filter((row): row is WordbookItem => Boolean(row))
-  const entries = await db.dictionaryEntries.bulkGet(words.map((row) => row.entryId))
-  const rows = words.map((item, index) => ({ item, entry: entries[index] ?? dictionaryEntryFromWordbook(item) ?? unresolvedVocabularyEntry(item) }))
+  const pairs = memberships.flatMap((membership, index) => items[index] ? [{ membership, item: items[index]! }] : [])
+  const entries = await db.dictionaryEntries.bulkGet(pairs.map((row) => row.item.entryId))
+  const rows = pairs.map(({ item, membership }, index) => ({ item, membership, entry: entries[index] ?? dictionaryEntryFromWordbook(item) ?? unresolvedVocabularyEntry(item) }))
   wordCaches.set(listId, { revision, rows })
   return rows
 }

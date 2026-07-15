@@ -29,6 +29,7 @@ interface ActiveGeneration {
 }
 
 const activeGenerations = new Map<string, ActiveGeneration>()
+export const MAX_READING_BATCH_SIZE = 12
 
 function isUsableHeadword(value: string | undefined): value is string {
   return isUsableVocabularyHeadword(value)
@@ -95,8 +96,8 @@ export async function buildReadingTargetBatches(dayKey = dayjs().format('YYYY-MM
   const sampledGood = goodOnly.slice(0, Math.ceil(goodOnly.length * 0.25))
   const selected = [...new Set([...mandatory, ...sampledGood])]
   selected.sort((a, b) => hash(`${dayKey}:batch:${a}`) - hash(`${dayKey}:batch:${b}`))
-  if (selected.length <= 25) return selected.length ? [selected] : []
-  const batchCount = Math.ceil(selected.length / 25)
+  if (selected.length <= MAX_READING_BATCH_SIZE) return selected.length ? [selected] : []
+  const batchCount = Math.ceil(selected.length / MAX_READING_BATCH_SIZE)
   const batches: string[][] = Array.from({ length: batchCount }, () => [])
   selected.forEach((wordId, index) => batches[index % batchCount]!.push(wordId))
   return batches
@@ -205,6 +206,30 @@ ${JSON.stringify(rows)}
 Return one JSON object with this exact shape:
 {"title":"concise English title","targets":[{"wordId":"copy exact target id","headword":"copy exact target headword","contextualMeaning":"concise Simplified Chinese meaning in this passage","choices":["exactly three distinct Simplified Chinese choices including contextualMeaning"],"explanation":"concise Simplified Chinese explanation"}],"translation":"complete Simplified Chinese translation"}
 Return every target exactly once. Each distractor must have the same part of speech but a clearly different semantic category. Do not use synonyms, near-synonyms, paraphrases, shared two-character meaning stems, or degree-only differences.`
+}
+
+function buildFallbackDetails(
+  rows: Array<{ wordId: string; headword: string; senses: string[] }>,
+): Pick<Required<AiReadingResponse>, 'title' | 'targets' | 'translation'> {
+  const distractorPool = ['进行计算操作', '表示时间顺序', '一种具体地点', '某种食物名称', '描述声音强弱']
+  const targets = rows.map((row) => {
+    const contextualMeaning = row.senses.find(Boolean) ?? '请结合上下文理解该词'
+    const distractors = distractorPool
+      .filter((choice) => normalizeChoice(choice) !== normalizeChoice(contextualMeaning) && !meaningsTooSimilar(choice, contextualMeaning))
+      .slice(0, 2)
+    return {
+      wordId: row.wordId,
+      headword: row.headword,
+      contextualMeaning,
+      choices: [contextualMeaning, ...distractors],
+      explanation: '题目服务暂时未完成，已使用本地词典释义生成备用题目。',
+    }
+  })
+  return {
+    title: 'Context Reading',
+    targets,
+    translation: '题目服务暂时不可用，本次保留英文正文和备用测义题。',
+  }
 }
 
 export type StreamProgress = {
@@ -448,12 +473,18 @@ async function generateReadingSessionImpl(options: {
     level,
     topic: options.topic?.trim() ?? '',
     targetWordIds: validWordIds,
+    omittedTargetWordIds: [],
+    generationAttemptCount: (existing?.generationAttemptCount ?? 0) + 1,
+    successfulGenerationCount: existing?.successfulGenerationCount ?? 0,
+    lastGeneratedAt: now,
     status: reusablePassage ? 'enriching' : 'streaming',
     segmentsJson: reusablePassage ? JSON.stringify([{ text: reusablePassage }]) : '[]',
     targetsJson: '[]',
     translation: '',
     createdAt: existing?.createdAt ?? now,
     readerStage: existing?.readerStage ?? 0,
+    quizCursor: existing?.quizCursor ?? 0,
+    resultCursor: existing?.resultCursor ?? 0,
     showTranslation: existing?.showTranslation ?? false,
     updatedAt: now,
   }
@@ -462,19 +493,39 @@ async function generateReadingSessionImpl(options: {
   try {
     if (!validWordIds.length) throw new Error('今天的目标词资料不完整，请重新查词或安装词典后重试')
     let passage = reusablePassage
+    let passageRows = promptRows
     if (!passage) {
       let passageError: unknown
+      let bestPassage = ''
+      let bestRows: typeof promptRows = []
+      let previousMissing: typeof promptRows = []
       for (let attempt = 0; attempt < 2; attempt += 1) {
         try {
-          const candidate = await requestPassage(settings, buildPassagePrompt(promptRows, level, session.topic), options.onProgress, options.signal)
+          const retryHint = attempt > 0 && previousMissing.length
+            ? ` The previous draft missed these required words, so make especially sure they appear naturally: ${previousMissing.map((row) => row.headword).join(', ')}.`
+            : ''
+          const candidate = await requestPassage(settings, `${buildPassagePrompt(promptRows, level, session.topic)}${retryHint}`, options.onProgress, options.signal)
           const missing = promptRows.filter((row) => !passageIncludesHeadword(candidate, row.headword))
-          if (missing.length) throw new Error(`正文缺少目标词：${missing.map((row) => row.headword).join('、')}`)
+          if (missing.length === promptRows.length) throw new Error('正文没有覆盖任何目标词')
+          const missingIds = new Set(missing.map((row) => row.wordId))
+          const coveredRows = promptRows.filter((row) => !missingIds.has(row.wordId))
+          if (coveredRows.length > bestRows.length) {
+            bestPassage = candidate
+            bestRows = coveredRows
+          }
+          previousMissing = missing
+          if (missing.length > 2) throw new Error(`正文仍遗漏 ${missing.length} 个目标词`)
           passage = candidate
+          passageRows = coveredRows
           break
         } catch (error) {
           passageError = error
           if (options.signal?.aborted) break
         }
+      }
+      if (!passage && bestPassage) {
+        passage = bestPassage
+        passageRows = bestRows
       }
       if (!passage) throw passageError
     }
@@ -494,19 +545,30 @@ async function generateReadingSessionImpl(options: {
     let detailsError: unknown
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        details = await requestDetails(settings, buildDetailsPrompt(promptRows, passage), passage, options.onProgress, options.signal)
+        details = await requestDetails(settings, buildDetailsPrompt(passageRows, passage), passage, options.onProgress, options.signal)
         break
       } catch (error) {
         detailsError = error
         if (options.signal?.aborted) break
       }
     }
-    if (!details) throw detailsError
+    if (!details) {
+      if (options.signal?.aborted) throw detailsError
+      details = buildFallbackDetails(passageRows)
+      options.onProgress?.({ phase: 'details', rawText: passage, paragraphs: splitPassage(passage), targetCount: details.targets.length })
+    }
+    const expectedHeadwords = new Map(passageRows.map((row) => [row.wordId, row.headword]))
+    const seenTargetIds = new Set<string>()
+    const usableTargets = details.targets.filter((target) => {
+      if (!expectedHeadwords.has(target.wordId) || seenTargetIds.has(target.wordId)) return false
+      seenTargetIds.add(target.wordId)
+      return Boolean(target.contextualMeaning && Array.isArray(target.choices))
+    })
     const generated: AiReadingResponse = {
       ...details,
-      segments: buildSegments(splitPassage(passage), details.targets),
+      targets: usableTargets,
+      segments: buildSegments(splitPassage(passage), usableTargets),
     }
-    const expectedHeadwords = new Map(promptRows.map((row) => [row.wordId, row.headword]))
     generated.targets = generated.targets?.map((target) => ({
       ...target,
       headword: expectedHeadwords.get(target.wordId) ?? target.headword,
@@ -514,21 +576,38 @@ async function generateReadingSessionImpl(options: {
     }))
     const invalidTargets = generated.targets?.filter((target) => !hasDistinctChoices(target)) ?? []
     if (invalidTargets.length) {
-      const repairedChoices = await repairTargetChoices(settings, invalidTargets, options.signal)
-      generated.targets = generated.targets?.map((target) => {
-        const repair = repairedChoices.get(target.wordId)
-        if (!repair) return target
-        return {
-          ...target,
-          choices: [...repair.choices].sort((left, right) => hash(`${sessionId}:${target.wordId}:${left}`) - hash(`${sessionId}:${target.wordId}:${right}`)),
-          explanation: repair.explanation || target.explanation,
-        }
-      })
+      try {
+        const repairedChoices = await repairTargetChoices(settings, invalidTargets, options.signal)
+        generated.targets = generated.targets?.map((target) => {
+          const repair = repairedChoices.get(target.wordId)
+          if (!repair) return target
+          return {
+            ...target,
+            choices: [...repair.choices].sort((left, right) => hash(`${sessionId}:${target.wordId}:${left}`) - hash(`${sessionId}:${target.wordId}:${right}`)),
+            explanation: repair.explanation || target.explanation,
+          }
+        })
+      } catch {
+        // Keep every already-valid question. A failed repair for one malformed
+        // target must not discard the passage and the rest of the quiz.
+      }
     }
-    validateResponse(generated, validWordIds)
+    const fallback = buildFallbackDetails(passageRows)
+    const validTargets = new Map((generated.targets ?? []).filter(hasDistinctChoices).map((target) => [target.wordId, target]))
+    generated.title = generated.title || fallback.title
+    generated.translation = generated.translation || fallback.translation
+    generated.targets = passageRows.map((row) => validTargets.get(row.wordId)
+      ?? fallback.targets.find((target) => target.wordId === row.wordId)!).filter(Boolean)
+    const generatedWordIds = generated.targets.map((target) => target.wordId)
+    generated.segments = buildSegments(splitPassage(passage), generated.targets ?? [])
+    validateResponse(generated, generatedWordIds)
+    const generatedSet = new Set(generatedWordIds)
     session = {
       ...session,
       status: 'ready',
+      targetWordIds: generatedWordIds,
+      omittedTargetWordIds: validWordIds.filter((wordId) => !generatedSet.has(wordId)),
+      successfulGenerationCount: (session.successfulGenerationCount ?? 0) + 1,
       title: generated.title,
       segmentsJson: JSON.stringify(generated.segments),
       targetsJson: JSON.stringify(generated.targets),
@@ -632,11 +711,21 @@ export async function saveReadingProgress(
   sessionId: string,
   readerStage: 0 | 1 | 2,
   showTranslation: boolean,
+  quizCursor?: number,
+  resultCursor?: number,
 ): Promise<void> {
   const session = await db.readingSessions.get(sessionId)
   if (!session) return
   const now = new Date().toISOString()
-  const updated: ReadingSession = { ...session, readerStage, showTranslation, lastOpenedAt: now, updatedAt: now }
+  const updated: ReadingSession = {
+    ...session,
+    readerStage,
+    showTranslation,
+    quizCursor: quizCursor ?? session.quizCursor,
+    resultCursor: resultCursor ?? session.resultCursor,
+    lastOpenedAt: now,
+    updatedAt: now,
+  }
   await db.readingSessions.put(updated)
   await markPayloadChanged('readingSessions', updated, now)
 }

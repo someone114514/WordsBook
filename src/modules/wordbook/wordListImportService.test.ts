@@ -2,6 +2,7 @@ import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { db } from '../../db/database'
 import { createStudyList } from './studyListService'
+import { buildTodayPlan } from '../review/reviewService'
 import { importWordList, parseWordListText } from './wordListImportService'
 
 describe('word list parser', () => {
@@ -43,5 +44,8 @@ describe('word list parser', () => {
     expect((await db.dictionaryEntries.get('import:look forward to'))?.headwordLower).toBe('look forward to')
     expect(await db.wordbook.count()).toBe(2)
     expect(await db.reviewState.count()).toBe(2)
+    expect((await db.studyListItems.toArray()).every((membership) => membership.learningEnabled === 0)).toBe(true)
+    expect((await buildTodayPlan({ dailyNewLimit: 20, dailyReviewLimit: 20 })).queueWordIds).toHaveLength(2)
+    expect((await db.studyListItems.toArray()).every((membership) => membership.learningEnabled === 1)).toBe(true)
   })
 })

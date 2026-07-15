@@ -60,6 +60,10 @@ export interface StudyListItem {
   listId: string
   wordId: string
   source?: 'lookup' | 'article' | 'manual' | 'import' | 'migration'
+  /** Membership and learning activation are intentionally separate. */
+  learningEnabled?: 0 | 1
+  /** Backlog words may be auto-promoted to fill a future daily-new quota. */
+  autoActivate?: 0 | 1
   addedAt: string
 }
 
@@ -162,6 +166,7 @@ export type DailyQueueReason =
   | 'again-repeat'
   | 'hard-repeat'
   | 'context-retry'
+  | 'reencounter'
   | 'list-change'
   | 'extra-batch'
 
@@ -199,6 +204,10 @@ export interface DailyQueueItem {
   startingLongTermRetrievability?: number
   wasNew?: boolean
   todayMastery?: number
+  /** Consecutive successful recalls within the current daily session. */
+  recallStreak?: number
+  /** Whether this word received Hard or Again during the current session. */
+  weakSeen?: boolean
   attemptCount?: number
   nextGap?: number
   tomorrowPriority?: boolean
@@ -241,6 +250,12 @@ export interface ReadingSession {
   level: AppSettings['articleLevel']
   topic: string
   targetWordIds: string[]
+  /** Words requested for this batch but omitted by the generated passage/details. */
+  omittedTargetWordIds?: string[]
+  /** Persisted counters make retries and successful generations reportable after sync. */
+  generationAttemptCount?: number
+  successfulGenerationCount?: number
+  lastGeneratedAt?: string
   status: 'pending' | 'streaming' | 'enriching' | 'ready' | 'failed' | 'completed' | 'skipped'
   title?: string
   segmentsJson: string
@@ -251,6 +266,8 @@ export interface ReadingSession {
   updatedAt: string
   streamedParagraphs?: number
   readerStage?: 0 | 1 | 2
+  quizCursor?: number
+  resultCursor?: number
   showTranslation?: boolean
   lastOpenedAt?: string
 }

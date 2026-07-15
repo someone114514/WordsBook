@@ -17,6 +17,7 @@ import {
 
 const router = useRouter()
 const loading = ref(true)
+const hasLoaded = ref(false)
 const error = ref('')
 const plan = ref<StudyPlan | null>(null)
 const session = ref<DailyLearningSession | null>(null)
@@ -86,6 +87,7 @@ async function load() {
     error.value = reason instanceof Error ? reason.message : String(reason)
   } finally {
     loading.value = false
+    hasLoaded.value = true
   }
 }
 
@@ -117,26 +119,30 @@ onActivated(() => {
       <h1>今日学习</h1>
     </header>
 
-    <section v-if="loading" class="panel empty-state" aria-live="polite">正在整理今日队列…</section>
-    <section v-else-if="error" class="panel empty-state">
+    <section v-if="error" class="panel empty-state">
       <p class="error" role="alert">{{ error }}</p><button class="btn btn-primary" type="button" @click="load">重试</button>
     </section>
-    <template v-else>
-      <section class="panel study-hero">
-        <div class="study-total"><strong>{{ total }}</strong><span>今日单词</span></div>
-        <div class="study-metrics study-metrics-two">
-          <template v-if="!snapshot">
-            <div><strong>{{ plan?.dueCount ?? 0 }}</strong><span>复习</span></div>
-            <div><strong>{{ plan?.newCount ?? 0 }}</strong><span>新词</span></div>
-          </template>
-          <template v-else>
-            <div><strong>{{ remainingCards }}</strong><span>队列剩余</span></div>
-            <div><strong>{{ sessionNewCount }}</strong><span>今日新词</span></div>
-          </template>
-        </div>
-        <p v-if="recoveryText" class="recovery-note">{{ recoveryText }}</p>
-        <button class="btn btn-primary study-primary" type="button" @click="start">{{ buttonLabel }}</button>
-      </section>
+
+    <section class="panel study-hero" :aria-busy="loading">
+      <div class="study-total">
+        <span v-if="loading" class="study-number-skeleton study-number-skeleton-total" aria-label="今日单词数量加载中" />
+        <strong v-else>{{ total }}</strong>
+        <span>今日单词</span>
+      </div>
+      <div class="study-metrics study-metrics-two">
+        <template v-if="!snapshot">
+          <div><span v-if="loading" class="study-number-skeleton" /><strong v-else>{{ plan?.dueCount ?? 0 }}</strong><span>复习</span></div>
+          <div><span v-if="loading" class="study-number-skeleton" /><strong v-else>{{ plan?.newCount ?? 0 }}</strong><span>新词</span></div>
+        </template>
+        <template v-else>
+          <div><span v-if="loading" class="study-number-skeleton" /><strong v-else>{{ remainingCards }}</strong><span>队列剩余</span></div>
+          <div><span v-if="loading" class="study-number-skeleton" /><strong v-else>{{ sessionNewCount }}</strong><span>今日新词</span></div>
+        </template>
+      </div>
+      <p v-if="!loading && recoveryText" class="recovery-note">{{ recoveryText }}</p>
+    </section>
+
+    <template v-if="hasLoaded && !error">
 
       <section v-if="visibleQueueChanges" class="panel queue-change-panel" aria-live="polite">
         <div><strong>词表有 {{ visibleQueueChanges }} 个变化</strong><p class="muted">只更新变化，不会打乱当前进度。</p></div>
@@ -157,5 +163,9 @@ onActivated(() => {
         <div v-else class="empty-state compact"><p>还没有参与学习的单词。</p><RouterLink class="btn btn-primary" to="/lookup">去查词并加入学习</RouterLink></div>
       </section>
     </template>
+
+    <div class="study-primary-dock">
+      <button class="btn btn-primary study-primary" :disabled="!hasLoaded" type="button" @click="start">{{ hasLoaded ? buttonLabel : '正在准备今日学习…' }}</button>
+    </div>
   </main>
 </template>

@@ -5,10 +5,10 @@ import type { DailyQueueSnapshot } from '../modules/review/dailyQueueService'
 import type { ReviewCard, ReviewRating } from '../types/models'
 import {
   answerDailyCard,
+  computeShortTermReview,
   extendDailyQueue,
   finishCardPhase,
   getOrCreateDailySession,
-  nextTodayMastery,
   setArticleStatus,
   skipWordInDailySession,
 } from '../modules/review/dailyQueueService'
@@ -50,21 +50,35 @@ const queueLabel = computed(() => {
   const pending = snapshot.value?.items.filter((item) => item.kind === 'card' && item.status === 'pending').length ?? 0
   return `队列剩余 ${pending}`
 })
+const tomorrowPriorityCount = computed(() => snapshot.value?.items.filter((item) => item.tomorrowPriority).length ?? 0)
 const reasonLabel = computed(() => ({
   initial: '先回想释义，再查看答案',
   'new-repeat': '再次回忆',
   'again-repeat': '重新回忆',
   'hard-repeat': '再确认一次',
   'context-retry': '文章错词',
+  reencounter: '最近再次遇到，作为新词重学',
   'list-change': '今日新增',
   'extra-batch': '继续学习',
 }[currentItem.value?.reason ?? 'initial']))
 const todayMastery = computed(() => currentItem.value?.todayMastery ?? 0)
+const previewRating = (rating: ReviewRating) => computeShortTermReview({
+  mastery: todayMastery.value,
+  recallStreak: currentItem.value?.recallStreak,
+  weakSeen: currentItem.value?.weakSeen,
+  wasNew: currentItem.value?.wasNew,
+  startingLongTermRetrievability: currentItem.value?.startingLongTermRetrievability,
+}, rating)
 const masteryPreview = computed(() => ({
-  good: nextTodayMastery(todayMastery.value, 'good'),
-  hard: nextTodayMastery(todayMastery.value, 'hard'),
-  again: nextTodayMastery(todayMastery.value, 'again'),
+  good: previewRating('good'),
+  hard: previewRating('hard'),
+  again: previewRating('again'),
 }))
+const recallHint = computed(() => {
+  const preview = masteryPreview.value.good
+  if (preview.passed) return '这次记得即可通过'
+  return `还需连续记得 ${Math.max(1, preview.requiredRecallStreak - preview.recallStreak)} 次`
+})
 
 async function loadCurrentCard() {
   const item = snapshot.value?.current
@@ -216,6 +230,7 @@ async function enterArticle() {
       <section class="immersive-card review-flashcard">
         <div class="review-card-topline">
           <span class="immersive-caption">{{ reasonLabel }}</span>
+          <span class="review-memory-confidence">短期记忆 {{ todayMastery }}%</span>
           <button class="review-delete-mini" :disabled="actionBusy" type="button" aria-haspopup="dialog" @click="showWordMenu = true">移除</button>
         </div>
         <div class="review-card-content review-card-content-center">
@@ -237,6 +252,7 @@ async function enterArticle() {
       <p class="eyebrow">本组完成</p>
       <h1>{{ snapshot?.session.status === 'completed' ? '今天还想再学一点？' : '今日卡片已完成' }}</h1>
       <p class="muted">可以继续进入文章，也可以再加一组到同一个队列。</p>
+      <p v-if="tomorrowPriorityCount" class="review-tomorrow-priority" role="status">{{ tomorrowPriorityCount }} 个单词今日尚未掌握，已安排明日优先复习。</p>
       <p v-if="noMoreWords" class="muted">暂无更多可学单词。</p>
       <div class="actions">
         <button v-if="snapshot?.session.status !== 'completed'" class="btn btn-primary" type="button" @click="enterArticle">进入今日文章</button>
@@ -249,9 +265,9 @@ async function enterArticle() {
     <footer v-if="card" :class="['review-grade-dock', revealMeaning ? 'review-grade-dock-three' : 'review-reveal-dock']">
       <button v-if="!revealMeaning" class="btn btn-primary review-reveal-action" type="button" @click="revealMeaning = true">显示释义</button>
       <template v-else>
-        <button class="btn btn-primary review-action-btn" :disabled="grading" type="button" @click="onGrade('good')">记得 <small>{{ masteryPreview.good }}%</small></button>
-        <button class="btn review-action-btn review-hard" :disabled="grading" type="button" @click="onGrade('hard')">模糊 <small>{{ masteryPreview.hard }}%</small></button>
-        <button class="btn btn-danger review-action-btn" :disabled="grading" type="button" @click="onGrade('again')">忘记 <small>{{ masteryPreview.again }}%</small></button>
+        <button class="btn btn-primary review-action-btn" :disabled="grading" type="button" @click="onGrade('good')">记得 <small>{{ masteryPreview.good.mastery }}%</small><span class="review-grade-hint">{{ recallHint }}</span></button>
+        <button class="btn review-action-btn review-hard" :disabled="grading" type="button" @click="onGrade('hard')">模糊 <small>{{ masteryPreview.hard.mastery }}%</small><span class="review-grade-hint">稍后再出现</span></button>
+        <button class="btn btn-danger review-action-btn" :disabled="grading" type="button" @click="onGrade('again')">忘记 <small>{{ masteryPreview.again.mastery }}%</small><span class="review-grade-hint">很快再出现</span></button>
       </template>
     </footer>
 

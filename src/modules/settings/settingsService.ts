@@ -16,6 +16,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
   syncDeepseekApiKey: false,
 }
 
+export const DAILY_NEW_LIMIT_MAX = 200
+export const DAILY_REVIEW_LIMIT_MAX = 500
+
+function clampInteger(value: number, maximum: number): number {
+  return Math.min(maximum, Math.max(0, Math.floor(value)))
+}
+
 export async function loadSettings(): Promise<AppSettings> {
   const rows = await db.settings.toArray()
   const output: AppSettings = { ...DEFAULT_SETTINGS }
@@ -85,15 +92,24 @@ export async function loadSettings(): Promise<AppSettings> {
     }
   }
 
+  // Treat imported/cloud settings as untrusted input too. HTML min/max only
+  // constrain the current form and cannot repair older oversized values.
+  output.dailyNewLimit = clampInteger(output.dailyNewLimit, DAILY_NEW_LIMIT_MAX)
+  output.dailyReviewLimit = clampInteger(output.dailyReviewLimit, DAILY_REVIEW_LIMIT_MAX)
   return output
 }
 
 export async function saveSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
   const previousSettings = await loadSettings()
-  const nextSettings = { ...previousSettings, ...patch }
+  const sanitizedPatch: Partial<AppSettings> = {
+    ...patch,
+    ...(patch.dailyNewLimit === undefined ? {} : { dailyNewLimit: clampInteger(patch.dailyNewLimit, DAILY_NEW_LIMIT_MAX) }),
+    ...(patch.dailyReviewLimit === undefined ? {} : { dailyReviewLimit: clampInteger(patch.dailyReviewLimit, DAILY_REVIEW_LIMIT_MAX) }),
+  }
+  const nextSettings = { ...previousSettings, ...sanitizedPatch }
 
-  if (patch.deepseekApiKey !== undefined) {
-    await db.localSecrets.put({ key: 'deepseekApiKey', value: patch.deepseekApiKey, updatedAt: new Date().toISOString() })
+  if (sanitizedPatch.deepseekApiKey !== undefined) {
+    await db.localSecrets.put({ key: 'deepseekApiKey', value: sanitizedPatch.deepseekApiKey, updatedAt: new Date().toISOString() })
   }
 
   await db.transaction('rw', [db.settings, db.syncMeta, db.syncRecords, db.syncTombstones], async () => {
@@ -105,15 +121,15 @@ export async function saveSettings(patch: Partial<AppSettings>): Promise<AppSett
         await markRecordChanged('settings', key)
       }),
     )
-    if (patch.autoPronunciation !== undefined) {
+    if (sanitizedPatch.autoPronunciation !== undefined) {
       await db.settings.put({ key: 'autoPronunciationConfigured', value: true })
       await markRecordChanged('settings', 'autoPronunciationConfigured')
     }
     await db.settings.delete('deepseekApiKey')
   })
 
-  if ((patch.dailyNewLimit !== undefined && patch.dailyNewLimit !== previousSettings.dailyNewLimit)
-    || (patch.dailyReviewLimit !== undefined && patch.dailyReviewLimit !== previousSettings.dailyReviewLimit)) {
+  if ((sanitizedPatch.dailyNewLimit !== undefined && sanitizedPatch.dailyNewLimit !== previousSettings.dailyNewLimit)
+    || (sanitizedPatch.dailyReviewLimit !== undefined && sanitizedPatch.dailyReviewLimit !== previousSettings.dailyReviewLimit)) {
     await markStudyDataChanged({ affectsQueue: false })
   }
 

@@ -8,6 +8,7 @@ import {
   getCloudAuthState,
   signInCloud,
   signOutCloud,
+  signUpCloud,
   type CloudAuthState,
 } from '../modules/sync/cloudAuthService'
 import { getLastSuccessfulSyncAt, previewCloudSync, runCloudSync } from '../modules/sync/syncEngine'
@@ -35,8 +36,13 @@ const cloudAuth = ref<CloudAuthState>({
 })
 const cloudEmail = ref('')
 const cloudPassword = ref('')
+const cloudPasswordConfirm = ref('')
+const cloudAuthMode = ref<'sign-in' | 'sign-up'>('sign-in')
 const cloudBusy = ref(false)
+const cloudStateLoading = ref(true)
+const cloudOperation = ref<'idle' | 'auth-check' | 'sign-in' | 'sign-up' | 'preview' | 'upload' | 'download' | 'bidirectional' | 'sign-out' | 'key-sync'>('auth-check')
 const cloudMessage = ref('')
+const cloudMessageTone = ref<'info' | 'success' | 'error'>('info')
 const cloudPreview = ref<SyncPreview | null>(null)
 const cloudLastResult = ref<SyncResult | null>(null)
 const cloudLastSyncAt = ref<string | null>(null)
@@ -55,6 +61,24 @@ const cloudStatusText = computed(() => {
   }
 
   return '未登录，访客只使用本地数据'
+})
+
+const cloudOperationText = computed(() => ({
+  idle: '',
+  'auth-check': '正在检查云同步登录状态…',
+  'sign-in': '正在安全登录…',
+  'sign-up': '正在创建云同步账号…',
+  preview: '正在读取本机与云端数据并生成预览…',
+  upload: '正在备份并上传本机数据…',
+  download: '正在从云端恢复数据…',
+  bidirectional: '正在比较并合并本机与云端数据…',
+  'sign-out': '正在退出云同步…',
+  'key-sync': '正在同步 DeepSeek Key…',
+}[cloudOperation.value]))
+
+const keySyncStatus = computed(() => {
+  if (!cloudAuth.value.signedIn) return '登录云同步账号后可以开启'
+  return settings.value.syncDeepseekApiKey ? '已开启：Key 将随当前账号同步' : '已关闭：Key 只保存在这台设备'
 })
 
 const installProgressText = computed(() => {
@@ -172,20 +196,43 @@ async function onUpdateString(
   const target = event.target as HTMLInputElement
   await settingsStore.update({ [key]: target.value.trim() })
   if (key === 'deepseekApiKey' && settings.value.syncDeepseekApiKey && cloudAuth.value.signedIn) {
-    if (target.value.trim()) await uploadDeepseekSecret(target.value.trim())
-    else await deleteDeepseekSecret()
-    cloudMessage.value = target.value.trim() ? 'DeepSeek Key 已同步到当前账号' : '本地与云端 Key 已删除'
+    cloudBusy.value = true
+    cloudOperation.value = 'key-sync'
+    try {
+      if (target.value.trim()) await uploadDeepseekSecret(target.value.trim())
+      else await deleteDeepseekSecret()
+      cloudMessageTone.value = 'success'
+      cloudMessage.value = target.value.trim() ? 'DeepSeek Key 已同步到当前账号' : '本地与云端 Key 已删除'
+    } catch (error) {
+      cloudMessageTone.value = 'error'
+      cloudMessage.value = error instanceof Error ? error.message : String(error)
+    } finally {
+      cloudBusy.value = false
+      cloudOperation.value = 'idle'
+    }
   }
 }
 
 async function onToggleKeySync(event: Event) {
   const enabled = (event.target as HTMLInputElement).checked
-  await settingsStore.update({ syncDeepseekApiKey: enabled })
-  if (!enabled) { cloudMessage.value = '已关闭 Key 云同步；云端已有 Key 不会自动删除'; return }
-  if (!cloudAuth.value.signedIn) { cloudMessage.value = '请先登录云同步账号，再开启 Key 同步'; await settingsStore.update({ syncDeepseekApiKey: false }); return }
-  const value = await syncDeepseekSecret()
-  await settingsStore.initialize()
-  cloudMessage.value = value ? 'DeepSeek Key 已与当前账号同步' : '已开启；填写 Key 后会同步到当前账号'
+  cloudBusy.value = true
+  cloudOperation.value = 'key-sync'
+  cloudMessageTone.value = 'info'
+  try {
+    await settingsStore.update({ syncDeepseekApiKey: enabled })
+    if (!enabled) { cloudMessage.value = '已关闭 Key 云同步；云端已有 Key 不会自动删除'; return }
+    if (!cloudAuth.value.signedIn) { cloudMessage.value = '请先登录云同步账号，再开启 Key 同步'; await settingsStore.update({ syncDeepseekApiKey: false }); return }
+    const value = await syncDeepseekSecret()
+    await settingsStore.initialize()
+    cloudMessageTone.value = 'success'
+    cloudMessage.value = value ? 'DeepSeek Key 已与当前账号同步' : '已开启；填写 Key 后会同步到当前账号'
+  } catch (error) {
+    cloudMessageTone.value = 'error'
+    cloudMessage.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    cloudBusy.value = false
+    cloudOperation.value = 'idle'
+  }
 }
 
 async function onInstallDictionary() {
@@ -229,6 +276,8 @@ async function onImport(event: Event) {
 }
 
 async function refreshCloudState() {
+  cloudStateLoading.value = true
+  if (!cloudBusy.value) cloudOperation.value = 'auth-check'
   try {
     cloudAuth.value = await getCloudAuthState()
     cloudLastSyncAt.value = await getLastSuccessfulSyncAt()
@@ -241,6 +290,10 @@ async function refreshCloudState() {
       needsLogin: true,
     }
     cloudMessage.value = error instanceof Error ? error.message : String(error)
+    cloudMessageTone.value = 'error'
+  } finally {
+    cloudStateLoading.value = false
+    if (!cloudBusy.value) cloudOperation.value = 'idle'
   }
 }
 
@@ -255,6 +308,7 @@ function getCloudRemote(): SupabaseCloudSyncRemote {
 
 async function onCloudSignIn() {
   cloudBusy.value = true
+  cloudOperation.value = 'sign-in'
   cloudMessage.value = ''
   try {
     cloudAuth.value = await signInCloud(cloudEmail.value.trim(), cloudPassword.value)
@@ -264,15 +318,45 @@ async function onCloudSignIn() {
       await settingsStore.initialize()
     }
     cloudMessage.value = '云同步已登录'
+    cloudMessageTone.value = 'success'
   } catch (error) {
+    cloudMessage.value = error instanceof Error ? error.message : String(error)
+    cloudMessageTone.value = 'error'
+  } finally {
+    cloudBusy.value = false
+    cloudOperation.value = 'idle'
+  }
+}
+
+async function onCloudSignUp() {
+  if (cloudPassword.value !== cloudPasswordConfirm.value) {
+    cloudMessageTone.value = 'error'
+    cloudMessage.value = '两次输入的密码不一致'
+    return
+  }
+  cloudBusy.value = true
+  cloudOperation.value = 'sign-up'
+  cloudMessage.value = ''
+  try {
+    const result = await signUpCloud(cloudEmail.value.trim(), cloudPassword.value)
+    cloudAuth.value = result.auth
+    cloudPassword.value = ''
+    cloudPasswordConfirm.value = ''
+    cloudMessageTone.value = 'success'
+    cloudMessage.value = result.confirmationRequired ? '账号已创建，请前往邮箱确认后再登录' : '账号已创建并登录'
+    if (!result.confirmationRequired) cloudAuthMode.value = 'sign-in'
+  } catch (error) {
+    cloudMessageTone.value = 'error'
     cloudMessage.value = error instanceof Error ? error.message : String(error)
   } finally {
     cloudBusy.value = false
+    cloudOperation.value = 'idle'
   }
 }
 
 async function onCloudSignOut() {
   cloudBusy.value = true
+  cloudOperation.value = 'sign-out'
   cloudMessage.value = ''
   try {
     const userId = cloudAuth.value.userId
@@ -283,26 +367,36 @@ async function onCloudSignOut() {
     cloudPreview.value = null
     cloudLastResult.value = null
     cloudMessage.value = '已退出云同步，本地数据不受影响'
+    cloudMessageTone.value = 'success'
+  } catch (error) {
+    cloudMessageTone.value = 'error'
+    cloudMessage.value = error instanceof Error ? error.message : String(error)
   } finally {
     cloudBusy.value = false
+    cloudOperation.value = 'idle'
   }
 }
 
 async function onPreviewCloudSync(mode: CloudSyncMode) {
   cloudBusy.value = true
+  cloudOperation.value = 'preview'
   cloudMessage.value = ''
   try {
     cloudPreview.value = await previewCloudSync(getCloudRemote(), mode)
     cloudMessage.value = '同步预览已生成'
+    cloudMessageTone.value = 'success'
   } catch (error) {
     cloudMessage.value = error instanceof Error ? error.message : String(error)
+    cloudMessageTone.value = 'error'
   } finally {
     cloudBusy.value = false
+    cloudOperation.value = 'idle'
   }
 }
 
 async function onRunCloudSync(mode: CloudSyncMode) {
   cloudBusy.value = true
+  cloudOperation.value = mode
   cloudMessage.value = ''
   try {
     if (mode === 'upload') {
@@ -320,10 +414,13 @@ async function onRunCloudSync(mode: CloudSyncMode) {
       await settingsStore.initialize()
     }
     cloudMessage.value = `同步完成：上传 ${result.pushed}，下载 ${result.pulled}，删除 ${result.deleted}`
+    cloudMessageTone.value = 'success'
   } catch (error) {
     cloudMessage.value = error instanceof Error ? error.message : String(error)
+    cloudMessageTone.value = 'error'
   } finally {
     cloudBusy.value = false
+    cloudOperation.value = 'idle'
   }
 }
 </script>
@@ -415,11 +512,12 @@ async function onRunCloudSync(mode: CloudSyncMode) {
     <article class="result-section">
       <h2>AI 词典增强（Deepseek）</h2>
       <label class="setting-stack">
-        <span>API Key</span>
+        <span><strong>API Key</strong><small>默认仅保存在当前设备</small></span>
         <input
           type="password"
           class="inline-input"
           :value="settings.deepseekApiKey"
+          :disabled="cloudOperation === 'key-sync'"
           placeholder="sk-..."
           @change="onUpdateString('deepseekApiKey', $event)"
         />
@@ -452,25 +550,35 @@ async function onRunCloudSync(mode: CloudSyncMode) {
         </select>
       </label>
 
-      <label class="setting-row">
-        <span><strong>API Key 随账号同步</strong><small>默认关闭；仅在登录后可用</small></span>
-        <input type="checkbox" :checked="settings.syncDeepseekApiKey" @change="onToggleKeySync" />
-      </label>
+      <div :class="['key-sync-status', { active: settings.syncDeepseekApiKey }]">
+        <div><strong>{{ settings.syncDeepseekApiKey ? '随账号同步' : '仅本机保存' }}</strong><p>{{ keySyncStatus }}</p></div>
+        <label class="sync-toggle"><span class="sr-only">API Key 随账号同步</span><input type="checkbox" :checked="settings.syncDeepseekApiKey" :disabled="cloudBusy || cloudStateLoading || !cloudAuth.signedIn" @change="onToggleKeySync" /></label>
+      </div>
+      <div v-if="cloudOperation === 'key-sync'" class="sync-progress" role="status" aria-live="polite"><span class="sync-spinner" aria-hidden="true" /><span>{{ cloudOperationText }}</span></div>
       <p v-if="settings.syncDeepseekApiKey" class="warning-note">Key 会以明文保存到独立的 Supabase 表。RLS 可阻止其他普通用户访问，但项目数据库管理员和高权限凭据仍可读取。</p>
       <p class="muted">Key 不会进入普通同步记录、备份、文章会话或日志。AI 同时用于词典增强和今日语境文章。</p>
     </article>
 
     <article class="result-section">
-      <h2>云同步（Supabase）</h2>
-      <p class="muted">{{ cloudStatusText }}</p>
-      <p v-if="cloudLastSyncAt" class="muted">上次同步：{{ cloudLastSyncAt }}</p>
-      <p v-if="cloudMessage" class="muted">{{ cloudMessage }}</p>
+      <div class="sync-heading"><div><p class="eyebrow">多设备数据</p><h2>云同步</h2></div><span :class="['sync-status-badge', { connected: cloudAuth.signedIn, loading: cloudStateLoading }]">{{ cloudStateLoading ? '检查中' : cloudAuth.signedIn ? '已连接' : cloudAuth.configured ? '未登录' : '未配置' }}</span></div>
+      <p class="muted">{{ cloudStatusText }}<template v-if="cloudLastSyncAt"> · 上次同步 {{ cloudLastSyncAt }}</template></p>
+
+      <div v-if="cloudStateLoading || cloudBusy" class="sync-progress" role="status" aria-live="polite"><span class="sync-spinner" aria-hidden="true" /><span>{{ cloudOperationText || '正在加载云同步状态…' }}</span></div>
+      <p v-if="cloudMessage" :class="['sync-message', `sync-message-${cloudMessageTone}`]" :role="cloudMessageTone === 'error' ? 'alert' : 'status'">{{ cloudMessage }}</p>
 
       <div v-if="!cloudAuth.configured" class="sync-panel">
         <p class="muted">在部署环境设置 VITE_SUPABASE_URL 和 VITE_SUPABASE_PUBLISHABLE_KEY 后启用。</p>
       </div>
 
+      <div v-else-if="cloudStateLoading" class="sync-panel sync-panel-loading" aria-hidden="true"><span /><span /><span /></div>
+
       <div v-else-if="!cloudAuth.signedIn" class="sync-panel">
+        <ol class="sync-guide">
+          <li class="active"><span>1</span><div><strong>登录或注册</strong><p>账号用于区分不同用户的数据。</p></div></li>
+          <li><span>2</span><div><strong>选择首次同步方式</strong><p>旧设备上传，新设备从云端恢复。</p></div></li>
+          <li><span>3</span><div><strong>日常双向同步</strong><p>之后使用双向同步自动合并最新记录。</p></div></li>
+        </ol>
+        <div class="sync-auth-tabs" role="tablist" aria-label="云同步账号操作"><button :class="{ active: cloudAuthMode === 'sign-in' }" type="button" role="tab" :aria-selected="cloudAuthMode === 'sign-in'" @click="cloudAuthMode = 'sign-in'">登录</button><button :class="{ active: cloudAuthMode === 'sign-up' }" type="button" role="tab" :aria-selected="cloudAuthMode === 'sign-up'" @click="cloudAuthMode = 'sign-up'">注册新账号</button></div>
         <label class="setting-stack">
           <span>邮箱</span>
           <input v-model="cloudEmail" type="email" class="inline-input" autocomplete="email" />
@@ -481,29 +589,28 @@ async function onRunCloudSync(mode: CloudSyncMode) {
             v-model="cloudPassword"
             type="password"
             class="inline-input"
-            autocomplete="current-password"
+            :autocomplete="cloudAuthMode === 'sign-in' ? 'current-password' : 'new-password'"
           />
         </label>
+        <label v-if="cloudAuthMode === 'sign-up'" class="setting-stack"><span>确认密码</span><input v-model="cloudPasswordConfirm" type="password" class="inline-input" autocomplete="new-password" /></label>
         <div class="actions">
-          <button class="btn btn-primary" :disabled="cloudBusy || !cloudEmail || !cloudPassword" @click="onCloudSignIn">
-            {{ cloudBusy ? '登录中...' : '登录云同步' }}
+          <button v-if="cloudAuthMode === 'sign-in'" class="btn btn-primary" :disabled="cloudBusy || !cloudEmail || !cloudPassword" @click="onCloudSignIn">登录云同步</button>
+          <button v-else class="btn btn-primary" :disabled="cloudBusy || !cloudEmail || cloudPassword.length < 6 || !cloudPasswordConfirm" @click="onCloudSignUp">
+            创建账号
           </button>
         </div>
-        <p class="muted">未登录时不会读取或写入云端，访客只使用自己的本地浏览器数据。</p>
+        <p class="muted">密码至少 6 位。未登录时不会读取或写入云端，本地数据也不会被删除。</p>
       </div>
 
       <div v-else class="sync-panel">
-        <div class="actions">
-          <button class="btn" :disabled="cloudBusy" @click="onPreviewCloudSync('bidirectional')">预览双向同步</button>
-          <button class="btn btn-primary" :disabled="cloudBusy" @click="onRunCloudSync('upload')">
-            首次上传本地数据
-          </button>
-          <button class="btn" :disabled="cloudBusy" @click="onRunCloudSync('download')">从云端恢复</button>
-          <button class="btn btn-primary" :disabled="cloudBusy" @click="onRunCloudSync('bidirectional')">
-            立即双向同步
-          </button>
-          <button class="btn btn-quiet" :disabled="cloudBusy" @click="onCloudSignOut">退出云同步</button>
-        </div>
+        <ol class="sync-guide sync-guide-connected">
+          <li><span>1</span><div><strong>首次使用</strong><p>旧设备选上传；新设备选恢复。</p></div></li>
+          <li class="active"><span>2</span><div><strong>日常使用</strong><p>点击双向同步，自动保留两端较新的内容。</p></div></li>
+        </ol>
+        <button class="btn btn-primary sync-main-action" :disabled="cloudBusy" @click="onRunCloudSync('bidirectional')">立即双向同步</button>
+        <button class="btn sync-preview-action" :disabled="cloudBusy" @click="onPreviewCloudSync('bidirectional')">先预览本次变化</button>
+
+        <details class="sync-first-use-actions"><summary>首次同步与恢复选项</summary><div class="sync-choice-grid"><button class="btn" :disabled="cloudBusy" @click="onRunCloudSync('upload')"><strong>上传这台设备</strong><small>适合有完整数据的旧设备，并自动下载安全备份</small></button><button class="btn" :disabled="cloudBusy" @click="onRunCloudSync('download')"><strong>从云端恢复</strong><small>适合刚登录的新设备</small></button></div></details>
 
         <div v-if="cloudPreview" class="sync-preview-grid">
           <div>
@@ -527,6 +634,7 @@ async function onRunCloudSync(mode: CloudSyncMode) {
         <p v-if="cloudPreview?.blockedSettings.length" class="muted">
           不上传敏感设置：{{ cloudPreview.blockedSettings.join('、') }}
         </p>
+        <button class="btn btn-quiet sync-signout" :disabled="cloudBusy" @click="onCloudSignOut">退出云同步</button>
       </div>
     </article>
 

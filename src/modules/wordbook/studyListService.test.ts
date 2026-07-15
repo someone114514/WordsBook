@@ -1,4 +1,5 @@
 import 'fake-indexeddb/auto'
+import Dexie from 'dexie'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { db } from '../../db/database'
 import { buildTodayPlan, buildTodayPlanCached, invalidateStudyPlanCache } from '../review/reviewService'
@@ -8,6 +9,7 @@ import {
   addWordToStudyList,
   createStudyList,
   ensureVocabularyItem,
+  setStudyListWordsLearningEnabled,
   updateStudyList,
 } from './studyListService'
 
@@ -89,6 +91,9 @@ describe('study list membership', () => {
     await addWordToStudyList(list.listId, lookedUp.item.wordId, 'lookup')
     const plan = await buildTodayPlan({ dailyNewLimit: 1, dailyReviewLimit: 20 })
     expect(plan.queueWordIds).toEqual([lookedUp.item.wordId])
+    expect((await db.studyListItems.get(`${list.listId}:${imported.item.wordId}`))?.learningEnabled).toBe(0)
+    await setStudyListWordsLearningEnabled(list.listId, [imported.item.wordId], true)
+    expect((await buildTodayPlan({ dailyNewLimit: 2, dailyReviewLimit: 20 })).queueWordIds).toEqual(expect.arrayContaining([lookedUp.item.wordId, imported.item.wordId]))
   })
 
   it('reuses the daily plan until study data actually changes', async () => {
@@ -103,5 +108,45 @@ describe('study list membership', () => {
     const changed = await buildTodayPlanCached()
     expect(changed).not.toBe(first)
     expect(changed.queueWordIds).toContain(secondWord.item.wordId)
+  })
+
+  it('fills only the remaining daily-new quota from the import backlog', async () => {
+    const list = await createStudyList('Quota fill')
+    for (let index = 0; index < 16; index += 1) {
+      const word = await ensureVocabularyItem({ entryId: `entry:quota-${index}`, headword: `quota${index}`, headwordLower: `quota${index}`, posList: [], sensesJson: '[]', examplesJson: '[]', usageJson: '[]' })
+      await addWordToStudyList(list.listId, word.item.wordId, index < 6 ? 'manual' : 'import')
+    }
+    const plan = await buildTodayPlan({ dailyNewLimit: 8, dailyReviewLimit: 20 })
+    expect(plan.newCount).toBe(8)
+    const memberships = await db.studyListItems.where('listId').equals(list.listId).toArray()
+    expect(memberships.filter((membership) => membership.learningEnabled === 1)).toHaveLength(8)
+    expect(memberships.filter((membership) => membership.learningEnabled === 0 && membership.autoActivate === 1)).toHaveLength(8)
+  })
+
+  it('pauses a legacy bulk import on the version 7 database upgrade without pausing reviewed words', async () => {
+    db.close()
+    await db.delete()
+    const legacy = new Dexie('wordsbook-db')
+    legacy.version(6).stores({
+      reviewState: '&wordId, nextReviewAt, cycle, totalReviews',
+      studyLists: '&listId, studyEnabled, systemType, updatedAt',
+      studyListItems: '&membershipId, listId, wordId, [listId+wordId]',
+      syncMeta: '&key',
+      syncRecords: '&key, entity, recordId, updatedAt, deletedAt',
+    })
+    await legacy.open()
+    const now = '2026-07-13T08:00:00.000Z'
+    await legacy.table('studyLists').put({ listId: 'legacy-list', name: 'Legacy', description: '', studyEnabled: 1, createdAt: now, updatedAt: now })
+    await legacy.table('syncMeta').put({ key: 'clientId', value: 'legacy-client' })
+    const wordIds = Array.from({ length: 201 }, (_, index) => `legacy-${index}`)
+    await legacy.table('reviewState').bulkPut(wordIds.map((wordId, index) => ({ wordId, cycle: 0, nextReviewAt: now, successCount: 0, lapseCount: 0, totalReviews: index === 200 ? 1 : 0 })))
+    await legacy.table('studyListItems').bulkPut(wordIds.map((wordId) => ({ membershipId: `legacy-list:${wordId}`, listId: 'legacy-list', wordId, source: 'migration', addedAt: now })))
+    legacy.close()
+
+    await db.open()
+    const memberships = await db.studyListItems.toArray()
+    expect(memberships.filter((membership) => membership.learningEnabled === 0)).toHaveLength(200)
+    expect(memberships.find((membership) => membership.wordId === 'legacy-200')?.learningEnabled).toBe(1)
+    expect(await db.syncRecords.where('entity').equals('studyListItems').count()).toBe(201)
   })
 })

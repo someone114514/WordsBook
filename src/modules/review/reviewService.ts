@@ -21,6 +21,8 @@ interface BuildPlanOptions {
   dailyReviewLimit?: number
   listIds?: string[]
   excludeWordIds?: string[]
+  includeImportBacklog?: boolean
+  promoteImportBacklog?: boolean
 }
 
 interface PlanCache {
@@ -39,6 +41,8 @@ type ActiveStateRow = {
   listIds: string[]
   sourcePriority: number
   joinedAt: string
+  learningEnabled: boolean
+  membershipIds: string[]
 }
 
 const SOURCE_PRIORITY = {
@@ -49,7 +53,34 @@ const SOURCE_PRIORITY = {
   migration: 1,
 } as const
 
-async function getStudyWordbookRows(listIds?: string[]): Promise<Array<{ word: WordbookItem; listIds: string[]; sourcePriority: number; joinedAt: string }>> {
+function normalizedInitial(value: string | undefined): string {
+  return (value ?? '').replace(/^[^a-z]+/i, '').charAt(0).toLowerCase()
+}
+
+export async function avoidAdjacentWordInitials(wordIds: string[]): Promise<string[]> {
+  if (wordIds.length < 2) return [...wordIds]
+  const words = await db.wordbook.bulkGet(wordIds)
+  const initials = new Map(words.flatMap((word) => word
+    ? [[word.wordId, normalizedInitial(word.headwordLower ?? word.headword)] as const]
+    : []))
+  const remaining = [...wordIds]
+  const arranged: string[] = []
+  while (remaining.length) {
+    const previousInitial = initials.get(arranged[arranged.length - 1] ?? '')
+    let candidateIndex = 0
+    if (previousInitial) {
+      const alternative = remaining.slice(0, 6).findIndex((wordId) => {
+        const initial = initials.get(wordId)
+        return Boolean(initial && initial !== previousInitial)
+      })
+      if (alternative >= 0) candidateIndex = alternative
+    }
+    arranged.push(remaining.splice(candidateIndex, 1)[0]!)
+  }
+  return arranged
+}
+
+async function getStudyWordbookRows(listIds?: string[], includeImportBacklog = false): Promise<Array<{ word: WordbookItem; listIds: string[]; sourcePriority: number; joinedAt: string; learningEnabled: boolean; membershipIds: string[] }>> {
   const enabledLists = listIds?.length
     ? await db.studyLists.where('listId').anyOf(listIds).toArray()
     : await db.studyLists.where('studyEnabled').equals(1).toArray()
@@ -57,7 +88,8 @@ async function getStudyWordbookRows(listIds?: string[]): Promise<Array<{ word: W
     .filter((list) => list.studyEnabled === 1 || Boolean(listIds?.includes(list.listId)))
     .map((list) => list.listId)
   if (activeListIds.length === 0) return []
-  const memberships = await db.studyListItems.where('listId').anyOf(activeListIds).toArray()
+  const memberships = (await db.studyListItems.where('listId').anyOf(activeListIds).toArray())
+    .filter((membership) => membership.learningEnabled !== 0 || (includeImportBacklog && membership.autoActivate === 1))
   const membershipMap = new Map<string, typeof memberships>()
   for (const membership of memberships) {
     const bucket = membershipMap.get(membership.wordId) ?? []
@@ -75,12 +107,14 @@ async function getStudyWordbookRows(listIds?: string[]): Promise<Array<{ word: W
         listIds: rows.map((row) => row.listId),
         sourcePriority: Math.max(...rows.map((row) => SOURCE_PRIORITY[row.source ?? 'migration']), 0),
         joinedAt: rows.map((row) => row.addedAt).sort().slice(-1)[0] ?? word.addedAt,
+        learningEnabled: rows.some((row) => row.learningEnabled !== 0),
+        membershipIds: rows.map((row) => row.membershipId),
       }
     })
 }
 
-async function getActiveStateRows(listIds?: string[]): Promise<ActiveStateRow[]> {
-  const wordbookRows = await getStudyWordbookRows(listIds)
+async function getActiveStateRows(listIds?: string[], includeImportBacklog = false): Promise<ActiveStateRow[]> {
+  const wordbookRows = await getStudyWordbookRows(listIds, includeImportBacklog)
   const stateRows = await db.reviewState.bulkGet(wordbookRows.map((row) => row.word.wordId))
   const stateMap = new Map(
     stateRows
@@ -93,7 +127,7 @@ async function getActiveStateRows(listIds?: string[]): Promise<ActiveStateRow[]>
   for (const wordbookRow of wordbookRows) {
     const existingState = stateMap.get(wordbookRow.word.wordId)
     if (existingState) {
-      activeRows.push({ wordId: wordbookRow.word.wordId, state: existingState, listIds: wordbookRow.listIds, sourcePriority: wordbookRow.sourcePriority, joinedAt: wordbookRow.joinedAt })
+      activeRows.push({ wordId: wordbookRow.word.wordId, state: existingState, listIds: wordbookRow.listIds, sourcePriority: wordbookRow.sourcePriority, joinedAt: wordbookRow.joinedAt, learningEnabled: wordbookRow.learningEnabled, membershipIds: wordbookRow.membershipIds })
       continue
     }
 
@@ -106,7 +140,7 @@ async function getActiveStateRows(listIds?: string[]): Promise<ActiveStateRow[]>
       totalReviews: 0,
     }
     missingStates.push(fallbackState)
-    activeRows.push({ wordId: wordbookRow.word.wordId, state: fallbackState, listIds: wordbookRow.listIds, sourcePriority: wordbookRow.sourcePriority, joinedAt: wordbookRow.joinedAt })
+    activeRows.push({ wordId: wordbookRow.word.wordId, state: fallbackState, listIds: wordbookRow.listIds, sourcePriority: wordbookRow.sourcePriority, joinedAt: wordbookRow.joinedAt, learningEnabled: wordbookRow.learningEnabled, membershipIds: wordbookRow.membershipIds })
   }
 
   if (missingStates.length > 0) {
@@ -152,7 +186,7 @@ export async function buildTodayPlan(options: BuildPlanOptions = {}): Promise<St
   )
 
   const excludedWordIds = new Set(options.excludeWordIds ?? [])
-  const rows = (await getActiveStateRows(options.listIds))
+  const rows = (await getActiveStateRows(options.listIds, options.includeImportBacklog ?? true))
     .filter((row) => !excludedWordIds.has(row.wordId))
 
   const dueRows = rows
@@ -168,7 +202,8 @@ export async function buildTodayPlan(options: BuildPlanOptions = {}): Promise<St
 
   const newRows = rows
     .filter((row) => !row.state.suspendedAt && (row.state.reps ?? row.state.totalReviews) === 0)
-    .sort((left, right) => right.sourcePriority - left.sourcePriority
+    .sort((left, right) => Number(right.learningEnabled) - Number(left.learningEnabled)
+      || right.sourcePriority - left.sourcePriority
       || right.joinedAt.localeCompare(left.joinedAt)
       || left.state.nextReviewAt.localeCompare(right.state.nextReviewAt))
 
@@ -180,6 +215,16 @@ export async function buildTodayPlan(options: BuildPlanOptions = {}): Promise<St
       : dailyNewLimit
   const enabledListIds = [...new Set(rows.flatMap((row) => row.listIds))]
   const selectedNew = newRows.slice(0, effectiveNewLimit)
+
+  const promotedMembershipIds = [...new Set(selectedNew.filter((row) => !row.learningEnabled).flatMap((row) => row.membershipIds))]
+  if (promotedMembershipIds.length && (options.promoteImportBacklog ?? true)) {
+    const memberships = await db.studyListItems.bulkGet(promotedMembershipIds)
+    const now = new Date().toISOString()
+    const promoted = memberships.flatMap((membership) => membership ? [{ ...membership, learningEnabled: 1 as const, autoActivate: 0 as const }] : [])
+    await db.studyListItems.bulkPut(promoted)
+    for (const membership of promoted) await markPayloadChanged('studyListItems', membership, now)
+    await markStudyDataChanged()
+  }
 
   const selectedRows: typeof rows = []
   let dueIndex = 0
@@ -200,12 +245,13 @@ export async function buildTodayPlan(options: BuildPlanOptions = {}): Promise<St
   const previousSession = await db.dailyLearningSessions.orderBy('dayKey').last()
   const daysSinceLastStudy = previousSession ? Math.max(0, dayjs(now).startOf('day').diff(previousSession.dayKey, 'day')) : 0
 
+  const queueWordIds = await avoidAdjacentWordInitials(selectedRows.map((row) => row.wordId))
   return {
     // These counts describe the actual queue, not the entire backlog. This keeps
     // the headline total equal to "复习 + 新词" and makes the configured limits visible.
     dueCount: selectedDue.length,
     newCount: selectedNew.length,
-    queueWordIds: selectedRows.map((row) => row.wordId),
+    queueWordIds,
     laterTodayCount: 0,
     listIds: options.listIds,
     effectiveNewLimit,
@@ -277,6 +323,7 @@ export async function listEligibleStudyWordIds(
     excludeWordIds,
     dailyNewLimit: Number.MAX_SAFE_INTEGER,
     dailyReviewLimit: Number.MAX_SAFE_INTEGER,
+    includeImportBacklog: false,
   })
   return plan.queueWordIds
 }
@@ -290,14 +337,16 @@ export async function buildAdditionalStudyWordIds(
   const normalizedCount = Math.max(0, Math.floor(count))
   if (!normalizedCount) return []
   const excluded = new Set(excludeWordIds)
-  const rows = (await getActiveStateRows(listIds)).filter((row) => !excluded.has(row.wordId) && !row.state.suspendedAt)
+  const rows = (await getActiveStateRows(listIds, true)).filter((row) => !excluded.has(row.wordId) && !row.state.suspendedAt)
   const due = rows
     .filter((row) => (row.state.reps ?? row.state.totalReviews) > 0 && !dayjs(row.state.nextReviewAt).isAfter(at))
     .sort((left, right) => getReviewRetrievability(left.state, at) - getReviewRetrievability(right.state, at)
       || left.state.nextReviewAt.localeCompare(right.state.nextReviewAt))
   const fresh = rows
     .filter((row) => (row.state.reps ?? row.state.totalReviews) === 0)
-    .sort((left, right) => right.sourcePriority - left.sourcePriority || right.joinedAt.localeCompare(left.joinedAt))
+    .sort((left, right) => Number(right.learningEnabled) - Number(left.learningEnabled)
+      || right.sourcePriority - left.sourcePriority
+      || right.joinedAt.localeCompare(left.joinedAt))
   let dueTarget = due.length && fresh.length ? Math.max(1, Math.ceil(normalizedCount * 0.6)) : normalizedCount
   let newTarget = due.length && fresh.length ? Math.max(1, normalizedCount - dueTarget) : 0
   if (!due.length) { dueTarget = 0; newTarget = normalizedCount }
@@ -317,7 +366,18 @@ export async function buildAdditionalStudyWordIds(
   while (pickedDue.length || pickedNew.length) {
     for (const row of [pickedDue.shift(), pickedNew.shift()]) if (row) result.push(row.wordId)
   }
-  return result.slice(0, normalizedCount)
+  const selected = result.slice(0, normalizedCount)
+  const selectedSet = new Set(selected)
+  const promotedMembershipIds = [...new Set(rows.filter((row) => selectedSet.has(row.wordId) && !row.learningEnabled).flatMap((row) => row.membershipIds))]
+  if (promotedMembershipIds.length) {
+    const memberships = await db.studyListItems.bulkGet(promotedMembershipIds)
+    const now = new Date().toISOString()
+    const promoted = memberships.flatMap((membership) => membership ? [{ ...membership, learningEnabled: 1 as const, autoActivate: 0 as const }] : [])
+    await db.studyListItems.bulkPut(promoted)
+    for (const membership of promoted) await markPayloadChanged('studyListItems', membership, now)
+    await markStudyDataChanged()
+  }
+  return avoidAdjacentWordInitials(selected)
 }
 
 export async function loadReviewCards(wordIds: string[]): Promise<ReviewCard[]> {

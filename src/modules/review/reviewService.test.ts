@@ -4,7 +4,7 @@ import { resolve } from 'node:path'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { db } from '../../db/database'
 import { importUserData } from '../settings/backupService'
-import { buildTodayPlan } from './reviewService'
+import { avoidAdjacentWordInitials, buildTodayPlan } from './reviewService'
 
 describe('review data migration', () => {
   beforeEach(async () => {
@@ -24,4 +24,11 @@ describe('review data migration', () => {
     expect(await db.settings.get('deepseekApiKey')).toBeUndefined()
     expect((await db.localSecrets.get('deepseekApiKey'))?.value).toBeUndefined()
   }, 10_000)
+
+  it('keeps priority stable while avoiding adjacent identical initials when alternatives exist', async () => {
+    for (const [wordId, headword] of [['a1', 'apple'], ['a2', 'anchor'], ['b1', 'brief'], ['b2', 'bloom']] as const) {
+      await db.wordbook.put({ wordId, entryId: `e-${wordId}`, headword, headwordLower: headword, addedAt: '2026-07-15T00:00:00.000Z', note: '', tags: [], archived: 0 })
+    }
+    expect(await avoidAdjacentWordInitials(['a1', 'a2', 'b1', 'b2'])).toEqual(['a1', 'b1', 'a2', 'b2'])
+  })
 })

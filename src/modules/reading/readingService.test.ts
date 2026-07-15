@@ -44,11 +44,11 @@ describe('reading target selection and context feedback', () => {
     expect((await db.reviewState.get('w1'))?.sameDayRelearnAt).toBeUndefined()
   })
 
-  it('balances large mandatory sets into batches of no more than 25', async () => {
+  it('balances large mandatory sets into model-safe batches of no more than 12', async () => {
     await db.reviewLogs.bulkAdd(Array.from({ length: 60 }, (_, index) => log(`new-${index}`, 'good', true)))
     const batches = await buildReadingTargetBatches('2026-07-13', 0)
-    expect(batches).toHaveLength(3)
-    expect(batches.every((batch) => batch.length === 20)).toBe(true)
+    expect(batches).toHaveLength(5)
+    expect(batches.every((batch) => batch.length === 12)).toBe(true)
   })
 
   it('retries an invalid AI payload once and caches the validated article', async () => {
@@ -107,28 +107,53 @@ describe('reading target selection and context feedback', () => {
     expect(session.segmentsJson).not.toMatch(/[0-9a-f]{8}-[0-9a-f-]{27,}/i)
   })
 
-  it('keeps a valid streamed article when details fail and retries details only', async () => {
+  it('keeps a valid streamed article and creates local fallback questions when details fail', async () => {
     await db.localSecrets.put({ key: 'deepseekApiKey', value: 'test-key' })
     await db.settings.bulkPut([{ key: 'deepseekBaseUrl', value: 'https://example.test/chat' }, { key: 'deepseekModel', value: 'test-model' }])
     await db.dictionaryEntries.put({ entryId: 'e1', headword: 'resilient', headwordLower: 'resilient', posList: ['adj'], sensesJson: '["有韧性的"]', examplesJson: '[]', usageJson: '[]' })
     await db.wordbook.put({ wordId: 'w1', entryId: 'e1', addedAt: '2026-07-13T00:00:00.000Z', note: '', tags: [], archived: 0 })
     const stream = new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify({ article: 'She stayed resilient.' }) } }] })}\n\n`)
     const invalidDetails = () => new Response(JSON.stringify({ choices: [{ message: { content: '{}' } }] }))
-    const validDetails = new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ title: 'Resilience', targets: [{ wordId: 'w1', headword: 'resilient', contextualMeaning: '有韧性的', choices: ['有韧性的', '潮湿的', '昂贵的'], explanation: '能够从困难中恢复。' }], translation: '她保持坚韧。' }) } }] }))
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(stream)
       .mockResolvedValueOnce(invalidDetails())
-      .mockResolvedValueOnce(invalidDetails())
-      .mockResolvedValueOnce(validDetails)
     vi.stubGlobal('fetch', fetchMock)
 
-    const failed = await generateReadingSession({ dayKey: '2026-07-13', batchIndex: 2, seed: 0, wordIds: ['w1'] })
-    expect(failed.status).toBe('failed')
-    expect(failed.segmentsJson).toContain('resilient')
-    const recovered = await generateReadingSession({ dayKey: '2026-07-13', batchIndex: 2, seed: 0, wordIds: ['w1'] })
-    expect(recovered.status).toBe('ready')
-    expect(fetchMock).toHaveBeenCalledTimes(4)
-    expect(JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body)).stream).toBe(false)
+    const session = await generateReadingSession({ dayKey: '2026-07-13', batchIndex: 2, seed: 0, wordIds: ['w1'] })
+    expect(session.status).toBe('ready')
+    expect(session.generationAttemptCount).toBe(1)
+    expect(session.successfulGenerationCount).toBe(1)
+    expect(session.segmentsJson).toContain('resilient')
+    expect(session.title).toBe('Context Reading')
+    expect(JSON.parse(session.targetsJson)).toEqual([expect.objectContaining({ wordId: 'w1', headword: 'resilient' })])
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('keeps a usable article and quizzes when only a small number of words are omitted', async () => {
+    await db.localSecrets.put({ key: 'deepseekApiKey', value: 'test-key' })
+    await db.settings.bulkPut([{ key: 'deepseekBaseUrl', value: 'https://example.test/chat' }, { key: 'deepseekModel', value: 'test-model' }])
+    const vocabulary: Array<[string, string, string]> = [['w1', 'resilient', '有韧性的'], ['w2', 'tranquil', '宁静的'], ['w3', 'vivid', '生动的'], ['w4', 'scarce', '稀缺的'], ['w5', 'brief', '简短的']]
+    for (const [wordId, headword, meaning] of vocabulary) {
+      await db.dictionaryEntries.put({ entryId: `e-${wordId}`, headword, headwordLower: headword, posList: ['adj'], sensesJson: JSON.stringify([meaning]), examplesJson: '[]', usageJson: '[]' })
+      await db.wordbook.put({ wordId, entryId: `e-${wordId}`, addedAt: '2026-07-13T00:00:00.000Z', note: '', tags: [], archived: 0 })
+    }
+    const stream = new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify({ article: 'A resilient guide gave a vivid and brief account of the scarce water.' }) } }] })}\n\n`)
+    const details = new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+      title: 'Water',
+      targets: [
+        { wordId: 'w1', headword: 'resilient', contextualMeaning: '有韧性的', choices: ['有韧性的', '潮湿的', '昂贵的'], explanation: '上下文释义。' },
+        { wordId: 'w3', headword: 'vivid', contextualMeaning: '生动的', choices: ['生动的', '生动描述', '很生动的'], explanation: '上下文释义。' },
+        { wordId: 'w4', headword: 'scarce', contextualMeaning: '稀缺的', choices: ['稀缺的', '笔直的', '喧闹的'], explanation: '上下文释义。' },
+        { wordId: 'w5', headword: 'brief', contextualMeaning: '简短的', choices: ['简短的', '透明的', '坚硬的'], explanation: '上下文释义。' },
+      ],
+      translation: '一位坚韧的向导生动而简短地讲述了稀缺的水。',
+    }) } }] }))
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(stream).mockResolvedValueOnce(details))
+    const session = await generateReadingSession({ dayKey: '2026-07-13', batchIndex: 3, seed: 0, wordIds: ['w1', 'w2', 'w3', 'w4', 'w5'] })
+    expect(session.status).toBe('ready')
+    expect(session.targetWordIds).toEqual(['w1', 'w3', 'w4', 'w5'])
+    expect(session.omittedTargetWordIds).toEqual(['w2'])
+    expect(JSON.parse(session.targetsJson)).toHaveLength(4)
   })
 
   it('persists reader progress and clears old answers before regeneration', async () => {
@@ -136,8 +161,8 @@ describe('reading target selection and context feedback', () => {
     await db.readingSessions.put({ sessionId: 'reading:test', dayKey: '2026-07-13', batchIndex: 0, selectionSeed: 0, level: 'B2', topic: '', targetWordIds: ['w1'], status: 'ready', title: 'Test', segmentsJson: '[{"text":"A word."}]', targetsJson: '[]', translation: '', createdAt: now, updatedAt: now })
     await db.contextAttempts.put({ attemptId: 'reading:test:w1', sessionId: 'reading:test', wordId: 'w1', selectedMeaning: '旧答案', result: 'wrong', answeredAt: now })
 
-    await saveReadingProgress('reading:test', 1, true)
-    expect(await listReadingHistory()).toEqual([expect.objectContaining({ sessionId: 'reading:test', readerStage: 1, showTranslation: true })])
+    await saveReadingProgress('reading:test', 1, true, 2, 1)
+    expect(await listReadingHistory()).toEqual([expect.objectContaining({ sessionId: 'reading:test', readerStage: 1, showTranslation: true, quizCursor: 2, resultCursor: 1 })])
     await resetReadingSessionAttempts('reading:test')
     expect(await db.contextAttempts.where('sessionId').equals('reading:test').count()).toBe(0)
   })

@@ -266,6 +266,77 @@ class WordsBookDB extends Dexie {
           }
         })
       })
+
+    this.version(7)
+      .stores({
+        dictionaryMeta: '&id, version, installedAt',
+        dictionaryEntries: '&entryId, headwordLower',
+        dictionaryIndex: '&token',
+        wordbook: '&wordId, &entryId, headwordLower, addedAt, archived, integrityStatus',
+        reviewState: '&wordId, nextReviewAt, cycle, totalReviews, suspendedAt',
+        reviewLogs: '++id, wordId, reviewedAt, rating, source, [wordId+reviewedAt]',
+        settings: '&key',
+        aiOverrides: '&entryId, mode, createdAt',
+        aiOverrideHistory: '++id, entryId, createdAt',
+        syncMeta: '&key',
+        syncRecords: '&key, entity, recordId, updatedAt, deletedAt',
+        syncTombstones: '&key, entity, recordId, deletedAt',
+        studyLists: '&listId, studyEnabled, systemType, updatedAt',
+        studyListItems: '&membershipId, listId, wordId, learningEnabled, [listId+wordId]',
+        readingSessions: '&sessionId, dayKey, status, updatedAt',
+        contextAttempts: '&attemptId, sessionId, wordId, answeredAt',
+        localSecrets: '&key',
+        dailyLearningSessions: '&sessionId, dayKey, status, updatedAt',
+        dailyQueueItems: '&itemId, sessionId, status, position, wordId, [sessionId+status+position]',
+        dailyQueueAttempts: '&attemptId, sessionId, wordId, answeredAt, [sessionId+wordId]',
+      })
+      .upgrade(async (transaction) => {
+        const membershipsTable = transaction.table<StudyListItem, string>('studyListItems')
+        const statesTable = transaction.table<ReviewState, string>('reviewState')
+        const listsTable = transaction.table<StudyList, string>('studyLists')
+        const syncMetaTable = transaction.table<SyncMetaRecord, string>('syncMeta')
+        const syncRecordsTable = transaction.table<SyncRecordMeta, string>('syncRecords')
+        const [memberships, states, lists, client] = await Promise.all([
+          membershipsTable.toArray(),
+          statesTable.toArray(),
+          listsTable.toArray(),
+          syncMetaTable.get('clientId'),
+        ])
+        const stateByWord = new Map(states.map((state) => [state.wordId, state]))
+        const enabledListIds = new Set(lists.filter((list) => list.studyEnabled === 1).map((list) => list.listId))
+        const unreviewedLegacy = memberships.filter((membership) => {
+          const state = stateByWord.get(membership.wordId)
+          return enabledListIds.has(membership.listId)
+            && (membership.source ?? 'migration') === 'migration'
+            && (state?.reps ?? state?.totalReviews ?? 0) === 0
+        })
+        const repairLegacyBulkImport = unreviewedLegacy.length >= 200
+        const now = new Date().toISOString()
+        const changed = memberships.flatMap((membership) => {
+          const state = stateByWord.get(membership.wordId)
+          const neverReviewed = (state?.reps ?? state?.totalReviews ?? 0) === 0
+          const shouldPause = membership.source === 'import'
+            || (repairLegacyBulkImport
+              && enabledListIds.has(membership.listId)
+              && (membership.source ?? 'migration') === 'migration'
+              && neverReviewed)
+          const learningEnabled: 0 | 1 = shouldPause ? 0 : 1
+          const autoActivate: 0 | 1 = shouldPause ? 1 : 0
+          return membership.learningEnabled === learningEnabled && membership.autoActivate === autoActivate
+            ? []
+            : [{ ...membership, learningEnabled, autoActivate }]
+        })
+        if (changed.length) {
+          await membershipsTable.bulkPut(changed)
+          await syncRecordsTable.bulkPut(changed.map((membership) => ({
+            key: `studyListItems:${membership.membershipId}`,
+            entity: 'studyListItems' as const,
+            recordId: membership.membershipId,
+            updatedAt: now,
+            sourceClientId: typeof client?.value === 'string' ? client.value : undefined,
+          })))
+        }
+      })
   }
 }
 

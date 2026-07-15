@@ -10,6 +10,16 @@ export interface CloudAuthState {
 }
 
 let recoveryStarted = false
+let recoveryPromise: Promise<void> | null = null
+let lastRecoveryAt = 0
+
+async function clearRejectedSession(): Promise<void> {
+  const client = getSupabaseClient()
+  if (!client) return
+  // A used/expired refresh token cannot authorize a global sign-out. Local
+  // cleanup stops the 30-second retry loop and lets the user log in again.
+  await client.auth.signOut({ scope: 'local' })
+}
 
 function emptyState(configured = isSupabaseConfigured()): CloudAuthState {
   return {
@@ -41,7 +51,11 @@ export async function getCloudAuthState(): Promise<CloudAuthState> {
     return emptyState(false)
   }
 
-  const { data } = await client.auth.getSession()
+  const { data, error } = await client.auth.getSession()
+  if (error) {
+    await clearRejectedSession()
+    return emptyState(true)
+  }
   if (!data.session?.user) {
     return emptyState(true)
   }
@@ -66,6 +80,20 @@ export async function signInCloud(email: string, password: string): Promise<Clou
   return userToState(data.user)
 }
 
+export async function signUpCloud(email: string, password: string): Promise<{
+  auth: CloudAuthState
+  confirmationRequired: boolean
+}> {
+  const client = getSupabaseClient()
+  if (!client) throw new Error('未配置 Supabase URL 或 Publishable Key')
+  const { data, error } = await client.auth.signUp({ email, password })
+  if (error) throw error
+  return {
+    auth: data.session?.user ? userToState(data.session.user) : emptyState(true),
+    confirmationRequired: !data.session,
+  }
+}
+
 export async function signOutCloud(): Promise<void> {
   const client = getSupabaseClient()
   if (!client) {
@@ -87,9 +115,17 @@ export function startCloudSessionRecovery(): void {
       return
     }
 
-    void client.auth.getSession().catch(() => {
-      // Keep local-first mode alive even when iOS resumes with a flaky network.
-    })
+    const now = Date.now()
+    if (recoveryPromise || now - lastRecoveryAt < 60_000) return
+    lastRecoveryAt = now
+    recoveryPromise = client.auth.getSession()
+      .then(async ({ error }) => {
+        if (error) await clearRejectedSession()
+      })
+      .catch(() => {
+        // Keep local-first mode alive when iOS resumes with a flaky network.
+      })
+      .finally(() => { recoveryPromise = null })
   }
 
   window.addEventListener('pageshow', recover)
