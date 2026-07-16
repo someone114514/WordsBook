@@ -44,9 +44,7 @@ export function initialTodayMastery(retrievability: number, isNew: boolean): num
 }
 
 export function nextTodayMastery(current: number, rating: ReviewRating): number {
-  if (rating === 'again') return 0
-  if (rating === 'hard') return Math.max(25, Math.min(45, Math.round(current * 0.5)))
-  return current >= 65 ? 100 : Math.max(65, Math.min(85, current + 35))
+  return computeShortTermReview({ mastery: current }, rating).mastery
 }
 
 export function masteryReinsertionGap(mastery: number): number {
@@ -78,6 +76,7 @@ export function computeShortTermReview(
   input: ShortTermReviewInput,
   rating: ReviewRating,
 ): ShortTermReviewOutcome {
+  const masteryBefore = Math.max(0, Math.min(100, Math.round(input.mastery)))
   const previousStreak = input.recallStreak ?? 0
   const weakSeen = Boolean(input.weakSeen || rating === 'again' || rating === 'hard')
   const recallStreak = rating === 'good' ? previousStreak + 1 : 0
@@ -88,9 +87,9 @@ export function computeShortTermReview(
 
   let mastery: number
   if (rating === 'again') mastery = 0
-  else if (rating === 'hard') mastery = Math.max(25, Math.min(45, Math.round(input.mastery * 0.5)))
+  else if (rating === 'hard') mastery = Math.max(25, Math.min(45, Math.round(masteryBefore * 0.5)))
   else if (recallStreak >= requiredRecallStreak) mastery = 100
-  else mastery = Math.max(65, Math.min(85, input.mastery + 35))
+  else mastery = Math.max(65, Math.min(85, masteryBefore + 35))
 
   const passed = rating === 'good' && mastery === 100 && recallStreak >= requiredRecallStreak
   return {
@@ -268,6 +267,8 @@ export async function applyDailyQueueChanges(sessionId: string, at = new Date())
     dismissedSourceRevision: undefined,
     cardsCompletedAt: addedItems.length ? undefined : session.cardsCompletedAt,
     articleStatus: addedItems.length ? articleStatusAfterExtension(session.articleStatus) : session.articleStatus,
+    readingBatchesJson: addedItems.length ? undefined : session.readingBatchesJson,
+    activeReadingBatchIndex: addedItems.length ? undefined : session.activeReadingBatchIndex,
     completedAt: addedItems.length ? undefined : session.completedAt,
     updatedAt: now,
   }
@@ -304,6 +305,8 @@ export async function extendDailyQueue(sessionId: string, count: number, at = ne
     extensionBatchCount: (session.extensionBatchCount ?? 0) + 1,
     cardsCompletedAt: undefined,
     articleStatus: articleStatusAfterExtension(session.articleStatus),
+    readingBatchesJson: undefined,
+    activeReadingBatchIndex: undefined,
     completedAt: undefined,
     updatedAt: now,
   }

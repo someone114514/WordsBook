@@ -14,6 +14,7 @@ import {
 } from '../modules/review/dailyQueueService'
 import { preGenerateDailyArticle } from '../modules/reading/readingService'
 import { loadReviewCards, setWordSuspended } from '../modules/review/reviewService'
+import { applyAiOverrideToEntry, fetchAiDictionaryDraft } from '../modules/dictionary/aiDefinitionService'
 import { removeWordFromWordbook } from '../modules/wordbook/wordbookService'
 import { playEntryPronunciation, stopActivePronunciation } from '../modules/dictionary/audioService'
 import { loadSettings } from '../modules/settings/settingsService'
@@ -35,6 +36,12 @@ const noMoreWords = ref(false)
 const autoPronunciation = ref(true)
 const speechRate = ref(1)
 const ttsEngine = ref<'auto' | 'browser' | 'youdao' | 'google' | 'dictionaryapi'>('auto')
+const deepseekApiKey = ref('')
+const deepseekBaseUrl = ref('')
+const deepseekModel = ref('')
+const aiDefinitionBusy = ref(false)
+const aiDefinitionMessage = ref('')
+const aiDefinitionMessageTone = ref<'success' | 'error'>('success')
 
 const selectedListIds = computed(() => typeof route.query.lists === 'string'
   ? route.query.lists.split(',').filter(Boolean)
@@ -105,6 +112,9 @@ async function initialize() {
     autoPronunciation.value = settings.autoPronunciation
     speechRate.value = settings.speechRate
     ttsEngine.value = settings.ttsEngine
+    deepseekApiKey.value = settings.deepseekApiKey
+    deepseekBaseUrl.value = settings.deepseekBaseUrl
+    deepseekModel.value = settings.deepseekModel
     snapshot.value = await getOrCreateDailySession(selectedListIds.value)
     await loadCurrentCard()
   } catch (reason) {
@@ -148,6 +158,41 @@ async function onGrade(rating: ReviewRating) {
     error.value = reason instanceof Error ? reason.message : String(reason)
   } finally {
     grading.value = false
+  }
+}
+
+async function optimizeCurrentDefinition() {
+  const current = card.value
+  if (!current || aiDefinitionBusy.value) return
+  if (!deepseekApiKey.value.trim()) {
+    aiDefinitionMessageTone.value = 'error'
+    aiDefinitionMessage.value = '请先到设置页填写 DeepSeek API Key'
+    return
+  }
+
+  aiDefinitionBusy.value = true
+  aiDefinitionMessage.value = ''
+  try {
+    const draft = await fetchAiDictionaryDraft({
+      word: current.entry.headword,
+      apiKey: deepseekApiKey.value,
+      baseUrl: deepseekBaseUrl.value,
+      model: deepseekModel.value,
+    })
+    await applyAiOverrideToEntry({
+      entryId: current.entry.entryId,
+      mode: 'replace',
+      draft,
+      model: deepseekModel.value,
+    })
+    card.value = (await loadReviewCards([current.wordId]))[0] ?? current
+    aiDefinitionMessageTone.value = 'success'
+    aiDefinitionMessage.value = '已更新，可在查词页回退'
+  } catch (reason) {
+    aiDefinitionMessageTone.value = 'error'
+    aiDefinitionMessage.value = reason instanceof Error ? reason.message : 'AI 优化失败，请稍后重试'
+  } finally {
+    aiDefinitionBusy.value = false
   }
 }
 
@@ -243,6 +288,18 @@ async function enterArticle() {
             <p class="muted">{{ card.entry.posList.join(' / ') || '释义' }}</p>
             <ul><li v-for="sense in parseJsonArray(card.entry.sensesJson)" :key="sense">{{ sense }}</li></ul>
             <p v-if="card.note" class="example">{{ card.note }}</p>
+            <div class="review-ai-definition">
+              <button
+                class="btn btn-quiet review-ai-definition-btn"
+                :disabled="aiDefinitionBusy || !deepseekApiKey.trim()"
+                type="button"
+                @click="optimizeCurrentDefinition"
+              >
+                {{ aiDefinitionBusy ? 'AI 处理中…' : 'AI 优化释义' }}
+              </button>
+              <p v-if="!deepseekApiKey.trim() && !aiDefinitionMessage" class="muted review-ai-definition-hint">配置 DeepSeek Key 后可用</p>
+              <p v-if="aiDefinitionMessage" :class="aiDefinitionMessageTone === 'error' ? 'error' : 'success'" class="review-ai-definition-message" role="status">{{ aiDefinitionMessage }}</p>
+            </div>
           </aside>
         </div>
       </section>
@@ -265,9 +322,9 @@ async function enterArticle() {
     <footer v-if="card" :class="['review-grade-dock', revealMeaning ? 'review-grade-dock-three' : 'review-reveal-dock']">
       <button v-if="!revealMeaning" class="btn btn-primary review-reveal-action" type="button" @click="revealMeaning = true">显示释义</button>
       <template v-else>
-        <button class="btn btn-primary review-action-btn" :disabled="grading" type="button" @click="onGrade('good')">记得 <small>{{ masteryPreview.good.mastery }}%</small><span class="review-grade-hint">{{ recallHint }}</span></button>
-        <button class="btn review-action-btn review-hard" :disabled="grading" type="button" @click="onGrade('hard')">模糊 <small>{{ masteryPreview.hard.mastery }}%</small><span class="review-grade-hint">稍后再出现</span></button>
-        <button class="btn btn-danger review-action-btn" :disabled="grading" type="button" @click="onGrade('again')">忘记 <small>{{ masteryPreview.again.mastery }}%</small><span class="review-grade-hint">很快再出现</span></button>
+        <button class="btn btn-primary review-action-btn" :disabled="grading || aiDefinitionBusy" type="button" @click="onGrade('good')">记得 <small>{{ masteryPreview.good.mastery }}%</small><span class="review-grade-hint">{{ recallHint }}</span></button>
+        <button class="btn review-action-btn review-hard" :disabled="grading || aiDefinitionBusy" type="button" @click="onGrade('hard')">模糊 <small>{{ masteryPreview.hard.mastery }}%</small><span class="review-grade-hint">稍后再出现</span></button>
+        <button class="btn btn-danger review-action-btn" :disabled="grading || aiDefinitionBusy" type="button" @click="onGrade('again')">不知道 <small>{{ masteryPreview.again.mastery }}%</small><span class="review-grade-hint">很快再出现</span></button>
       </template>
     </footer>
 

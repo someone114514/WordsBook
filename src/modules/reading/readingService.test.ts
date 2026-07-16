@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { db } from '../../db/database'
 import type { ReadingTarget, ReviewLog } from '../../types/models'
-import { buildReadingTargetBatches, generateReadingSession, listReadingHistory, recordContextAttempt, resetReadingSessionAttempts, saveReadingProgress } from './readingService'
+import { appendOmittedReadingTargets, buildReadingTargetBatches, generateReadingSession, getOrCreateReadingBatches, listReadingHistory, recordContextAttempt, resetReadingSessionAttempts, saveReadingProgress } from './readingService'
 
 function log(wordId: string, rating: ReviewLog['rating'], wasNew = false): ReviewLog {
   return {
@@ -151,9 +151,55 @@ describe('reading target selection and context feedback', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(stream).mockResolvedValueOnce(details))
     const session = await generateReadingSession({ dayKey: '2026-07-13', batchIndex: 3, seed: 0, wordIds: ['w1', 'w2', 'w3', 'w4', 'w5'] })
     expect(session.status).toBe('ready')
-    expect(session.targetWordIds).toEqual(['w1', 'w3', 'w4', 'w5'])
+    expect(session.targetWordIds).toEqual(['w1', 'w3', 'w5', 'w4'])
     expect(session.omittedTargetWordIds).toEqual(['w2'])
     expect(JSON.parse(session.targetsJson)).toHaveLength(4)
+  })
+
+  it('persists the reading batch plan when omitted targets are carried forward', async () => {
+    const now = '2026-07-13T08:00:00.000Z'
+    await db.dailyLearningSessions.put({
+      sessionId: 'daily:2026-07-13', dayKey: '2026-07-13', status: 'active', phase: 'article',
+      selectedListIds: [], initialWordIds: ['w1', 'w2', 'w3'], articleStatus: 'ready',
+      readingBatchesJson: JSON.stringify([['w1'], ['w2']]), activeReadingBatchIndex: 0,
+      createdAt: now, updatedAt: now,
+    })
+
+    await appendOmittedReadingTargets('daily:2026-07-13', 0, ['w3'])
+
+    expect(await getOrCreateReadingBatches('daily:2026-07-13', '2026-07-13')).toEqual([['w1'], ['w3', 'w2']])
+    expect((await db.dailyLearningSessions.get('daily:2026-07-13'))?.activeReadingBatchIndex).toBe(0)
+  })
+
+  it('normalizes the order of previously cached article targets on restore', async () => {
+    const now = '2026-07-13T08:00:00.000Z'
+    const targets: ReadingTarget[] = [
+      { wordId: 'w4', headword: 'scarce', contextualMeaning: '稀缺的', choices: ['稀缺的', '甲', '乙'], explanation: '上下文。' },
+      { wordId: 'w1', headword: 'resilient', contextualMeaning: '有韧性的', choices: ['有韧性的', '甲', '乙'], explanation: '上下文。' },
+      { wordId: 'w5', headword: 'brief', contextualMeaning: '简短的', choices: ['简短的', '甲', '乙'], explanation: '上下文。' },
+      { wordId: 'w3', headword: 'vivid', contextualMeaning: '生动的', choices: ['生动的', '甲', '乙'], explanation: '上下文。' },
+    ]
+    await db.readingSessions.put({
+      sessionId: 'reading:2026-07-13:0:4', dayKey: '2026-07-13', batchIndex: 4, selectionSeed: 0, level: 'B2', topic: '',
+      targetWordIds: ['w4', 'w1', 'w5', 'w3'], status: 'ready', title: 'Water',
+      segmentsJson: JSON.stringify([{ text: 'A resilient and vivid, brief account covered scarce water.' }]),
+      targetsJson: JSON.stringify(targets), translation: '译文', createdAt: now, updatedAt: now,
+    })
+
+    const restored = await generateReadingSession({ dayKey: '2026-07-13', batchIndex: 4, seed: 0, wordIds: ['w1', 'w3', 'w4', 'w5'] })
+
+    expect(restored.targetWordIds).toEqual(['w1', 'w3', 'w5', 'w4'])
+    expect(JSON.parse(restored.targetsJson).map((target: ReadingTarget) => target.wordId)).toEqual(['w1', 'w3', 'w5', 'w4'])
+  })
+
+  it('returns a structured error when article generation has no API key', async () => {
+    const now = '2026-07-13T00:00:00.000Z'
+    await db.dictionaryEntries.put({ entryId: 'e1', headword: 'resilient', headwordLower: 'resilient', posList: ['adj'], sensesJson: '["有韧性的"]', examplesJson: '[]', usageJson: '[]' })
+    await db.wordbook.put({ wordId: 'w1', entryId: 'e1', addedAt: now, note: '', tags: [], archived: 0 })
+    const session = await generateReadingSession({ dayKey: '2026-07-13', batchIndex: 0, seed: 0, wordIds: ['w1'], level: 'B2' })
+
+    expect(session.status).toBe('failed')
+    expect(session.errorCode).toBe('missing-key')
   })
 
   it('persists reader progress and clears old answers before regeneration', async () => {

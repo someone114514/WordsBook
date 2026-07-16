@@ -4,14 +4,18 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { ReadingSession, ReadingTarget } from '../types/models'
 import {
-  buildReadingTargetBatches,
+  appendOmittedReadingTargets,
+  cancelReadingGeneration,
   completeReadingSession,
+  getOrCreateReadingBatches,
   generateReadingSession,
   loadContextAttempts,
   parseReadingSession,
   recordContextAttempt,
   resetReadingSessionAttempts,
   saveReadingProgress,
+  setActiveReadingBatch,
+  ReadingGenerationError,
 } from '../modules/reading/readingService'
 import { completeDailySession, setArticleStatus } from '../modules/review/dailyQueueService'
 import { loadSettings } from '../modules/settings/settingsService'
@@ -44,6 +48,7 @@ const showTranslation = ref(false)
 const quizCursor = ref(0)
 const resultCursor = ref(0)
 const hadRetry = ref(false)
+const generationErrorCode = ref<ReadingSession['errorCode']>()
 const readingCopy = ref<HTMLElement | null>(null)
 const selectedWord = ref('')
 const selectedEntry = ref<DictionaryEntry | null>(null)
@@ -59,15 +64,34 @@ const parsed = computed(() => session.value ? parseReadingSession(session.value)
 const currentTarget = computed(() => parsed.value.targets[quizCursor.value])
 const currentResultTarget = computed(() => parsed.value.targets[resultCursor.value])
 const currentTargetResult = computed(() => currentTarget.value ? results.value[currentTarget.value.wordId] : undefined)
+const hasRetainedPassage = computed(() => paragraphs.value.length > 0 || Boolean(session.value && session.value.segmentsJson !== '[]'))
+const errorTitle = computed(() => {
+  if (generationErrorCode.value === 'missing-key' || error.value.includes('Key')) return '需要配置 DeepSeek Key'
+  if (generationErrorCode.value === 'details-invalid') return '正文已生成，题目还没准备好'
+  if (generationErrorCode.value === 'cancelled') return '文章生成已暂停'
+  return '文章暂时没有生成'
+})
+const errorActionLabel = computed(() => generationErrorCode.value === 'details-invalid'
+  ? '继续准备题目'
+  : generationErrorCode.value === 'cancelled' ? '继续生成' : '重试')
 
-function carryOmittedToNextBatch() {
+function readingSessionId() {
+  return `reading:${dayKey}:0:${batchIndex.value}`
+}
+
+function splitStoredPassage(row: ReadingSession | null): string[] {
+  if (!row) return []
+  try {
+    const segments = JSON.parse(row.segmentsJson) as Array<{ text?: string }>
+    const passage = segments.map((segment) => segment.text ?? '').join('').trim()
+    return passage ? passage.split(/\n\s*\n/).map((paragraph) => paragraph.trim()).filter(Boolean) : []
+  } catch { return [] }
+}
+
+async function carryOmittedToNextBatch() {
   const omitted = session.value?.omittedTargetWordIds ?? []
-  if (!omitted.length || batchIndex.value + 1 >= batches.value.length) return
-  const nextIndex = batchIndex.value + 1
-  const combined = [...new Set([...omitted, ...(batches.value[nextIndex] ?? [])])]
-  const chunks: string[][] = []
-  for (let index = 0; index < combined.length; index += 12) chunks.push(combined.slice(index, index + 12))
-  batches.value.splice(nextIndex, 1, ...chunks)
+  if (!omitted.length) return
+  batches.value = await appendOmittedReadingTargets(dailySessionId.value, batchIndex.value, omitted)
 }
 
 function restoreCursors() {
@@ -77,6 +101,13 @@ function restoreCursors() {
     ? firstUnanswered
     : Math.min(session.value.quizCursor ?? Math.max(0, parsed.value.targets.length - 1), Math.max(0, parsed.value.targets.length - 1))
   resultCursor.value = Math.min(session.value.resultCursor ?? 0, Math.max(0, parsed.value.targets.length - 1))
+}
+
+async function setBatchIndex(nextIndex: number) {
+  const bounded = Math.max(0, Math.min(nextIndex, Math.max(0, batches.value.length - 1)))
+  batchIndex.value = bounded
+  await setActiveReadingBatch(dailySessionId.value, bounded)
+  await router.replace({ query: { ...route.query, batch: String(bounded) } })
 }
 
 async function persistProgress() {
@@ -92,12 +123,15 @@ async function persistProgress() {
 async function loadBatch(force = false) {
   const wordIds = batches.value[batchIndex.value]
   if (!wordIds) return
+  if (force) await cancelReadingGeneration(readingSessionId())
   loading.value = true
   error.value = ''
+  generationErrorCode.value = undefined
   paragraphs.value = []
   generatedTargets.value = 0
   generationPhase.value = 'article'
   stage.value = 0
+  session.value = null
   results.value = {}
   showTranslation.value = false
   controller = new AbortController()
@@ -112,7 +146,13 @@ async function loadBatch(force = false) {
         generatedTargets.value = progress.targetCount
       },
     })
-    if (session.value.status === 'failed') throw new Error(session.value.error || '文章生成失败')
+    paragraphs.value = splitStoredPassage(session.value)
+    generationErrorCode.value = session.value.errorCode
+    if (session.value.status === 'failed') {
+      error.value = session.value.error || '文章生成失败，请重试'
+      if (session.value.errorCode !== 'cancelled') await setArticleStatus(dailySessionId.value, 'failed')
+      return
+    }
     await setArticleStatus(dailySessionId.value, 'ready')
     const attempts = await loadContextAttempts(session.value.sessionId)
     results.value = Object.fromEntries(attempts.map((attempt) => [attempt.wordId, attempt.result]))
@@ -120,10 +160,18 @@ async function loadBatch(force = false) {
     stage.value = session.value.readerStage ?? (attempts.length ? 1 : 0)
     showTranslation.value = session.value.showTranslation ?? false
     restoreCursors()
-    carryOmittedToNextBatch()
+    await carryOmittedToNextBatch()
+    await setActiveReadingBatch(dailySessionId.value, batchIndex.value)
   } catch (reason) {
+    generationErrorCode.value = reason instanceof ReadingGenerationError ? reason.code : undefined
     error.value = reason instanceof Error ? reason.message : String(reason)
-    await setArticleStatus(dailySessionId.value, 'failed')
+    const cached = await db.readingSessions.get(readingSessionId())
+    if (cached) {
+      session.value = cached
+      paragraphs.value = splitStoredPassage(cached)
+      generationErrorCode.value = cached.errorCode ?? generationErrorCode.value
+    }
+    if (generationErrorCode.value !== 'cancelled') await setArticleStatus(dailySessionId.value, 'failed')
   } finally {
     loading.value = false
     controller = null
@@ -134,17 +182,20 @@ async function initialize() {
   const settings = await loadSettings()
   level.value = settings.articleLevel
   noKey.value = !settings.deepseekApiKey.trim()
-  batches.value = await buildReadingTargetBatches(dayKey)
+  batches.value = await getOrCreateReadingBatches(dailySessionId.value, dayKey)
   if (!batches.value.length) {
     await completeDailySession(dailySessionId.value, 'skipped')
     await router.replace('/review')
     return
   }
   const requestedBatch = Number(route.query.batch)
-  if (Number.isInteger(requestedBatch) && requestedBatch >= 0 && requestedBatch < batches.value.length) {
-    batchIndex.value = requestedBatch
-  }
   const dailySession = await db.dailyLearningSessions.get(dailySessionId.value)
+  const requestedOrStoredBatch = Number.isInteger(requestedBatch) && requestedBatch >= 0
+    ? requestedBatch
+    : (dailySession?.activeReadingBatchIndex ?? 0)
+  if (requestedOrStoredBatch >= 0 && requestedOrStoredBatch < batches.value.length) {
+    await setBatchIndex(requestedOrStoredBatch)
+  }
   if (dailySession?.articleStatus === 'stale') {
     staleArticle.value = true
     return
@@ -159,13 +210,21 @@ async function continuePreviousArticle() {
     await loadBatch(true)
     return
   }
+  if (cached.status !== 'ready' && cached.status !== 'completed') {
+    staleArticle.value = false
+    await loadBatch(false)
+    return
+  }
   session.value = cached
+  paragraphs.value = splitStoredPassage(cached)
   const attempts = await loadContextAttempts(cached.sessionId)
   results.value = Object.fromEntries(attempts.map((attempt) => [attempt.wordId, attempt.result]))
   hadRetry.value = attempts.some((attempt) => attempt.result !== 'correct')
   stage.value = cached.readerStage ?? (attempts.length ? 1 : 0)
   showTranslation.value = cached.showTranslation ?? false
   restoreCursors()
+  await carryOmittedToNextBatch()
+  await setActiveReadingBatch(dailySessionId.value, batchIndex.value)
   staleArticle.value = false
   usingPreviousArticle.value = true
 }
@@ -192,6 +251,14 @@ async function nextQuestion() {
     return
   }
   await finishBatch()
+}
+
+async function moveResultCursor(delta: number) {
+  const max = Math.max(0, parsed.value.targets.length - 1)
+  const next = Math.max(0, Math.min(resultCursor.value + delta, max))
+  if (next === resultCursor.value) return
+  resultCursor.value = next
+  await persistProgress()
 }
 
 async function finishBatch() {
@@ -229,7 +296,7 @@ async function regenerateStaleArticle() {
 
 async function nextBatch() {
   if (batchIndex.value + 1 < batches.value.length) {
-    batchIndex.value += 1
+    await setBatchIndex(batchIndex.value + 1)
     await loadBatch()
     return
   }
@@ -244,11 +311,18 @@ async function nextBatch() {
 
 async function skip() {
   controller?.abort()
+  await cancelReadingGeneration(readingSessionId())
   await completeDailySession(dailySessionId.value, 'skipped')
   await router.replace('/review')
 }
 
-function cancel() { controller?.abort() }
+async function cancel() {
+  controller?.abort()
+  await cancelReadingGeneration(readingSessionId())
+  error.value = '正文已保存，生成已暂停；点击继续准备题目即可恢复。'
+  generationErrorCode.value = 'cancelled'
+  loading.value = false
+}
 
 function clearWordSelection() {
   selectedWord.value = ''
@@ -322,7 +396,6 @@ onMounted(() => {
   document.addEventListener('selectionchange', updateSelectedWord)
 })
 onBeforeUnmount(() => {
-  controller?.abort()
   document.removeEventListener('selectionchange', updateSelectedWord)
 })
 </script>
@@ -347,53 +420,82 @@ onBeforeUnmount(() => {
       <div class="action-row"><button class="btn btn-primary" type="button" @click="router.push('/settings')">配置 DeepSeek Key</button><button class="btn" type="button" @click="skip">跳过文章并完成今日学习</button></div>
     </div>
 
-    <div v-else-if="loading" class="reading-stream-state" aria-live="polite">
-      <p class="eyebrow">{{ generationPhase === 'article' ? '正文流式生成中' : '正文已完成' }} · {{ level }}</p><h1>今日语境文章</h1>
-      <p v-if="generationPhase === 'article'">目标词 {{ batches[batchIndex]?.length ?? 0 }} 个 · 正文会边生成边显示</p>
-      <p v-else>正在准备测义题与翻译 · 已生成 {{ generatedTargets }} 题</p>
-      <div v-if="paragraphs.length" class="reading-copy streaming-article"><p v-for="(paragraph, index) in paragraphs" :key="index">{{ paragraph }}</p></div>
-      <div v-else class="skeleton-lines" aria-hidden="true"><span/><span/><span/></div>
-      <button class="btn" type="button" @click="cancel">取消生成</button>
-    </div>
-
-    <div v-else-if="error" class="immersive-empty">
-      <h1>文章暂时没有生成</h1><p class="error" role="alert">{{ error }}</p>
-      <div v-if="paragraphs.length" class="reading-copy retained-article"><p v-for="(paragraph, index) in paragraphs" :key="index">{{ paragraph }}</p></div>
-      <div class="action-row"><button class="btn btn-primary" type="button" @click="loadBatch(false)">{{ paragraphs.length ? '重试题目与翻译' : '重试' }}</button><button v-if="paragraphs.length" class="btn" type="button" @click="loadBatch(true)">重新生成正文</button><button class="btn" type="button" @click="skip">跳过并完成今日学习</button><button v-if="error.includes('Key')" class="btn" type="button" @click="router.push('/settings')">更新 Key</button></div>
-    </div>
-
-    <article v-else-if="session" class="reading-card">
+    <article v-else class="reading-card reading-card-stable" :aria-busy="loading">
       <p v-if="usingPreviousArticle" class="reading-coverage-note">原文章未包含后来加入的单词</p>
-      <p v-else-if="session.omittedTargetWordIds?.length" class="reading-coverage-note">本篇已保留可用内容；{{ session.omittedTargetWordIds.length }} 个未自然覆盖的词将顺延到下一篇。</p>
-      <div class="reading-title-row"><h1>{{ session.title }}</h1><button class="btn btn-quiet" type="button" @click="regenerate">重新生成</button></div>
-      <div ref="readingCopy" class="reading-copy reading-copy-selectable"><template v-for="(segment, index) in parsed.segments" :key="index"><mark v-if="stage >= 1 && segment.wordId" :class="['target-word', { 'target-word-active': (stage === 1 && currentTarget?.wordId === segment.wordId) || (stage === 2 && currentResultTarget?.wordId === segment.wordId) }]">{{ segment.text }}</mark><span v-else>{{ segment.text }}</span></template></div>
-      <button v-if="stage === 0" class="btn btn-primary" type="button" @click="revealTargets">我已读完，标出目标词</button>
-      <section v-if="stage === 1 && currentTarget" class="quiz-list quiz-list-single" aria-live="polite">
-        <div class="quiz-progress-row"><span>第 {{ quizCursor + 1 }} / {{ parsed.targets.length }} 题</span><progress :value="quizCursor + (currentTargetResult ? 1 : 0)" :max="parsed.targets.length" /></div>
-        <article :key="currentTarget.wordId" class="entry-card context-question-card">
-          <h2>{{ currentTarget.headword }}</h2>
-          <div v-if="!currentTargetResult" class="context-choice-list">
-            <button v-for="choice in currentTarget.choices" :key="choice" class="btn" type="button" @click="answer(currentTarget, choice)">{{ choice }}</button>
-            <button class="btn btn-quiet" type="button" @click="answer(currentTarget)">不确定</button>
-          </div>
-          <template v-else>
-            <div :class="['context-answer', currentTargetResult === 'correct' ? 'correct' : 'incorrect']"><strong>{{ currentTargetResult === 'correct' ? '回答正确' : currentTargetResult === 'uncertain' ? '不确定' : '回答错误' }}</strong><p>答案：{{ currentTarget.contextualMeaning }}</p><p>{{ currentTarget.explanation }}</p></div>
-            <button class="btn btn-primary context-next-question" type="button" @click="nextQuestion">{{ quizCursor + 1 < parsed.targets.length ? '下一题' : '查看全部结果' }}</button>
-          </template>
-        </article>
+      <p v-else-if="session?.omittedTargetWordIds?.length" class="reading-coverage-note">本篇已保留可用内容；{{ session.omittedTargetWordIds.length }} 个未自然覆盖的词将顺延到下一篇。</p>
+      <div class="reading-title-row">
+        <div>
+          <p class="eyebrow">{{ generationPhase === 'article' ? '语境阅读' : '题目准备' }} · {{ level }}</p>
+          <h1>{{ session?.title || '今日语境文章' }}</h1>
+        </div>
+        <button v-if="loading" class="btn btn-quiet" type="button" @click="cancel">取消生成</button>
+        <button v-else-if="session" class="btn btn-quiet" type="button" @click="regenerate">重新生成</button>
+      </div>
+      <p class="reading-generation-status" aria-live="polite">
+        <template v-if="loading">{{ generationPhase === 'article' ? '正文流式生成中，完成后会在下方准备题目' : `正在准备测义题与翻译${generatedTargets ? ` · 已完成 ${generatedTargets} 题` : ''}` }}</template>
+        <template v-else-if="error">{{ errorTitle }}</template>
+        <template v-else-if="session">读完正文后开始测义</template>
+        <template v-else>正在恢复文章进度…</template>
+      </p>
+
+      <div ref="readingCopy" class="reading-copy reading-copy-selectable reading-copy-stable">
+        <template v-if="loading || error">
+          <p v-for="(paragraph, index) in paragraphs" :key="index">{{ paragraph }}</p>
+          <div v-if="!paragraphs.length" class="skeleton-lines" aria-hidden="true"><span/><span/><span/></div>
+        </template>
+        <template v-else-if="session">
+          <template v-for="(segment, index) in parsed.segments" :key="index"><mark v-if="stage >= 1 && segment.wordId" :class="['target-word', { 'target-word-active': (stage === 1 && currentTarget?.wordId === segment.wordId) || (stage === 2 && currentResultTarget?.wordId === segment.wordId) }]">{{ segment.text }}</mark><span v-else>{{ segment.text }}</span></template>
+        </template>
+        <div v-else class="skeleton-lines" aria-hidden="true"><span/><span/><span/></div>
+      </div>
+
+      <section v-if="loading" class="reading-question-placeholder" aria-live="polite">
+        <strong>{{ generationPhase === 'article' ? '题目区域已准备好' : '题目正在加载' }}</strong>
+        <span>正文位置保持不变，题目完成后会出现在这里</span>
+        <div class="skeleton-lines" aria-hidden="true"><span/><span/><span/></div>
       </section>
-      <template v-if="stage === 2">
-        <section v-if="currentResultTarget" class="quiz-result-carousel" aria-live="polite">
-          <div class="quiz-progress-row"><strong>答题结果</strong><span>{{ resultCursor + 1 }} / {{ parsed.targets.length }}</span></div>
-          <article class="entry-card context-result-card">
-            <h2>{{ currentResultTarget.headword }}</h2>
-            <div :class="['context-answer', results[currentResultTarget.wordId] === 'correct' ? 'correct' : 'incorrect']"><strong>{{ results[currentResultTarget.wordId] === 'correct' ? '回答正确' : results[currentResultTarget.wordId] === 'uncertain' ? '不确定' : '回答错误' }}</strong><p>答案：{{ currentResultTarget.contextualMeaning }}</p><p>{{ currentResultTarget.explanation }}</p></div>
+
+      <section v-else-if="error" class="reading-generation-error" aria-live="polite">
+        <h2>{{ errorTitle }}</h2>
+        <p class="error" role="alert">{{ error }}</p>
+        <p v-if="hasRetainedPassage" class="muted">已保存正文，不会丢失；可以继续准备题目或重新生成正文。</p>
+        <div class="action-row">
+          <button class="btn btn-primary" type="button" @click="loadBatch(false)">{{ errorActionLabel }}</button>
+          <button v-if="hasRetainedPassage" class="btn" type="button" @click="loadBatch(true)">重新生成正文</button>
+          <button class="btn" type="button" @click="skip">跳过并完成今日学习</button>
+          <button v-if="generationErrorCode === 'missing-key' || error.includes('Key')" class="btn" type="button" @click="router.push('/settings')">去设置</button>
+        </div>
+      </section>
+
+      <template v-else-if="session">
+        <button v-if="stage === 0" class="btn btn-primary" type="button" @click="revealTargets">我已读完，标出目标词</button>
+        <section v-if="stage === 1 && currentTarget" class="quiz-list quiz-list-single" aria-live="polite">
+          <div class="quiz-progress-row"><span>第 {{ quizCursor + 1 }} / {{ parsed.targets.length }} 题</span><progress :value="quizCursor + (currentTargetResult ? 1 : 0)" :max="parsed.targets.length" /></div>
+          <article :key="currentTarget.wordId" class="entry-card context-question-card">
+            <h2>{{ currentTarget.headword }}</h2>
+            <div v-if="!currentTargetResult" class="context-choice-list">
+              <button v-for="choice in currentTarget.choices" :key="choice" class="btn" type="button" @click="answer(currentTarget, choice)">{{ choice }}</button>
+              <button class="btn btn-quiet" type="button" @click="answer(currentTarget)">不确定</button>
+            </div>
+            <template v-else>
+              <div :class="['context-answer', currentTargetResult === 'correct' ? 'correct' : 'incorrect']"><strong>{{ currentTargetResult === 'correct' ? '回答正确' : currentTargetResult === 'uncertain' ? '不确定' : '回答错误' }}</strong><p>答案：{{ currentTarget.contextualMeaning }}</p><p>{{ currentTarget.explanation }}</p></div>
+              <button class="btn btn-primary context-next-question" type="button" @click="nextQuestion">{{ quizCursor + 1 < parsed.targets.length ? '下一题' : '查看全部结果' }}</button>
+            </template>
           </article>
-          <div class="quiz-result-nav"><button class="btn" type="button" :disabled="resultCursor === 0" @click="resultCursor -= 1; persistProgress()">上一题</button><button class="btn" type="button" :disabled="resultCursor + 1 >= parsed.targets.length" @click="resultCursor += 1; persistProgress()">下一题</button></div>
         </section>
-        <button class="btn" type="button" @click="toggleTranslation">{{ showTranslation ? '隐藏全文翻译' : '显示全文翻译' }}</button>
-        <p v-if="showTranslation" class="translation-panel">{{ session.translation }}</p>
-        <button class="btn btn-primary" type="button" @click="nextBatch">{{ batchIndex + 1 < batches.length ? '下一篇' : '完成今日学习' }}</button>
+        <template v-if="stage === 2">
+          <section v-if="currentResultTarget" class="quiz-result-carousel" aria-live="polite">
+            <div class="quiz-progress-row"><strong>答题结果</strong><span>{{ resultCursor + 1 }} / {{ parsed.targets.length }}</span></div>
+            <article class="entry-card context-result-card">
+              <h2>{{ currentResultTarget.headword }}</h2>
+              <div :class="['context-answer', results[currentResultTarget.wordId] === 'correct' ? 'correct' : 'incorrect']"><strong>{{ results[currentResultTarget.wordId] === 'correct' ? '回答正确' : results[currentResultTarget.wordId] === 'uncertain' ? '不确定' : '回答错误' }}</strong><p>答案：{{ currentResultTarget.contextualMeaning }}</p><p>{{ currentResultTarget.explanation }}</p></div>
+            </article>
+            <div class="quiz-result-nav"><button class="btn" type="button" :disabled="resultCursor === 0" @click="moveResultCursor(-1)">上一题</button><button class="btn" type="button" :disabled="resultCursor + 1 >= parsed.targets.length" @click="moveResultCursor(1)">下一题</button></div>
+          </section>
+          <button class="btn" type="button" @click="toggleTranslation">{{ showTranslation ? '隐藏全文翻译' : '显示全文翻译' }}</button>
+          <p v-if="showTranslation" class="translation-panel">{{ session.translation }}</p>
+          <button class="btn btn-primary" type="button" @click="nextBatch">{{ batchIndex + 1 < batches.length ? '下一篇' : '完成今日学习' }}</button>
+        </template>
       </template>
     </article>
 

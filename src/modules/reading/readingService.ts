@@ -6,6 +6,7 @@ import type {
   ReadingSegment,
   ReadingSession,
   ReadingTarget,
+  ReadingErrorCode,
   ReviewLog,
 } from '../../types/models'
 import { normalizeReviewRating } from '../review/scheduler'
@@ -26,10 +27,30 @@ interface ActiveGeneration {
   promise: Promise<ReadingSession>
   listeners: Set<(progress: StreamProgress) => void>
   lastProgress?: StreamProgress
+  abortController: AbortController
 }
 
 const activeGenerations = new Map<string, ActiveGeneration>()
 export const MAX_READING_BATCH_SIZE = 12
+
+export class ReadingGenerationError extends Error {
+  public readonly code: ReadingErrorCode
+
+  public constructor(message: string, code: ReadingErrorCode) {
+    super(message)
+    this.name = 'ReadingGenerationError'
+    this.code = code
+  }
+}
+
+function readingError(message: string, code: ReadingErrorCode): ReadingGenerationError {
+  return new ReadingGenerationError(message, code)
+}
+
+function errorCodeOf(error: unknown, fallback: ReadingErrorCode = 'unknown'): ReadingErrorCode {
+  if (error instanceof ReadingGenerationError) return error.code
+  return fallback
+}
 
 function isUsableHeadword(value: string | undefined): value is string {
   return isUsableVocabularyHeadword(value)
@@ -103,21 +124,95 @@ export async function buildReadingTargetBatches(dayKey = dayjs().format('YYYY-MM
   return batches
 }
 
+function normalizeReadingBatches(raw: unknown): string[][] {
+  if (!Array.isArray(raw)) return []
+  return raw
+    .filter((batch): batch is unknown[] => Array.isArray(batch))
+    .map((batch) => [...new Set(batch.filter((wordId): wordId is string => typeof wordId === 'string' && wordId.trim().length > 0))])
+    .filter((batch) => batch.length > 0)
+}
+
+function parseReadingBatches(raw: string | undefined): string[][] {
+  if (!raw) return []
+  try { return normalizeReadingBatches(JSON.parse(raw)) } catch { return [] }
+}
+
+export async function persistReadingBatches(
+  sessionId: string,
+  batches: string[][],
+  activeBatchIndex?: number,
+): Promise<string[][]> {
+  const session = await db.dailyLearningSessions.get(sessionId)
+  if (!session) return batches
+  const normalized = normalizeReadingBatches(batches)
+  const index = normalized.length
+    ? Math.max(0, Math.min(activeBatchIndex ?? session.activeReadingBatchIndex ?? 0, normalized.length - 1))
+    : 0
+  const updated = {
+    ...session,
+    readingBatchesJson: JSON.stringify(normalized),
+    activeReadingBatchIndex: index,
+    updatedAt: new Date().toISOString(),
+  }
+  await db.dailyLearningSessions.put(updated)
+  await markPayloadChanged('dailyLearningSessions', updated, updated.updatedAt)
+  return normalized
+}
+
+export async function getOrCreateReadingBatches(
+  sessionId: string,
+  dayKey = dayjs().format('YYYY-MM-DD'),
+  seed = 0,
+): Promise<string[][]> {
+  const session = await db.dailyLearningSessions.get(sessionId)
+  const cached = session?.articleStatus !== 'stale' ? parseReadingBatches(session?.readingBatchesJson) : []
+  if (cached.length) return cached
+  return persistReadingBatches(sessionId, await buildReadingTargetBatches(dayKey, seed), session?.activeReadingBatchIndex)
+}
+
+export async function appendOmittedReadingTargets(
+  sessionId: string,
+  batchIndex: number,
+  omittedWordIds: string[],
+): Promise<string[][]> {
+  const session = await db.dailyLearningSessions.get(sessionId)
+  const batches = parseReadingBatches(session?.readingBatchesJson)
+  if (!session || !batches.length || !omittedWordIds.length) return batches
+  const nextIndex = batchIndex + 1
+  const combined = [...new Set([...omittedWordIds, ...(batches[nextIndex] ?? [])])]
+  const chunks: string[][] = []
+  for (let index = 0; index < combined.length; index += MAX_READING_BATCH_SIZE) {
+    chunks.push(combined.slice(index, index + MAX_READING_BATCH_SIZE))
+  }
+  batches.splice(nextIndex, 1, ...chunks)
+  return persistReadingBatches(sessionId, batches, batchIndex)
+}
+
+export async function setActiveReadingBatch(sessionId: string, batchIndex: number): Promise<void> {
+  const session = await db.dailyLearningSessions.get(sessionId)
+  if (!session) return
+  const batches = parseReadingBatches(session.readingBatchesJson)
+  const activeBatchIndex = batches.length ? Math.max(0, Math.min(batchIndex, batches.length - 1)) : 0
+  const updated = { ...session, activeReadingBatchIndex: activeBatchIndex, updatedAt: new Date().toISOString() }
+  await db.dailyLearningSessions.put(updated)
+  await markPayloadChanged('dailyLearningSessions', updated, updated.updatedAt)
+}
+
 function validateResponse(response: AiReadingResponse, wordIds: string[]): asserts response is Required<AiReadingResponse> {
   if (!response.title || !response.translation || !Array.isArray(response.segments) || !Array.isArray(response.targets)) {
-    throw new Error('AI 返回的文章结构不完整')
+    throw readingError('AI 返回的文章结构不完整', 'details-invalid')
   }
   const expected = new Set(wordIds)
   const visibleText = [response.title, response.translation, ...response.segments.map((segment) => segment.text)].join(' ')
-  if (/[0-9a-f]{8}-[0-9a-f-]{27,}/i.test(visibleText)) throw new Error('AI 文章包含了内部标识符，请重新生成')
+  if (/[0-9a-f]{8}-[0-9a-f-]{27,}/i.test(visibleText)) throw readingError('AI 文章包含了内部标识符，请重新生成', 'passage-invalid')
   const segmentIds = new Set(response.segments.map((segment) => segment.wordId).filter(Boolean))
   const targetIds = new Set(response.targets.map((target) => target.wordId))
   for (const wordId of expected) {
-    if (!segmentIds.has(wordId) || !targetIds.has(wordId)) throw new Error('AI 文章未覆盖全部目标词')
+    if (!segmentIds.has(wordId) || !targetIds.has(wordId)) throw readingError('AI 文章未覆盖全部目标词', 'passage-invalid')
   }
   for (const target of response.targets) {
     if (!expected.has(target.wordId) || !isUsableHeadword(target.headword) || !hasDistinctChoices(target)) {
-      throw new Error('AI 测义选项不符合要求')
+      throw readingError('AI 测义选项不符合要求', 'details-invalid')
     }
   }
 }
@@ -277,9 +372,26 @@ function passageIncludesHeadword(passage: string, headword: string): boolean {
   return new RegExp(`(^|[^A-Za-z])${escaped}(?=$|[^A-Za-z])`, 'i').test(passage)
 }
 
-function apiError(status: number): Error {
+export function sortTargetsByPassageOrder(targets: ReadingTarget[], passage: string): ReadingTarget[] {
+  const lowerPassage = passage.toLowerCase()
+  return targets
+    .map((target, index) => ({
+      target,
+      index,
+      position: lowerPassage.indexOf(target.headword.toLowerCase()),
+    }))
+    .sort((left, right) => {
+      const leftPosition = left.position < 0 ? Number.MAX_SAFE_INTEGER : left.position
+      const rightPosition = right.position < 0 ? Number.MAX_SAFE_INTEGER : right.position
+      return leftPosition - rightPosition || left.index - right.index
+    })
+    .map(({ target }) => target)
+}
+
+function apiError(status: number): ReadingGenerationError {
   const messages: Record<number, string> = { 401: 'DeepSeek Key 无效，请到设置中更新', 402: 'DeepSeek 余额不足，请充值后重试', 429: '请求过多，请稍后重试' }
-  return new Error(messages[status] ?? (status >= 500 ? 'DeepSeek 服务暂时不可用，请稍后重试' : `文章生成失败（HTTP ${status}）`))
+  const code: ReadingErrorCode = status === 401 ? 'auth' : status === 402 ? 'quota' : status === 429 ? 'rate-limit' : status >= 500 ? 'network' : 'unknown'
+  return readingError(messages[status] ?? (status >= 500 ? 'DeepSeek 服务暂时不可用，请稍后重试' : `文章生成失败（HTTP ${status}）`), code)
 }
 
 function buildSegments(paragraphs: string[], targets: ReadingTarget[]): ReadingSegment[] {
@@ -308,7 +420,7 @@ async function requestPassage(
   onProgress?: (progress: StreamProgress) => void,
   externalSignal?: AbortSignal,
 ): Promise<string> {
-  if (!settings.deepseekApiKey.trim()) throw new Error('请先在设置页填写 DeepSeek API Key')
+  if (!settings.deepseekApiKey.trim()) throw readingError('请先在设置页填写 DeepSeek API Key', 'missing-key')
   const controller = new AbortController()
   externalSignal?.addEventListener('abort', () => controller.abort(), { once: true })
   let timeoutMessage = ''
@@ -320,24 +432,32 @@ async function requestPassage(
   }
   const totalTimer = window.setTimeout(() => { timeoutMessage = '文章生成超过 120 秒，已自动停止'; controller.abort() }, 120_000)
   resetStall()
-  const response = await fetch(settings.deepseekBaseUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${settings.deepseekApiKey.trim()}` },
-    body: JSON.stringify({
-      model: settings.deepseekModel,
-      messages: [{ role: 'user', content: prompt }],
-      stream: true,
-      response_format: { type: 'json_object' },
-      max_tokens: 2400,
-      temperature: 0.5,
-    }),
-    signal: controller.signal,
-  })
+  let response: Response
+  try {
+    response = await fetch(settings.deepseekBaseUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${settings.deepseekApiKey.trim()}` },
+      body: JSON.stringify({
+        model: settings.deepseekModel,
+        messages: [{ role: 'user', content: prompt }],
+        stream: true,
+        response_format: { type: 'json_object' },
+        max_tokens: 2400,
+        temperature: 0.5,
+      }),
+      signal: controller.signal,
+    })
+  } catch (error) {
+    window.clearTimeout(stallTimer); window.clearTimeout(totalTimer)
+    if (externalSignal?.aborted) throw readingError('已取消文章生成', 'cancelled')
+    if (error instanceof ReadingGenerationError) throw error
+    throw readingError('无法连接文章服务，请检查网络后重试', 'network')
+  }
   if (!response.ok) { window.clearTimeout(stallTimer); window.clearTimeout(totalTimer); throw apiError(response.status) }
   if (!response.body) {
     window.clearTimeout(stallTimer)
     window.clearTimeout(totalTimer)
-    throw new Error('浏览器无法读取流式响应')
+    throw readingError('浏览器无法读取流式响应，请重试', 'network')
   }
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
@@ -363,9 +483,10 @@ async function requestPassage(
       }
     }
   } catch (error) {
-    if (timeoutMessage) throw new Error(timeoutMessage)
-    if (externalSignal?.aborted) throw new Error('已取消文章生成')
-    throw error
+    if (timeoutMessage) throw readingError(timeoutMessage, 'timeout')
+    if (externalSignal?.aborted) throw readingError('已取消文章生成', 'cancelled')
+    if (error instanceof ReadingGenerationError) throw error
+    throw readingError('文章流格式异常，请重新生成', 'passage-invalid')
   } finally {
     window.clearTimeout(stallTimer); window.clearTimeout(totalTimer)
   }
@@ -377,7 +498,7 @@ async function requestPassage(
     // The incremental decoder still provides a useful error/retry path for truncated JSON.
   }
   const normalized = splitPassage(passage).join('\n\n')
-  if (!normalized) throw new Error('AI 没有返回文章正文，请重试')
+  if (!normalized) throw readingError('AI 没有返回文章正文，请重试', 'passage-invalid')
   return normalized
 }
 
@@ -409,19 +530,21 @@ async function requestDetails(
     if (!response.ok) throw apiError(response.status)
     const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> }
     const content = payload.choices?.[0]?.message?.content?.trim()
-    if (!content) throw new Error('AI 没有返回题目与翻译')
+    if (!content) throw readingError('AI 没有返回题目与翻译', 'details-invalid')
     const json = content.replace(/^```json\s*/i, '').replace(/```\s*$/i, '')
     const parsed = JSON.parse(json) as { title?: string; targets?: ReadingTarget[]; translation?: string }
     if (!parsed.title || !Array.isArray(parsed.targets) || !parsed.translation
-      || parsed.targets.some((target) => !target.wordId || !target.contextualMeaning || !Array.isArray(target.choices) || target.choices.length !== 3)) {
-      throw new Error('题目与翻译结构不完整')
+       || parsed.targets.some((target) => !target.wordId || !target.contextualMeaning || !Array.isArray(target.choices) || target.choices.length !== 3)) {
+      throw readingError('题目与翻译结构不完整', 'details-invalid')
     }
     onProgress?.({ phase: 'details', rawText: passage, paragraphs: splitPassage(passage), targetCount: parsed.targets.length })
     return { title: parsed.title, targets: parsed.targets, translation: parsed.translation }
   } catch (error) {
-    if (externalSignal?.aborted) throw new Error('已取消文章生成')
-    if (controller.signal.aborted) throw new Error('题目与翻译生成超时，请重试')
-    throw error
+    if (externalSignal?.aborted) throw readingError('已取消文章生成', 'cancelled')
+    if (controller.signal.aborted) throw readingError('题目与翻译生成超时，请重试', 'timeout')
+    if (error instanceof ReadingGenerationError) throw error
+    if (error instanceof TypeError) throw readingError('无法连接题目服务，请检查网络后重试', 'network')
+    throw readingError('题目与翻译结构不完整，请重试', 'details-invalid')
   } finally {
     window.clearTimeout(timer)
   }
@@ -440,7 +563,23 @@ async function generateReadingSessionImpl(options: {
 }): Promise<ReadingSession> {
   const sessionId = `reading:${options.dayKey}:${options.seed}:${options.batchIndex}`
   const existing = await db.readingSessions.get(sessionId)
-  if ((existing?.status === 'ready' || existing?.status === 'completed') && !options.force && cachedSessionHasValidTargets(existing, options.wordIds)) return existing
+  if ((existing?.status === 'ready' || existing?.status === 'completed') && !options.force && cachedSessionHasValidTargets(existing, options.wordIds)) {
+    const cachedTargets = JSON.parse(existing.targetsJson) as ReadingTarget[]
+    const orderedTargets = sortTargetsByPassageOrder(cachedTargets, cachedPassage(existing))
+    const orderedWordIds = orderedTargets.map((target) => target.wordId)
+    if (orderedWordIds.some((wordId, index) => wordId !== existing.targetWordIds[index])) {
+      const normalized = {
+        ...existing,
+        targetWordIds: orderedWordIds,
+        targetsJson: JSON.stringify(orderedTargets),
+        updatedAt: new Date().toISOString(),
+      }
+      await db.readingSessions.put(normalized)
+      await markPayloadChanged('readingSessions', normalized)
+      return normalized
+    }
+    return existing
+  }
   const settings = await loadSettings()
   const level = options.level ?? settings.articleLevel
   await repairVocabularyIntegrity(options.wordIds)
@@ -464,7 +603,15 @@ async function generateReadingSessionImpl(options: {
   }
   const validWordIds = promptRows.map((row) => row.wordId)
   const now = new Date().toISOString()
-  const reusablePassage = options.force ? '' : cachedPassage(existing)
+  const existingPassage = cachedPassage(existing)
+  const reusablePassage = options.force ? '' : (
+    existing?.status === 'enriching'
+      || existing?.status === 'ready'
+      || existing?.status === 'completed'
+      || (existing?.status === 'failed' && existingPassage && promptRows.every((row) => passageIncludesHeadword(existingPassage, row.headword)))
+      ? existingPassage
+      : ''
+  )
   let session: ReadingSession = {
     sessionId,
     dayKey: options.dayKey,
@@ -481,6 +628,7 @@ async function generateReadingSessionImpl(options: {
     segmentsJson: reusablePassage ? JSON.stringify([{ text: reusablePassage }]) : '[]',
     targetsJson: '[]',
     translation: '',
+    errorCode: undefined,
     createdAt: existing?.createdAt ?? now,
     readerStage: existing?.readerStage ?? 0,
     quizCursor: existing?.quizCursor ?? 0,
@@ -490,8 +638,31 @@ async function generateReadingSessionImpl(options: {
   }
   await db.readingSessions.put(session)
   await markPayloadChanged('readingSessions', session, session.updatedAt)
+  let latestPassage = ''
+  let checkpointTimer = 0
+  const persistStreamingCheckpoint = async () => {
+    if (!latestPassage || session.status !== 'streaming') return
+    const updated = {
+      ...session,
+      segmentsJson: JSON.stringify([{ text: latestPassage }]),
+      streamedParagraphs: splitPassage(latestPassage).length,
+      updatedAt: new Date().toISOString(),
+    }
+    session = updated
+    await db.readingSessions.put(updated)
+    await markPayloadChanged('readingSessions', updated, updated.updatedAt)
+  }
+  const onPassageProgress = (progress: StreamProgress) => {
+    latestPassage = progress.rawText
+    options.onProgress?.(progress)
+    if (checkpointTimer) return
+    checkpointTimer = window.setTimeout(() => {
+      checkpointTimer = 0
+      void persistStreamingCheckpoint()
+    }, 350)
+  }
   try {
-    if (!validWordIds.length) throw new Error('今天的目标词资料不完整，请重新查词或安装词典后重试')
+    if (!validWordIds.length) throw readingError('今天的目标词资料不完整，请重新查词或安装词典后重试', 'passage-invalid')
     let passage = reusablePassage
     let passageRows = promptRows
     if (!passage) {
@@ -504,9 +675,9 @@ async function generateReadingSessionImpl(options: {
           const retryHint = attempt > 0 && previousMissing.length
             ? ` The previous draft missed these required words, so make especially sure they appear naturally: ${previousMissing.map((row) => row.headword).join(', ')}.`
             : ''
-          const candidate = await requestPassage(settings, `${buildPassagePrompt(promptRows, level, session.topic)}${retryHint}`, options.onProgress, options.signal)
+          const candidate = await requestPassage(settings, `${buildPassagePrompt(promptRows, level, session.topic)}${retryHint}`, onPassageProgress, options.signal)
           const missing = promptRows.filter((row) => !passageIncludesHeadword(candidate, row.headword))
-          if (missing.length === promptRows.length) throw new Error('正文没有覆盖任何目标词')
+           if (missing.length === promptRows.length) throw readingError('正文没有覆盖任何目标词', 'passage-invalid')
           const missingIds = new Set(missing.map((row) => row.wordId))
           const coveredRows = promptRows.filter((row) => !missingIds.has(row.wordId))
           if (coveredRows.length > bestRows.length) {
@@ -514,7 +685,7 @@ async function generateReadingSessionImpl(options: {
             bestRows = coveredRows
           }
           previousMissing = missing
-          if (missing.length > 2) throw new Error(`正文仍遗漏 ${missing.length} 个目标词`)
+           if (missing.length > 2) throw readingError(`正文仍遗漏 ${missing.length} 个目标词`, 'passage-invalid')
           passage = candidate
           passageRows = coveredRows
           break
@@ -529,12 +700,19 @@ async function generateReadingSessionImpl(options: {
       }
       if (!passage) throw passageError
     }
+    if (checkpointTimer) {
+      window.clearTimeout(checkpointTimer)
+      checkpointTimer = 0
+    }
+    latestPassage = passage
+    await persistStreamingCheckpoint()
     session = {
       ...session,
       status: 'enriching',
       segmentsJson: JSON.stringify([{ text: passage }]),
       streamedParagraphs: splitPassage(passage).length,
       error: undefined,
+      errorCode: undefined,
       updatedAt: new Date().toISOString(),
     }
     await db.readingSessions.put(session)
@@ -596,8 +774,9 @@ async function generateReadingSessionImpl(options: {
     const validTargets = new Map((generated.targets ?? []).filter(hasDistinctChoices).map((target) => [target.wordId, target]))
     generated.title = generated.title || fallback.title
     generated.translation = generated.translation || fallback.translation
-    generated.targets = passageRows.map((row) => validTargets.get(row.wordId)
+    const completedTargets = passageRows.map((row) => validTargets.get(row.wordId)
       ?? fallback.targets.find((target) => target.wordId === row.wordId)!).filter(Boolean)
+    generated.targets = sortTargetsByPassageOrder(completedTargets, passage)
     const generatedWordIds = generated.targets.map((target) => target.wordId)
     generated.segments = buildSegments(splitPassage(passage), generated.targets ?? [])
     validateResponse(generated, generatedWordIds)
@@ -613,17 +792,29 @@ async function generateReadingSessionImpl(options: {
       targetsJson: JSON.stringify(generated.targets),
       translation: generated.translation,
       error: undefined,
+      errorCode: undefined,
       updatedAt: new Date().toISOString(),
     }
   } catch (error) {
-    session = { ...session, status: 'failed', error: error instanceof Error ? error.message : String(error), updatedAt: new Date().toISOString() }
+    if (checkpointTimer) {
+      window.clearTimeout(checkpointTimer)
+      checkpointTimer = 0
+    }
+    await persistStreamingCheckpoint()
+    session = {
+      ...session,
+      status: 'failed',
+      error: error instanceof Error ? error.message : String(error),
+      errorCode: errorCodeOf(error),
+      updatedAt: new Date().toISOString(),
+    }
   }
   await db.readingSessions.put(session)
   await markPayloadChanged('readingSessions', session, session.updatedAt)
   return session
 }
 
-export function generateReadingSession(options: {
+export async function generateReadingSession(options: {
   dayKey: string
   batchIndex: number
   seed: number
@@ -636,31 +827,40 @@ export function generateReadingSession(options: {
 }): Promise<ReadingSession> {
   const sessionId = `reading:${options.dayKey}:${options.seed}:${options.batchIndex}`
   const active = activeGenerations.get(sessionId)
-  if (active && !options.force) {
+  if (active && options.force) {
+    active.abortController.abort()
+    await active.promise.catch(() => undefined)
+  }
+  const current = activeGenerations.get(sessionId)
+  if (current && !options.force) {
     if (options.onProgress) {
-      active.listeners.add(options.onProgress)
-      if (active.lastProgress) options.onProgress(active.lastProgress)
+      current.listeners.add(options.onProgress)
+      if (current.lastProgress) options.onProgress(current.lastProgress)
     }
-    if (!options.signal) return active.promise
+    if (!options.signal) return current.promise
     return new Promise<ReadingSession>((resolve, reject) => {
       const detach = () => {
-        if (options.onProgress) active.listeners.delete(options.onProgress)
+        if (options.onProgress) current.listeners.delete(options.onProgress)
         options.signal?.removeEventListener('abort', onAbort)
       }
-      const onAbort = () => { detach(); reject(new Error('已取消文章生成')) }
+      const onAbort = () => { detach(); reject(readingError('已取消文章生成', 'cancelled')) }
       if (options.signal!.aborted) return onAbort()
       options.signal!.addEventListener('abort', onAbort, { once: true })
-      active.promise.then((result) => { detach(); resolve(result) }, (error) => { detach(); reject(error) })
+      current.promise.then((result) => { detach(); resolve(result) }, (error) => { detach(); reject(error) })
     })
   }
   const listeners = new Set<(progress: StreamProgress) => void>()
   if (options.onProgress) listeners.add(options.onProgress)
-  const state = {} as ActiveGeneration
+  const abortController = new AbortController()
+  const forwardAbort = () => abortController.abort()
+  options.signal?.addEventListener('abort', forwardAbort, { once: true })
+  const state = { abortController } as ActiveGeneration
   const onProgress = (progress: StreamProgress) => {
     state.lastProgress = progress
     for (const listener of state.listeners) listener(progress)
   }
-  const task = generateReadingSessionImpl({ ...options, onProgress }).finally(() => {
+  const task = generateReadingSessionImpl({ ...options, signal: abortController.signal, onProgress }).finally(() => {
+    options.signal?.removeEventListener('abort', forwardAbort)
     if (activeGenerations.get(sessionId) === state) activeGenerations.delete(sessionId)
   })
   state.promise = task
@@ -669,10 +869,17 @@ export function generateReadingSession(options: {
   return task
 }
 
+export async function cancelReadingGeneration(sessionId: string): Promise<void> {
+  const active = activeGenerations.get(sessionId)
+  if (!active) return
+  active.abortController.abort()
+  await active.promise.catch(() => undefined)
+}
+
 export async function preGenerateDailyArticle(dayKey: string): Promise<ReadingSession | undefined> {
   const settings = await loadSettings()
   if (!settings.deepseekApiKey.trim()) return undefined
-  const firstBatch = (await buildReadingTargetBatches(dayKey))[0]
+  const firstBatch = (await getOrCreateReadingBatches(`daily:${dayKey}`, dayKey))[0]
   if (!firstBatch?.length) return undefined
   return generateReadingSession({ dayKey, batchIndex: 0, seed: 0, wordIds: firstBatch, level: settings.articleLevel })
 }

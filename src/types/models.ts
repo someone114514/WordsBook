@@ -183,6 +183,9 @@ export interface DailyLearningSession {
   baseWordCount?: number
   extensionBatchCount?: number
   articleGenerationWordCount?: number
+  /** Stable article batch plan for resuming reading after navigation or reload. */
+  readingBatchesJson?: string
+  activeReadingBatchIndex?: number
   cardsCompletedAt?: string
   articleStatus: 'waiting' | 'generating' | 'ready' | 'completed' | 'skipped' | 'failed' | 'stale'
   createdAt: string
@@ -237,6 +240,18 @@ export interface ReadingTarget {
   explanation: string
 }
 
+export type ReadingErrorCode =
+  | 'missing-key'
+  | 'auth'
+  | 'quota'
+  | 'rate-limit'
+  | 'network'
+  | 'timeout'
+  | 'passage-invalid'
+  | 'details-invalid'
+  | 'cancelled'
+  | 'unknown'
+
 export interface ReadingSegment {
   text: string
   wordId?: string
@@ -262,6 +277,7 @@ export interface ReadingSession {
   targetsJson: string
   translation: string
   error?: string
+  errorCode?: ReadingErrorCode
   createdAt: string
   updatedAt: string
   streamedParagraphs?: number
