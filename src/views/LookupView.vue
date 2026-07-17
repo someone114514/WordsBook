@@ -432,6 +432,11 @@ async function onAiEnhance(entry: DictionaryEntry, mode: 'add' | 'replace') {
       apiKey: aiConfig.apiKey,
       baseUrl: aiConfig.baseUrl,
       model: aiConfig.model,
+      context: {
+        originalHeadword: entry.headword,
+        posList: entry.posList,
+        senses: parseJsonArray(entry.sensesJson),
+      },
     })
 
     await applyAiOverrideToEntry({

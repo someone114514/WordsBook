@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { db } from '../../db/database'
 import type { ReadingTarget, ReviewLog } from '../../types/models'
-import { appendOmittedReadingTargets, buildReadingTargetBatches, generateReadingSession, getOrCreateReadingBatches, listReadingHistory, recordContextAttempt, resetReadingSessionAttempts, saveReadingProgress } from './readingService'
+import { appendOmittedReadingTargets, buildReadingTargetBatches, generateReadingSession, getOrCreateReadingBatches, groupReadingSegmentsByParagraph, listReadingHistory, recordContextAttempt, resetReadingSessionAttempts, saveReadingProgress, sortTargetsByPassageOrder } from './readingService'
 
 function log(wordId: string, rating: ReviewLog['rating'], wasNew = false): ReviewLog {
   return {
@@ -82,6 +82,8 @@ describe('reading target selection and context feedback', () => {
     expect(String(fetchMock.mock.calls[0]?.[1]?.body)).not.toContain(staleWordId)
     expect(fetchMock).toHaveBeenCalledTimes(3)
     expect(streamed.some((text) => text.includes('resilient'))).toBe(true)
+    expect(String(fetchMock.mock.calls[0]?.[1]?.body)).toContain('allowedSenses')
+    expect(String(fetchMock.mock.calls[0]?.[1]?.body)).toContain('有韧性的')
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).response_format).toEqual({ type: 'json_object' })
     expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body)).response_format).toEqual({ type: 'json_object' })
     expect((await db.readingSessions.get(session.sessionId))?.title).toBe('A Test')
@@ -190,6 +192,23 @@ describe('reading target selection and context feedback', () => {
 
     expect(restored.targetWordIds).toEqual(['w1', 'w3', 'w5', 'w4'])
     expect(JSON.parse(restored.targetsJson).map((target: ReadingTarget) => target.wordId)).toEqual(['w1', 'w3', 'w5', 'w4'])
+  })
+
+  it('orders targets by boundary-aware passage matches and keeps paragraph structure', () => {
+    const targets: ReadingTarget[] = [
+      { wordId: 'art', headword: 'art', contextualMeaning: '艺术', choices: ['艺术', '道路', '食物'], explanation: '' },
+      { wordId: 'state', headword: 'state-of-the-art', contextualMeaning: '最先进的', choices: ['最先进的', '潮湿的', '古老的'], explanation: '' },
+      { wordId: 'cant', headword: "can't", contextualMeaning: '不能', choices: ['不能', '奔跑', '容器'], explanation: '' },
+    ]
+    const passage = "A state-of-the-art device can help, but it can’t replace art."
+    expect(sortTargetsByPassageOrder(targets, passage).map((target) => target.wordId)).toEqual(['state', 'cant', 'art'])
+
+    const paragraphs = groupReadingSegmentsByParagraph([
+      { text: 'First ' }, { text: 'target', wordId: 'art' }, { text: ' paragraph.\n\nSecond paragraph.' },
+    ])
+    expect(paragraphs).toHaveLength(2)
+    expect(paragraphs[0]?.map((segment) => segment.text).join('')).toBe('First target paragraph.')
+    expect(paragraphs[1]?.map((segment) => segment.text).join('')).toBe('Second paragraph.')
   })
 
   it('returns a structured error when article generation has no API key', async () => {

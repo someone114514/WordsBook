@@ -151,6 +151,8 @@ export interface StudyPlan {
   dueCount: number
   newCount: number
   queueWordIds: string[]
+  /** All words currently eligible for today's queue before configured limits. */
+  eligibleWordIds?: string[]
   laterTodayCount?: number
   listIds?: string[]
   effectiveNewLimit?: number
@@ -235,6 +237,8 @@ export interface DailyQueueAttempt {
 export interface ReadingTarget {
   wordId: string
   headword: string
+  /** Exact source sense selected from the current study-card definitions. */
+  sourceSense?: string
   contextualMeaning: string
   choices: string[]
   explanation: string

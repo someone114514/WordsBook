@@ -198,11 +198,14 @@ export async function setActiveReadingBatch(sessionId: string, batchIndex: numbe
   await markPayloadChanged('dailyLearningSessions', updated, updated.updatedAt)
 }
 
-function validateResponse(response: AiReadingResponse, wordIds: string[]): asserts response is Required<AiReadingResponse> {
+type ReadingPromptRow = { wordId: string; headword: string; senses: string[] }
+
+function validateResponse(response: AiReadingResponse, rows: ReadingPromptRow[]): asserts response is Required<AiReadingResponse> {
   if (!response.title || !response.translation || !Array.isArray(response.segments) || !Array.isArray(response.targets)) {
     throw readingError('AI 返回的文章结构不完整', 'details-invalid')
   }
-  const expected = new Set(wordIds)
+  const expected = new Set(rows.map((row) => row.wordId))
+  const rowById = new Map(rows.map((row) => [row.wordId, row]))
   const visibleText = [response.title, response.translation, ...response.segments.map((segment) => segment.text)].join(' ')
   if (/[0-9a-f]{8}-[0-9a-f-]{27,}/i.test(visibleText)) throw readingError('AI 文章包含了内部标识符，请重新生成', 'passage-invalid')
   const segmentIds = new Set(response.segments.map((segment) => segment.wordId).filter(Boolean))
@@ -211,7 +214,8 @@ function validateResponse(response: AiReadingResponse, wordIds: string[]): asser
     if (!segmentIds.has(wordId) || !targetIds.has(wordId)) throw readingError('AI 文章未覆盖全部目标词', 'passage-invalid')
   }
   for (const target of response.targets) {
-    if (!expected.has(target.wordId) || !isUsableHeadword(target.headword) || !hasDistinctChoices(target)) {
+    const row = rowById.get(target.wordId)
+    if (!row || !isUsableHeadword(target.headword) || !targetUsesAllowedSense(target, row) || !hasDistinctChoices(target)) {
       throw readingError('AI 测义选项不符合要求', 'details-invalid')
     }
   }
@@ -234,20 +238,40 @@ function meaningsTooSimilar(left: string, right: string): boolean {
   return union > 0 && overlap / union >= 0.72
 }
 
-function hasDistinctChoices(target: ReadingTarget): boolean {
-  if (!Array.isArray(target.choices) || target.choices.length !== 3) return false
+function targetUsesAllowedSense(target: ReadingTarget, row: ReadingPromptRow): boolean {
+  if (!row.senses.length) return true
+  const selected = normalizeChoice(target.sourceSense ?? '')
+  const contextual = normalizeChoice(target.contextualMeaning)
+  return row.senses.some((sense) => {
+    const normalized = normalizeChoice(sense)
+    return selected === normalized || (!selected && (normalized === contextual || normalized.includes(contextual)))
+  })
+}
+
+type ChoiceValidationFailure = 'structure' | 'duplicate' | 'too-similar' | undefined
+
+function choiceValidationFailure(target: ReadingTarget): ChoiceValidationFailure {
+  if (!Array.isArray(target.choices) || target.choices.length !== 3) return 'structure'
   const normalizedChoices = target.choices.map(normalizeChoice)
   const correct = normalizeChoice(target.contextualMeaning)
-  const distractors = normalizedChoices.filter((choice) => choice !== correct)
-  return new Set(normalizedChoices).size === 3
-    && normalizedChoices.includes(correct)
-    && distractors.length === 2
-    && !distractors.some((choice) => meaningsTooSimilar(choice, correct))
+  if (new Set(normalizedChoices).size !== 3 || !normalizedChoices.includes(correct)) return 'duplicate'
+  for (let left = 0; left < normalizedChoices.length; left += 1) {
+    for (let right = left + 1; right < normalizedChoices.length; right += 1) {
+      if (meaningsTooSimilar(normalizedChoices[left]!, normalizedChoices[right]!)) return 'too-similar'
+    }
+  }
+  return undefined
+}
+
+function hasDistinctChoices(target: ReadingTarget): boolean {
+  return choiceValidationFailure(target) === undefined
 }
 
 async function repairTargetChoices(
   settings: AppSettings,
   targets: ReadingTarget[],
+  rows: ReadingPromptRow[],
+  passage: string,
   signal?: AbortSignal,
 ): Promise<Map<string, Pick<ReadingTarget, 'choices' | 'explanation'>>> {
   if (!targets.length) return new Map()
@@ -264,7 +288,12 @@ async function repairTargetChoices(
         response_format: { type: 'json_object' },
         max_tokens: 1800,
         temperature: 0.4,
-        messages: [{ role: 'user', content: `Repair only the multiple-choice options for these vocabulary targets: ${JSON.stringify(targets)}. Return JSON {"targets":[{"wordId":"...","choices":["three concise Simplified Chinese choices including the exact contextualMeaning"],"explanation":"..."}]}. Distractors must have the same part of speech but clearly different meanings. Do not use synonyms, paraphrases, shared two-character meaning stems, or degree-only differences.` }],
+        messages: [{ role: 'user', content: `Repair only the multiple-choice options for these vocabulary targets.
+PASSAGE: ${passage}
+TARGETS: ${JSON.stringify(targets)}
+ALLOWED STUDY SENSES: ${JSON.stringify(rows)}
+Return JSON {"targets":[{"wordId":"...","choices":["three concise Simplified Chinese choices including the exact contextualMeaning"],"explanation":"..."}]}.
+All three choices must share the target's part of speech but belong to clearly different semantic categories. Compare every pair: do not use synonyms, near-synonyms, paraphrases, containment, shared core meaning stems, or degree-only differences. Preserve contextualMeaning and sourceSense.` }],
       }),
       signal: controller.signal,
     })
@@ -280,17 +309,19 @@ async function repairTargetChoices(
 }
 
 function buildPassagePrompt(
-  rows: Array<{ wordId: string; headword: string; senses: string[] }>,
+  rows: ReadingPromptRow[],
   level: AppSettings['articleLevel'],
   topic: string,
 ): string {
   return `Write one coherent English reading passage at CEFR ${level}${topic ? ` about ${topic}` : ''}.
-Use every target headword exactly as written and naturally in context: ${JSON.stringify(rows.map((row) => row.headword))}.
+Use every target headword exactly as written and naturally in context.
+For each target, choose exactly one meaning from its allowedSenses and do not use any meaning outside that list:
+${JSON.stringify(rows.map((row) => ({ headword: row.headword, allowedSenses: row.senses })))}
 Return exactly one JSON object: {"article":"2-5 short English paragraphs"}. The article value must contain only the passage正文. Do not include a title, markdown, target IDs, vocabulary lists, explanations, translations, or notes. Avoid current-event claims.`
 }
 
 function buildDetailsPrompt(
-  rows: Array<{ wordId: string; headword: string; senses: string[] }>,
+  rows: ReadingPromptRow[],
   passage: string,
 ): string {
   return `Based only on this fixed English passage, create vocabulary questions and a Chinese translation.
@@ -299,12 +330,12 @@ ${passage}
 TARGETS:
 ${JSON.stringify(rows)}
 Return one JSON object with this exact shape:
-{"title":"concise English title","targets":[{"wordId":"copy exact target id","headword":"copy exact target headword","contextualMeaning":"concise Simplified Chinese meaning in this passage","choices":["exactly three distinct Simplified Chinese choices including contextualMeaning"],"explanation":"concise Simplified Chinese explanation"}],"translation":"complete Simplified Chinese translation"}
-Return every target exactly once. Each distractor must have the same part of speech but a clearly different semantic category. Do not use synonyms, near-synonyms, paraphrases, shared two-character meaning stems, or degree-only differences.`
+{"title":"concise English title","targets":[{"wordId":"copy exact target id","headword":"copy exact target headword","sourceSense":"copy exactly one sense from this target's senses array that the passage uses","contextualMeaning":"concise Simplified Chinese meaning faithful to sourceSense","choices":["exactly three pairwise-distinct Simplified Chinese choices including contextualMeaning"],"explanation":"concise Simplified Chinese explanation"}],"translation":"complete Simplified Chinese translation"}
+Return every target exactly once. Never introduce a meaning outside its senses array. All three choices must have the same part of speech but belong to clearly different semantic categories. Compare every pair and do not use synonyms, near-synonyms, paraphrases, containment, shared core meaning stems, or degree-only differences.`
 }
 
 function buildFallbackDetails(
-  rows: Array<{ wordId: string; headword: string; senses: string[] }>,
+  rows: ReadingPromptRow[],
 ): Pick<Required<AiReadingResponse>, 'title' | 'targets' | 'translation'> {
   const distractorPool = ['进行计算操作', '表示时间顺序', '一种具体地点', '某种食物名称', '描述声音强弱']
   const targets = rows.map((row) => {
@@ -315,6 +346,7 @@ function buildFallbackDetails(
     return {
       wordId: row.wordId,
       headword: row.headword,
+      sourceSense: contextualMeaning,
       contextualMeaning,
       choices: [contextualMeaning, ...distractors],
       explanation: '题目服务暂时未完成，已使用本地词典释义生成备用题目。',
@@ -368,17 +400,49 @@ function extractStreamingArticle(rawJson: string): string {
 }
 
 function passageIncludesHeadword(passage: string, headword: string): boolean {
-  const escaped = headword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')
-  return new RegExp(`(^|[^A-Za-z])${escaped}(?=$|[^A-Za-z])`, 'i').test(passage)
+  return targetMatchPosition(passage, headword) >= 0
+}
+
+function normalizedMatchText(value: string): string {
+  return value.toLowerCase().replace(/[‘’]/g, "'").replace(/[‐‑‒–—]/g, '-')
+}
+
+function escapePattern(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')
+}
+
+function targetMatchPosition(passage: string, headword: string): number {
+  return findTargetMatches(passage, [{ wordId: '', headword, contextualMeaning: '', choices: [], explanation: '' }])[0]?.position ?? -1
+}
+
+type TargetTextMatch = { position: number; length: number; target: ReadingTarget }
+
+function findTargetMatches(passage: string, targets: ReadingTarget[]): TargetTextMatch[] {
+  const ordered = [...targets].sort((left, right) => right.headword.length - left.headword.length)
+  const pattern = ordered.map((target) => escapePattern(normalizedMatchText(target.headword))).join('|')
+  if (!pattern) return []
+  const normalizedPassage = normalizedMatchText(passage)
+  const regex = new RegExp(`(^|[^A-Za-z])(${pattern})(?=$|[^A-Za-z])`, 'gi')
+  const matches: TargetTextMatch[] = []
+  for (const match of normalizedPassage.matchAll(regex)) {
+    const matchedWord = match[2] ?? ''
+    const target = ordered.find((row) => normalizedMatchText(row.headword) === matchedWord.toLowerCase())
+    if (!target) continue
+    matches.push({ position: (match.index ?? 0) + (match[1]?.length ?? 0), length: matchedWord.length, target })
+  }
+  return matches
 }
 
 export function sortTargetsByPassageOrder(targets: ReadingTarget[], passage: string): ReadingTarget[] {
-  const lowerPassage = passage.toLowerCase()
+  const firstPositions = new Map<string, number>()
+  for (const match of findTargetMatches(passage, targets)) {
+    if (!firstPositions.has(match.target.wordId)) firstPositions.set(match.target.wordId, match.position)
+  }
   return targets
     .map((target, index) => ({
       target,
       index,
-      position: lowerPassage.indexOf(target.headword.toLowerCase()),
+      position: firstPositions.get(target.wordId) ?? -1,
     }))
     .sort((left, right) => {
       const leftPosition = left.position < 0 ? Number.MAX_SAFE_INTEGER : left.position
@@ -395,23 +459,35 @@ function apiError(status: number): ReadingGenerationError {
 }
 
 function buildSegments(paragraphs: string[], targets: ReadingTarget[]): ReadingSegment[] {
-  const targetByWord = [...targets].sort((a, b) => b.headword.length - a.headword.length)
-  const pattern = targetByWord.map((target) => target.headword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
-  if (!pattern) return [{ text: paragraphs.join('\n\n') }]
-  const regex = new RegExp(`\\b(${pattern})\\b`, 'gi')
+  if (!targets.length) return [{ text: paragraphs.join('\n\n') }]
   return paragraphs.flatMap((paragraph, paragraphIndex) => {
     const segments: ReadingSegment[] = []
     let cursor = 0
-    for (const match of paragraph.matchAll(regex)) {
-      const index = match.index ?? 0
-      if (index > cursor) segments.push({ text: paragraph.slice(cursor, index) })
-      const target = targetByWord.find((row) => row.headword.toLowerCase() === match[0].toLowerCase())
-      segments.push({ text: match[0], wordId: target?.wordId })
-      cursor = index + match[0].length
+    for (const match of findTargetMatches(paragraph, targets)) {
+      if (match.position > cursor) segments.push({ text: paragraph.slice(cursor, match.position) })
+      segments.push({ text: paragraph.slice(match.position, match.position + match.length), wordId: match.target.wordId })
+      cursor = match.position + match.length
     }
     segments.push({ text: `${paragraph.slice(cursor)}${paragraphIndex < paragraphs.length - 1 ? '\n\n' : ''}` })
     return segments
   })
+}
+
+export function groupReadingSegmentsByParagraph(segments: ReadingSegment[]): ReadingSegment[][] {
+  const paragraphs: ReadingSegment[][] = [[]]
+  for (const segment of segments) {
+    const text = segment.text
+    let cursor = 0
+    for (const separator of text.matchAll(/\n\s*\n/g)) {
+      const index = separator.index ?? cursor
+      const current = paragraphs[paragraphs.length - 1]!
+      if (index > cursor) current.push({ ...segment, text: text.slice(cursor, index) })
+      if (current.length) paragraphs.push([])
+      cursor = index + separator[0].length
+    }
+    if (cursor < text.length) paragraphs[paragraphs.length - 1]!.push({ ...segment, text: text.slice(cursor) })
+  }
+  return paragraphs.filter((paragraph) => paragraph.some((segment) => segment.text.length > 0))
 }
 
 async function requestPassage(
@@ -585,7 +661,7 @@ async function generateReadingSessionImpl(options: {
   await repairVocabularyIntegrity(options.wordIds)
   const words = await db.wordbook.bulkGet(options.wordIds)
   const entries = await db.dictionaryEntries.bulkGet(words.map((word) => word?.entryId ?? ''))
-  const promptRows: Array<{ wordId: string; headword: string; senses: string[] }> = []
+  const promptRows: ReadingPromptRow[] = []
   for (const [index, wordId] of options.wordIds.entries()) {
     const word = words[index]
     let entry = entries[index] ?? (word ? dictionaryEntryFromWordbook(word) : undefined)
@@ -755,7 +831,8 @@ async function generateReadingSessionImpl(options: {
     const invalidTargets = generated.targets?.filter((target) => !hasDistinctChoices(target)) ?? []
     if (invalidTargets.length) {
       try {
-        const repairedChoices = await repairTargetChoices(settings, invalidTargets, options.signal)
+        console.warn('Reading choices required repair', invalidTargets.map((target) => ({ wordId: target.wordId, reason: choiceValidationFailure(target) })))
+        const repairedChoices = await repairTargetChoices(settings, invalidTargets, passageRows, passage, options.signal)
         generated.targets = generated.targets?.map((target) => {
           const repair = repairedChoices.get(target.wordId)
           if (!repair) return target
@@ -771,7 +848,10 @@ async function generateReadingSessionImpl(options: {
       }
     }
     const fallback = buildFallbackDetails(passageRows)
-    const validTargets = new Map((generated.targets ?? []).filter(hasDistinctChoices).map((target) => [target.wordId, target]))
+    const rowByWordId = new Map(passageRows.map((row) => [row.wordId, row]))
+    const validTargets = new Map((generated.targets ?? [])
+      .filter((target) => hasDistinctChoices(target) && Boolean(rowByWordId.get(target.wordId) && targetUsesAllowedSense(target, rowByWordId.get(target.wordId)!)))
+      .map((target) => [target.wordId, target]))
     generated.title = generated.title || fallback.title
     generated.translation = generated.translation || fallback.translation
     const completedTargets = passageRows.map((row) => validTargets.get(row.wordId)
@@ -779,7 +859,7 @@ async function generateReadingSessionImpl(options: {
     generated.targets = sortTargetsByPassageOrder(completedTargets, passage)
     const generatedWordIds = generated.targets.map((target) => target.wordId)
     generated.segments = buildSegments(splitPassage(passage), generated.targets ?? [])
-    validateResponse(generated, generatedWordIds)
+    validateResponse(generated, passageRows.filter((row) => generatedWordIds.includes(row.wordId)))
     const generatedSet = new Set(generatedWordIds)
     session = {
       ...session,

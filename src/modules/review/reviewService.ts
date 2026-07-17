@@ -5,7 +5,7 @@ import { dictionaryEntryFromWordbook, repairVocabularyIntegrity } from '../wordb
 import { applyAiOverrides } from '../dictionary/entryOverrideMapper'
 import { loadSettings } from '../settings/settingsService'
 import { markPayloadChanged, markRecordChanged } from '../sync/localSyncStore'
-import { getStudyDataRevision, markStudyDataChanged } from './studyDataRevision'
+import { getStudyDataRevision, getStudyQueueRevision, markStudyDataChanged } from './studyDataRevision'
 import {
   cardToReviewState,
   formatInterval,
@@ -31,12 +31,25 @@ interface PlanCache {
   dailyNewLimit: number
   dailyReviewLimit: number
   dayKey: string
+  stale?: boolean
 }
 
 let planCache: PlanCache | null = null
 
+type StudyWordbookRow = {
+  word: WordbookItem
+  listIds: string[]
+  sourcePriority: number
+  joinedAt: string
+  learningEnabled: boolean
+  membershipIds: string[]
+}
+
+let studyRowsCache: { key: string; revision: string; rows: StudyWordbookRow[] } | null = null
+
 type ActiveStateRow = {
   wordId: string
+  headword: string
   state: ReviewState
   listIds: string[]
   sourcePriority: number
@@ -57,30 +70,38 @@ function normalizedInitial(value: string | undefined): string {
   return (value ?? '').replace(/^[^a-z]+/i, '').charAt(0).toLowerCase()
 }
 
-export async function avoidAdjacentWordInitials(wordIds: string[]): Promise<string[]> {
+export async function avoidAdjacentWordInitials(wordIds: string[], knownHeadwords?: Map<string, string>): Promise<string[]> {
   if (wordIds.length < 2) return [...wordIds]
-  const words = await db.wordbook.bulkGet(wordIds)
-  const initials = new Map(words.flatMap((word) => word
-    ? [[word.wordId, normalizedInitial(word.headwordLower ?? word.headword)] as const]
-    : []))
-  const remaining = [...wordIds]
+  const initials = knownHeadwords
+    ? new Map(wordIds.map((wordId) => [wordId, normalizedInitial(knownHeadwords.get(wordId))]))
+    : new Map((await db.wordbook.bulkGet(wordIds)).flatMap((word) => word
+        ? [[word.wordId, normalizedInitial(word.headwordLower ?? word.headword)] as const]
+        : []))
+  const buckets = new Map<string, string[]>()
+  const rank = new Map(wordIds.map((wordId, index) => [wordId, index]))
+  for (const wordId of wordIds) {
+    const initial = initials.get(wordId) || `:${wordId}`
+    const bucket = buckets.get(initial) ?? []
+    bucket.push(wordId)
+    buckets.set(initial, bucket)
+  }
   const arranged: string[] = []
-  while (remaining.length) {
+  while (arranged.length < wordIds.length) {
     const previousInitial = initials.get(arranged[arranged.length - 1] ?? '')
-    let candidateIndex = 0
-    if (previousInitial) {
-      const alternative = remaining.slice(0, 6).findIndex((wordId) => {
-        const initial = initials.get(wordId)
-        return Boolean(initial && initial !== previousInitial)
-      })
-      if (alternative >= 0) candidateIndex = alternative
-    }
-    arranged.push(remaining.splice(candidateIndex, 1)[0]!)
+    const candidates = [...buckets.entries()]
+      .filter(([, bucket]) => bucket.length > 0)
+      .sort((left, right) => (rank.get(left[1][0]!) ?? 0) - (rank.get(right[1][0]!) ?? 0))
+    const selected = candidates.find(([initial]) => initial !== previousInitial) ?? candidates[0]
+    if (!selected) break
+    arranged.push(selected[1].shift()!)
   }
   return arranged
 }
 
-async function getStudyWordbookRows(listIds?: string[], includeImportBacklog = false): Promise<Array<{ word: WordbookItem; listIds: string[]; sourcePriority: number; joinedAt: string; learningEnabled: boolean; membershipIds: string[] }>> {
+async function getStudyWordbookRows(listIds?: string[], includeImportBacklog = false): Promise<StudyWordbookRow[]> {
+  const revision = await getStudyQueueRevision()
+  const cacheKey = `${[...(listIds ?? [])].sort().join(',')}|${includeImportBacklog ? 1 : 0}`
+  if (studyRowsCache?.key === cacheKey && studyRowsCache.revision === revision) return studyRowsCache.rows
   const enabledLists = listIds?.length
     ? await db.studyLists.where('listId').anyOf(listIds).toArray()
     : await db.studyLists.where('studyEnabled').equals(1).toArray()
@@ -98,7 +119,7 @@ async function getStudyWordbookRows(listIds?: string[], includeImportBacklog = f
   }
   const wordIds = [...membershipMap.keys()]
   const words = await db.wordbook.bulkGet(wordIds)
-  return words
+  const rows = words
     .filter((row): row is WordbookItem => Boolean(row && row.archived === 0 && row.integrityStatus !== 'needs-repair'))
     .map((word) => {
       const rows = membershipMap.get(word.wordId) ?? []
@@ -111,6 +132,8 @@ async function getStudyWordbookRows(listIds?: string[], includeImportBacklog = f
         membershipIds: rows.map((row) => row.membershipId),
       }
     })
+  studyRowsCache = { key: cacheKey, revision, rows }
+  return rows
 }
 
 async function getActiveStateRows(listIds?: string[], includeImportBacklog = false): Promise<ActiveStateRow[]> {
@@ -127,7 +150,7 @@ async function getActiveStateRows(listIds?: string[], includeImportBacklog = fal
   for (const wordbookRow of wordbookRows) {
     const existingState = stateMap.get(wordbookRow.word.wordId)
     if (existingState) {
-      activeRows.push({ wordId: wordbookRow.word.wordId, state: existingState, listIds: wordbookRow.listIds, sourcePriority: wordbookRow.sourcePriority, joinedAt: wordbookRow.joinedAt, learningEnabled: wordbookRow.learningEnabled, membershipIds: wordbookRow.membershipIds })
+      activeRows.push({ wordId: wordbookRow.word.wordId, headword: wordbookRow.word.headwordLower ?? wordbookRow.word.headword ?? '', state: existingState, listIds: wordbookRow.listIds, sourcePriority: wordbookRow.sourcePriority, joinedAt: wordbookRow.joinedAt, learningEnabled: wordbookRow.learningEnabled, membershipIds: wordbookRow.membershipIds })
       continue
     }
 
@@ -140,7 +163,7 @@ async function getActiveStateRows(listIds?: string[], includeImportBacklog = fal
       totalReviews: 0,
     }
     missingStates.push(fallbackState)
-    activeRows.push({ wordId: wordbookRow.word.wordId, state: fallbackState, listIds: wordbookRow.listIds, sourcePriority: wordbookRow.sourcePriority, joinedAt: wordbookRow.joinedAt, learningEnabled: wordbookRow.learningEnabled, membershipIds: wordbookRow.membershipIds })
+    activeRows.push({ wordId: wordbookRow.word.wordId, headword: wordbookRow.word.headwordLower ?? wordbookRow.word.headword ?? '', state: fallbackState, listIds: wordbookRow.listIds, sourcePriority: wordbookRow.sourcePriority, joinedAt: wordbookRow.joinedAt, learningEnabled: wordbookRow.learningEnabled, membershipIds: wordbookRow.membershipIds })
   }
 
   if (missingStates.length > 0) {
@@ -150,7 +173,7 @@ async function getActiveStateRows(listIds?: string[], includeImportBacklog = fal
   const legacyRows = activeRows.filter((row) => row.state.schedulerVersion !== 'fsrs-5')
   if (legacyRows.length > 0) {
     const legacyIds = new Set(legacyRows.map((row) => row.wordId))
-    const logs = (await db.reviewLogs.toArray()).filter((log) => legacyIds.has(log.wordId))
+    const logs = legacyIds.size ? await db.reviewLogs.where('wordId').anyOf([...legacyIds]).toArray() : []
     const logsByWord = new Map<string, typeof logs>()
     for (const log of logs) {
       const bucket = logsByWord.get(log.wordId) ?? []
@@ -172,7 +195,6 @@ async function getActiveStateRows(listIds?: string[], includeImportBacklog = fal
 }
 
 export async function buildTodayPlan(options: BuildPlanOptions = {}): Promise<StudyPlan> {
-  await repairVocabularyIntegrity()
   const requiresSettings =
     options.dailyNewLimit === undefined || options.dailyReviewLimit === undefined
   const settings = requiresSettings ? await loadSettings() : null
@@ -245,13 +267,16 @@ export async function buildTodayPlan(options: BuildPlanOptions = {}): Promise<St
   const previousSession = await db.dailyLearningSessions.orderBy('dayKey').last()
   const daysSinceLastStudy = previousSession ? Math.max(0, dayjs(now).startOf('day').diff(previousSession.dayKey, 'day')) : 0
 
-  const queueWordIds = await avoidAdjacentWordInitials(selectedRows.map((row) => row.wordId))
+  const headwords = new Map(rows.map((row) => [row.wordId, row.headword]))
+  const queueWordIds = await avoidAdjacentWordInitials(selectedRows.map((row) => row.wordId), headwords)
+  const eligibleWordIds = await avoidAdjacentWordInitials([...dueRows, ...newRows].map((row) => row.wordId), headwords)
   return {
     // These counts describe the actual queue, not the entire backlog. This keeps
     // the headline total equal to "复习 + 新词" and makes the configured limits visible.
     dueCount: selectedDue.length,
     newCount: selectedNew.length,
     queueWordIds,
+    eligibleWordIds,
     laterTodayCount: 0,
     listIds: options.listIds,
     effectiveNewLimit,
@@ -279,7 +304,8 @@ export function getCachedStudyPlan(): StudyPlan | null {
 }
 
 export function invalidateStudyPlanCache(): void {
-  planCache = null
+  if (planCache) planCache.stale = true
+  studyRowsCache = null
 }
 
 export async function buildTodayPlanCached(): Promise<StudyPlan> {
@@ -292,6 +318,7 @@ export async function buildTodayPlanCached(): Promise<StudyPlan> {
     planCache.revision === revision &&
     planCache.dailyNewLimit === settings.dailyNewLimit &&
     planCache.dailyReviewLimit === settings.dailyReviewLimit
+    && !planCache.stale
   ) {
     return planCache.plan
   }
@@ -307,7 +334,10 @@ export async function buildTodayPlanCached(): Promise<StudyPlan> {
     dailyNewLimit: settings.dailyNewLimit,
     dailyReviewLimit: settings.dailyReviewLimit,
     dayKey,
+    stale: false,
   }
+
+  await db.syncMeta.put({ key: 'study-plan-cache-v1', value: planCache })
 
   return plan
 }
@@ -325,7 +355,46 @@ export async function listEligibleStudyWordIds(
     dailyReviewLimit: Number.MAX_SAFE_INTEGER,
     includeImportBacklog: false,
   })
-  return plan.queueWordIds
+  return plan.eligibleWordIds ?? plan.queueWordIds
+}
+
+export const STUDY_PLAN_REFRESHED_EVENT = 'wordsbook:study-plan-refreshed'
+
+export interface StaleStudyPlanResult {
+  plan: StudyPlan
+  stale: boolean
+  refreshPromise?: Promise<StudyPlan>
+}
+
+async function refreshAndNotifyStudyPlan(): Promise<StudyPlan> {
+  const plan = await buildTodayPlanCached()
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(STUDY_PLAN_REFRESHED_EVENT, { detail: plan }))
+  return plan
+}
+
+export async function getTodayPlanStaleWhileRevalidate(): Promise<StaleStudyPlanResult> {
+  const dayKey = getTodayKey()
+  if (!planCache) {
+    const persisted = await db.syncMeta.get('study-plan-cache-v1')
+    const value = persisted?.value as PlanCache | undefined
+    if (value?.dayKey === dayKey) planCache = { ...value, stale: true }
+  }
+  if (!planCache || planCache.dayKey !== dayKey) {
+    return { plan: await buildTodayPlanCached(), stale: false }
+  }
+  const stale = Boolean(planCache.stale)
+  return {
+    plan: planCache.plan,
+    stale,
+    refreshPromise: stale ? refreshAndNotifyStudyPlan() : undefined,
+  }
+}
+
+export function scheduleTodayPlanPrewarm(): void {
+  if (typeof window === 'undefined') return
+  const run = () => { void refreshAndNotifyStudyPlan().catch(() => undefined) }
+  if ('requestIdleCallback' in window) window.requestIdleCallback(run, { timeout: 1500 })
+  else globalThis.setTimeout(run, 0)
 }
 
 export async function buildAdditionalStudyWordIds(
@@ -377,7 +446,7 @@ export async function buildAdditionalStudyWordIds(
     for (const membership of promoted) await markPayloadChanged('studyListItems', membership, now)
     await markStudyDataChanged()
   }
-  return avoidAdjacentWordInitials(selected)
+  return avoidAdjacentWordInitials(selected, new Map(rows.map((row) => [row.wordId, row.headword])))
 }
 
 export async function loadReviewCards(wordIds: string[]): Promise<ReviewCard[]> {

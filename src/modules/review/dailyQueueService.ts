@@ -374,10 +374,9 @@ export async function getOrCreateDailySession(listIds?: string[], at = new Date(
   }
 
   const plan = await buildTodayPlan({ listIds, at })
-  const [states, revision, eligibleWordIds] = await Promise.all([
+  const [states, revision] = await Promise.all([
     db.reviewState.bulkGet(plan.queueWordIds),
     getStudyQueueRevision(),
-    listEligibleStudyWordIds([], listIds, at),
   ])
   const now = at.toISOString()
   const session: DailyLearningSession = {
@@ -388,7 +387,7 @@ export async function getOrCreateDailySession(listIds?: string[], at = new Date(
     selectedListIds: listIds ?? plan.listIds ?? [],
     initialWordIds: plan.queueWordIds,
     sourceRevision: revision,
-    sourceEligibleWordIds: eligibleWordIds,
+    sourceEligibleWordIds: plan.eligibleWordIds ?? plan.queueWordIds,
     baseWordCount: plan.queueWordIds.length,
     extensionBatchCount: 0,
     articleStatus: 'waiting',

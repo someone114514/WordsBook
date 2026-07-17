@@ -14,7 +14,7 @@ import {
 } from '../modules/review/dailyQueueService'
 import { preGenerateDailyArticle } from '../modules/reading/readingService'
 import { loadReviewCards, setWordSuspended } from '../modules/review/reviewService'
-import { applyAiOverrideToEntry, fetchAiDictionaryDraft } from '../modules/dictionary/aiDefinitionService'
+import { enhanceOrCreateVocabularyEntry, fetchAiDictionaryDraft } from '../modules/dictionary/aiDefinitionService'
 import { removeWordFromWordbook } from '../modules/wordbook/wordbookService'
 import { playEntryPronunciation, stopActivePronunciation } from '../modules/dictionary/audioService'
 import { loadSettings } from '../modules/settings/settingsService'
@@ -178,16 +178,22 @@ async function optimizeCurrentDefinition() {
       apiKey: deepseekApiKey.value,
       baseUrl: deepseekBaseUrl.value,
       model: deepseekModel.value,
+      context: {
+        originalHeadword: current.entry.headword,
+        posList: current.entry.posList,
+        senses: parseJsonArray(current.entry.sensesJson),
+        note: current.note,
+      },
     })
-    await applyAiOverrideToEntry({
+    const result = await enhanceOrCreateVocabularyEntry({
+      wordId: current.wordId,
       entryId: current.entry.entryId,
-      mode: 'replace',
       draft,
       model: deepseekModel.value,
     })
     card.value = (await loadReviewCards([current.wordId]))[0] ?? current
     aiDefinitionMessageTone.value = 'success'
-    aiDefinitionMessage.value = '已更新，可在查词页回退'
+    aiDefinitionMessage.value = result.created ? '已创建 AI 词条并更新释义' : '已更新，可在查词页回退'
   } catch (reason) {
     aiDefinitionMessageTone.value = 'error'
     aiDefinitionMessage.value = reason instanceof Error ? reason.message : 'AI 优化失败，请稍后重试'

@@ -8,6 +8,7 @@ import {
   cancelReadingGeneration,
   completeReadingSession,
   getOrCreateReadingBatches,
+  groupReadingSegmentsByParagraph,
   generateReadingSession,
   loadContextAttempts,
   parseReadingSession,
@@ -61,6 +62,7 @@ let controller: AbortController | null = null
 let selectionToken = 0
 
 const parsed = computed(() => session.value ? parseReadingSession(session.value) : { segments: [], targets: [] })
+const renderedParagraphs = computed(() => session.value ? groupReadingSegmentsByParagraph(parsed.value.segments) : [])
 const currentTarget = computed(() => parsed.value.targets[quizCursor.value])
 const currentResultTarget = computed(() => parsed.value.targets[resultCursor.value])
 const currentTargetResult = computed(() => currentTarget.value ? results.value[currentTarget.value.wordId] : undefined)
@@ -444,7 +446,7 @@ onBeforeUnmount(() => {
           <div v-if="!paragraphs.length" class="skeleton-lines" aria-hidden="true"><span/><span/><span/></div>
         </template>
         <template v-else-if="session">
-          <template v-for="(segment, index) in parsed.segments" :key="index"><mark v-if="stage >= 1 && segment.wordId" :class="['target-word', { 'target-word-active': (stage === 1 && currentTarget?.wordId === segment.wordId) || (stage === 2 && currentResultTarget?.wordId === segment.wordId) }]">{{ segment.text }}</mark><span v-else>{{ segment.text }}</span></template>
+          <p v-for="(paragraph, paragraphIndex) in renderedParagraphs" :key="paragraphIndex"><template v-for="(segment, index) in paragraph" :key="index"><mark v-if="stage >= 1 && segment.wordId" :class="['target-word', { 'target-word-active': (stage === 1 && currentTarget?.wordId === segment.wordId) || (stage === 2 && currentResultTarget?.wordId === segment.wordId) }]">{{ segment.text }}</mark><span v-else>{{ segment.text }}</span></template></p>
         </template>
         <div v-else class="skeleton-lines" aria-hidden="true"><span/><span/><span/></div>
       </div>

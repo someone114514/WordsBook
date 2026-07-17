@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import dayjs from 'dayjs'
-import { computed, onActivated, ref } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { db } from '../db/database'
 import type { DailyLearningSession, ReadingSession, StudyPlan } from '../types/models'
-import { buildTodayPlanCached } from '../modules/review/reviewService'
+import { getTodayPlanStaleWhileRevalidate, STUDY_PLAN_REFRESHED_EVENT } from '../modules/review/reviewService'
 import { listReadingHistory } from '../modules/reading/readingService'
 import {
   applyDailyQueueChanges,
@@ -20,6 +20,7 @@ const loading = ref(true)
 const hasLoaded = ref(false)
 const error = ref('')
 const plan = ref<StudyPlan | null>(null)
+const refreshingPlan = ref(false)
 const session = ref<DailyLearningSession | null>(null)
 const remainingCards = ref(0)
 const snapshot = ref<DailyQueueSnapshot | null>(null)
@@ -64,7 +65,11 @@ async function load() {
       plan.value = null
       readingHistory.value = await listReadingHistory()
     } else {
-      ;[plan.value, readingHistory.value] = await Promise.all([buildTodayPlanCached(), listReadingHistory()])
+      const [planResult, history] = await Promise.all([getTodayPlanStaleWhileRevalidate(), listReadingHistory()])
+      plan.value = planResult.plan
+      readingHistory.value = history
+      refreshingPlan.value = planResult.stale
+      void planResult.refreshPromise?.finally(() => { refreshingPlan.value = false })
     }
     if (session.value) {
       const [loadedSnapshot, changes] = await Promise.all([
@@ -91,6 +96,13 @@ async function load() {
   }
 }
 
+function onPlanRefreshed(event: Event) {
+  if (session.value) return
+  const refreshed = (event as CustomEvent<StudyPlan>).detail
+  if (refreshed) plan.value = refreshed
+  refreshingPlan.value = false
+}
+
 async function start() {
   await router.push('/review/session')
 }
@@ -111,6 +123,8 @@ async function dismissChanges() {
 onActivated(() => {
   void load()
 })
+onMounted(() => window.addEventListener(STUDY_PLAN_REFRESHED_EVENT, onPlanRefreshed))
+onBeforeUnmount(() => window.removeEventListener(STUDY_PLAN_REFRESHED_EVENT, onPlanRefreshed))
 </script>
 
 <template>
@@ -140,6 +154,7 @@ onActivated(() => {
         </template>
       </div>
       <p v-if="!loading && recoveryText" class="recovery-note">{{ recoveryText }}</p>
+      <p v-if="!loading && refreshingPlan" class="study-plan-refresh" aria-live="polite">正在后台更新今日计划…</p>
     </section>
 
     <template v-if="hasLoaded && !error">
