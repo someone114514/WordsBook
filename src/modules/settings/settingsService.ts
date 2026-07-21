@@ -11,7 +11,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   dailyReviewLimit: 200,
   deepseekApiKey: '',
   deepseekBaseUrl: 'https://api.deepseek.com/v1/chat/completions',
-  deepseekModel: 'deepseek-chat',
+  deepseekModel: 'deepseek-v4-flash',
   articleLevel: 'B2',
   syncDeepseekApiKey: false,
 }

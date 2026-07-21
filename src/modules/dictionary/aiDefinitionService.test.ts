@@ -34,9 +34,10 @@ describe('AI dictionary enhancement', () => {
 
   it('retries when the model incorrectly denies an existing imported word', async () => {
     const response = (content: object) => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }] }))
-    vi.stubGlobal('fetch', vi.fn()
+    const fetchMock = vi.fn()
       .mockResolvedValueOnce(response({ headword: 'quarklet', posList: ['noun'], senses: ['No such word exists.'], examples: [], usage: [], notes: [] }))
-      .mockResolvedValueOnce(response({ headword: 'quarklet', posList: ['noun'], senses: ['noun: 一种专业术语'], examples: [], usage: [], notes: ['罕见词'] })))
+      .mockResolvedValueOnce(response({ headword: 'quarklet', posList: ['noun'], senses: ['noun: 一种专业术语'], examples: ['EN: A quarklet appeared. | ZH: 出现了一个 quarklet。', 'EN: We measured the quarklet. | ZH: 我们测量了这个 quarklet。'], usage: [], notes: ['罕见词'] }))
+    vi.stubGlobal('fetch', fetchMock)
 
     const draft = await fetchAiDictionaryDraft({
       word: 'quarklet', apiKey: 'key', baseUrl: 'https://example.test', model: 'test',
@@ -44,5 +45,6 @@ describe('AI dictionary enhancement', () => {
     })
     expect(draft.senses).toEqual(['noun: 一种专业术语'])
     expect(fetch).toHaveBeenCalledTimes(2)
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toMatchObject({ thinking: { type: 'enabled' }, reasoning_effort: 'high' })
   })
 })

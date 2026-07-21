@@ -5,8 +5,10 @@ import json
 from pathlib import Path
 
 DEFAULT_SRC = Path('asserts/ECDICT-master/ecdict.csv')
+DEFAULT_LEMMA_SRC = Path('asserts/ECDICT-master/lemma.en.txt')
 OUT_DIR = Path('public/dictionaries/ecdict')
 MANIFEST_FILE = OUT_DIR / 'manifest.json'
+LEMMA_INDEX_FILE = OUT_DIR / 'lemma-index.json'
 SHARD_SIZE = 50000
 
 
@@ -40,6 +42,38 @@ def normalize_word(word: str):
     return ''.join(ch for ch in word.strip().lower() if ch.isalnum() or ch in "-'")
 
 
+def build_lemma_index(source: Path):
+    """Build an offline surface-form -> lemma map used only by reading."""
+    index = {}
+
+    def add_form(surface, lemma):
+        existing = index.get(surface)
+        if not existing:
+            index[surface] = lemma
+            return
+        candidates = existing.split('|')
+        if lemma not in candidates:
+            index[surface] = '|'.join([*candidates, lemma])
+
+    if not source.exists():
+        return index
+    with source.open('r', encoding='utf-8') as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith(';') or '->' not in line:
+                continue
+            lemma_part, forms_part = line.split('->', 1)
+            lemma = normalize_word(lemma_part.split('/', 1)[0])
+            if not lemma:
+                continue
+            add_form(lemma, lemma)
+            for form in forms_part.split(','):
+                normalized = normalize_word(form.split('/', 1)[0])
+                if normalized:
+                    add_form(normalized, lemma)
+    return index
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description='Build dictionary bundle from ECDICT CSV.')
     parser.add_argument(
@@ -47,6 +81,17 @@ def parse_args():
         type=Path,
         default=DEFAULT_SRC,
         help='Path to ECDICT CSV source file (default: asserts/ECDICT-master/ecdict.csv)',
+    )
+    parser.add_argument(
+        '--lemma-src',
+        type=Path,
+        default=DEFAULT_LEMMA_SRC,
+        help='Path to lemma.en.txt used for article-form matching',
+    )
+    parser.add_argument(
+        '--lemma-only',
+        action='store_true',
+        help='Generate only the article inflection index without rebuilding entry shards',
     )
     return parser.parse_args()
 
@@ -65,6 +110,12 @@ def main():
         raise SystemExit(f'Missing source file: {src}')
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    if args.lemma_only:
+        lemma_index = build_lemma_index(args.lemma_src)
+        LEMMA_INDEX_FILE.write_text(json.dumps(lemma_index, ensure_ascii=False, separators=(',', ':')), encoding='utf-8')
+        print(f'Generated {len(lemma_index)} article inflection mappings -> {LEMMA_INDEX_FILE}')
+        return
 
     for old in OUT_DIR.glob('entries-*.jsonl'):
         old.unlink()
@@ -137,6 +188,9 @@ def main():
             empty_last.unlink()
             shard_paths.pop()
 
+    lemma_index = build_lemma_index(args.lemma_src)
+    LEMMA_INDEX_FILE.write_text(json.dumps(lemma_index, ensure_ascii=False, separators=(',', ':')), encoding='utf-8')
+
     manifest = {
         'id': 'ecdict-full',
         'name': 'ECDICT Full',
@@ -147,12 +201,14 @@ def main():
         'entryCount': entry_count,
         'entries': [{'path': path} for path in shard_paths],
         'indices': [],
+        'lemmaIndex': LEMMA_INDEX_FILE.name,
     }
 
     MANIFEST_FILE.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
 
     print(f'Generated {entry_count} entries from {src}')
     print(f'Generated {len(shard_paths)} shard files under {OUT_DIR}')
+    print(f'Generated {len(lemma_index)} article inflection mappings -> {LEMMA_INDEX_FILE}')
     print(f'Generated manifest -> {MANIFEST_FILE}')
 
 

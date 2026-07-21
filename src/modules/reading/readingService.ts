@@ -15,6 +15,8 @@ import { markPayloadChanged, markRecordDeleted } from '../sync/localSyncStore'
 import { parseJsonArray } from '../../utils/json'
 import { enqueueContextRetry } from '../review/dailyQueueService'
 import { dictionaryEntryFromWordbook, isUsableVocabularyHeadword, repairVocabularyIntegrity } from '../wordbook/vocabularyIntegrity'
+import { createDeepseekRequest } from '../ai/deepseekRequest'
+import { articleLemmaCandidates, canonicalArticleForm, loadArticleInflectionIndex } from './inflectionService'
 
 interface AiReadingResponse {
   title?: string
@@ -65,11 +67,11 @@ function cachedSessionHasValidTargets(session: ReadingSession, expectedWordIds?:
     const targets = JSON.parse(session.targetsJson) as ReadingTarget[]
     const segments = JSON.parse(session.segmentsJson) as ReadingSegment[]
     const visible = [session.title, session.translation, ...segments.map((segment) => segment.text)].join(' ')
-    const targetIds = new Set(targets.map((target) => target.wordId))
+    const coveredWordIds = new Set(segments.flatMap((segment) => segment.wordId ? [segment.wordId] : []))
     return !/[0-9a-f]{8}-[0-9a-f-]{27,}/i.test(visible)
       && targets.length > 0
       && targets.every((target) => isUsableHeadword(target.headword) && target.headword !== target.wordId)
-      && (!expectedWordIds || (targetIds.size === expectedWordIds.length && expectedWordIds.every((wordId) => targetIds.has(wordId))))
+      && (!expectedWordIds || expectedWordIds.every((wordId) => coveredWordIds.has(wordId)))
   } catch { return false }
 }
 
@@ -137,6 +139,23 @@ function parseReadingBatches(raw: string | undefined): string[][] {
   try { return normalizeReadingBatches(JSON.parse(raw)) } catch { return [] }
 }
 
+function roundReadingBatches(raw: string | undefined): string[][] {
+  if (!raw) return []
+  try {
+    const rounds = JSON.parse(raw) as Array<{ wordIds?: unknown }>
+    if (!Array.isArray(rounds)) return []
+    const words = rounds.map((round) => Array.isArray(round.wordIds)
+      ? round.wordIds.filter((wordId): wordId is string => typeof wordId === 'string')
+      : [])
+    const batches: string[][] = []
+    for (let index = 0; index < words.length; index += 2) {
+      const pair = [...new Set([...words[index]!, ...(words[index + 1] ?? [])])]
+      if (pair.length) batches.push(pair.slice(0, MAX_READING_BATCH_SIZE))
+    }
+    return batches
+  } catch { return [] }
+}
+
 export async function persistReadingBatches(
   sessionId: string,
   batches: string[][],
@@ -166,7 +185,10 @@ export async function getOrCreateReadingBatches(
 ): Promise<string[][]> {
   const session = await db.dailyLearningSessions.get(sessionId)
   const cached = session?.articleStatus !== 'stale' ? parseReadingBatches(session?.readingBatchesJson) : []
+  const roundBatches = roundReadingBatches(session?.roundsJson)
+  if (roundBatches.length > cached.length) return persistReadingBatches(sessionId, roundBatches, session?.activeReadingBatchIndex)
   if (cached.length) return cached
+  if (roundBatches.length) return persistReadingBatches(sessionId, roundBatches, session?.activeReadingBatchIndex)
   return persistReadingBatches(sessionId, await buildReadingTargetBatches(dayKey, seed), session?.activeReadingBatchIndex)
 }
 
@@ -282,19 +304,18 @@ async function repairTargetChoices(
     const response = await fetch(settings.deepseekBaseUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${settings.deepseekApiKey.trim()}` },
-      body: JSON.stringify({
+      body: JSON.stringify(createDeepseekRequest({
         model: settings.deepseekModel,
         stream: false,
-        response_format: { type: 'json_object' },
-        max_tokens: 1800,
-        temperature: 0.4,
+        responseFormat: true,
+        maxTokens: 1800,
         messages: [{ role: 'user', content: `Repair only the multiple-choice options for these vocabulary targets.
 PASSAGE: ${passage}
 TARGETS: ${JSON.stringify(targets)}
 ALLOWED STUDY SENSES: ${JSON.stringify(rows)}
 Return JSON {"targets":[{"wordId":"...","choices":["three concise Simplified Chinese choices including the exact contextualMeaning"],"explanation":"..."}]}.
 All three choices must share the target's part of speech but belong to clearly different semantic categories. Compare every pair: do not use synonyms, near-synonyms, paraphrases, containment, shared core meaning stems, or degree-only differences. Preserve contextualMeaning and sourceSense.` }],
-      }),
+      })),
       signal: controller.signal,
     })
     if (!response.ok) throw new Error('AI 选项修复失败')
@@ -314,7 +335,7 @@ function buildPassagePrompt(
   topic: string,
 ): string {
   return `Write one coherent English reading passage at CEFR ${level}${topic ? ` about ${topic}` : ''}.
-Use every target headword exactly as written and naturally in context.
+Use every target headword naturally in context. You may use a common inflected form when grammar requires it, but do not replace it with a derivationally different word.
 For each target, choose exactly one meaning from its allowedSenses and do not use any meaning outside that list:
 ${JSON.stringify(rows.map((row) => ({ headword: row.headword, allowedSenses: row.senses })))}
 Return exactly one JSON object: {"article":"2-5 short English paragraphs"}. The article value must contain only the passage正文. Do not include a title, markdown, target IDs, vocabulary lists, explanations, translations, or notes. Avoid current-event claims.`
@@ -399,8 +420,8 @@ function extractStreamingArticle(rawJson: string): string {
   return output
 }
 
-function passageIncludesHeadword(passage: string, headword: string): boolean {
-  return targetMatchPosition(passage, headword) >= 0
+function passageIncludesHeadword(passage: string, headword: string, inflections: Record<string, string> = {}): boolean {
+  return targetMatchPosition(passage, headword, inflections) >= 0
 }
 
 function normalizedMatchText(value: string): string {
@@ -411,13 +432,13 @@ function escapePattern(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')
 }
 
-function targetMatchPosition(passage: string, headword: string): number {
-  return findTargetMatches(passage, [{ wordId: '', headword, contextualMeaning: '', choices: [], explanation: '' }])[0]?.position ?? -1
+function targetMatchPosition(passage: string, headword: string, inflections: Record<string, string> = {}): number {
+  return findTargetMatches(passage, [{ wordId: '', headword, contextualMeaning: '', choices: [], explanation: '' }], inflections)[0]?.position ?? -1
 }
 
-type TargetTextMatch = { position: number; length: number; target: ReadingTarget }
+type TargetTextMatch = { position: number; length: number; text: string; target: ReadingTarget }
 
-function findTargetMatches(passage: string, targets: ReadingTarget[]): TargetTextMatch[] {
+function findTargetMatches(passage: string, targets: ReadingTarget[], inflections: Record<string, string> = {}): TargetTextMatch[] {
   const ordered = [...targets].sort((left, right) => right.headword.length - left.headword.length)
   const pattern = ordered.map((target) => escapePattern(normalizedMatchText(target.headword))).join('|')
   if (!pattern) return []
@@ -428,14 +449,25 @@ function findTargetMatches(passage: string, targets: ReadingTarget[]): TargetTex
     const matchedWord = match[2] ?? ''
     const target = ordered.find((row) => normalizedMatchText(row.headword) === matchedWord.toLowerCase())
     if (!target) continue
-    matches.push({ position: (match.index ?? 0) + (match[1]?.length ?? 0), length: matchedWord.length, target })
+    matches.push({ position: (match.index ?? 0) + (match[1]?.length ?? 0), length: matchedWord.length, text: passage.slice((match.index ?? 0) + (match[1]?.length ?? 0), (match.index ?? 0) + (match[1]?.length ?? 0) + matchedWord.length), target })
   }
+  if (!Object.keys(inflections).length) return matches
+  const occupied = new Set(matches.map((match) => `${match.position}:${match.length}`))
+  const targetByLemma = new Map(targets.map((target) => [canonicalArticleForm(target.headword, inflections), target]))
+  for (const match of passage.matchAll(/[A-Za-z]+(?:['-][A-Za-z]+)*/g)) {
+    const text = match[0]
+    const position = match.index ?? 0
+    const target = articleLemmaCandidates(text, inflections).map((lemma) => targetByLemma.get(lemma)).find(Boolean)
+    if (!target || occupied.has(`${position}:${text.length}`)) continue
+    matches.push({ position, length: text.length, text, target })
+  }
+  matches.sort((left, right) => left.position - right.position || right.length - left.length)
   return matches
 }
 
-export function sortTargetsByPassageOrder(targets: ReadingTarget[], passage: string): ReadingTarget[] {
+export function sortTargetsByPassageOrder(targets: ReadingTarget[], passage: string, inflections: Record<string, string> = {}): ReadingTarget[] {
   const firstPositions = new Map<string, number>()
-  for (const match of findTargetMatches(passage, targets)) {
+  for (const match of findTargetMatches(passage, targets, inflections)) {
     if (!firstPositions.has(match.target.wordId)) firstPositions.set(match.target.wordId, match.position)
   }
   return targets
@@ -458,12 +490,12 @@ function apiError(status: number): ReadingGenerationError {
   return readingError(messages[status] ?? (status >= 500 ? 'DeepSeek 服务暂时不可用，请稍后重试' : `文章生成失败（HTTP ${status}）`), code)
 }
 
-function buildSegments(paragraphs: string[], targets: ReadingTarget[]): ReadingSegment[] {
+function buildSegments(paragraphs: string[], targets: ReadingTarget[], inflections: Record<string, string> = {}): ReadingSegment[] {
   if (!targets.length) return [{ text: paragraphs.join('\n\n') }]
   return paragraphs.flatMap((paragraph, paragraphIndex) => {
     const segments: ReadingSegment[] = []
     let cursor = 0
-    for (const match of findTargetMatches(paragraph, targets)) {
+    for (const match of findTargetMatches(paragraph, targets, inflections)) {
       if (match.position > cursor) segments.push({ text: paragraph.slice(cursor, match.position) })
       segments.push({ text: paragraph.slice(match.position, match.position + match.length), wordId: match.target.wordId })
       cursor = match.position + match.length
@@ -513,14 +545,13 @@ async function requestPassage(
     response = await fetch(settings.deepseekBaseUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${settings.deepseekApiKey.trim()}` },
-      body: JSON.stringify({
+      body: JSON.stringify(createDeepseekRequest({
         model: settings.deepseekModel,
         messages: [{ role: 'user', content: prompt }],
         stream: true,
-        response_format: { type: 'json_object' },
-        max_tokens: 2400,
-        temperature: 0.5,
-      }),
+        responseFormat: true,
+        maxTokens: 2400,
+      })),
       signal: controller.signal,
     })
   } catch (error) {
@@ -593,14 +624,13 @@ async function requestDetails(
     const response = await fetch(settings.deepseekBaseUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${settings.deepseekApiKey.trim()}` },
-      body: JSON.stringify({
+      body: JSON.stringify(createDeepseekRequest({
         model: settings.deepseekModel,
         messages: [{ role: 'user', content: prompt }],
         stream: false,
-        response_format: { type: 'json_object' },
-        max_tokens: 4200,
-        temperature: 0.35,
-      }),
+        responseFormat: true,
+        maxTokens: 4200,
+      })),
       signal: controller.signal,
     })
     if (!response.ok) throw apiError(response.status)
@@ -639,9 +669,10 @@ async function generateReadingSessionImpl(options: {
 }): Promise<ReadingSession> {
   const sessionId = `reading:${options.dayKey}:${options.seed}:${options.batchIndex}`
   const existing = await db.readingSessions.get(sessionId)
+  const inflections = await loadArticleInflectionIndex()
   if ((existing?.status === 'ready' || existing?.status === 'completed') && !options.force && cachedSessionHasValidTargets(existing, options.wordIds)) {
     const cachedTargets = JSON.parse(existing.targetsJson) as ReadingTarget[]
-    const orderedTargets = sortTargetsByPassageOrder(cachedTargets, cachedPassage(existing))
+    const orderedTargets = sortTargetsByPassageOrder(cachedTargets, cachedPassage(existing), inflections)
     const orderedWordIds = orderedTargets.map((target) => target.wordId)
     if (orderedWordIds.some((wordId, index) => wordId !== existing.targetWordIds[index])) {
       const normalized = {
@@ -684,7 +715,7 @@ async function generateReadingSessionImpl(options: {
     existing?.status === 'enriching'
       || existing?.status === 'ready'
       || existing?.status === 'completed'
-      || (existing?.status === 'failed' && existingPassage && promptRows.every((row) => passageIncludesHeadword(existingPassage, row.headword)))
+      || (existing?.status === 'failed' && existingPassage && promptRows.every((row) => passageIncludesHeadword(existingPassage, row.headword, inflections)))
       ? existingPassage
       : ''
   )
@@ -752,7 +783,7 @@ async function generateReadingSessionImpl(options: {
             ? ` The previous draft missed these required words, so make especially sure they appear naturally: ${previousMissing.map((row) => row.headword).join(', ')}.`
             : ''
           const candidate = await requestPassage(settings, `${buildPassagePrompt(promptRows, level, session.topic)}${retryHint}`, onPassageProgress, options.signal)
-          const missing = promptRows.filter((row) => !passageIncludesHeadword(candidate, row.headword))
+          const missing = promptRows.filter((row) => !passageIncludesHeadword(candidate, row.headword, inflections))
            if (missing.length === promptRows.length) throw readingError('正文没有覆盖任何目标词', 'passage-invalid')
           const missingIds = new Set(missing.map((row) => row.wordId))
           const coveredRows = promptRows.filter((row) => !missingIds.has(row.wordId))
@@ -821,13 +852,18 @@ async function generateReadingSessionImpl(options: {
     const generated: AiReadingResponse = {
       ...details,
       targets: usableTargets,
-      segments: buildSegments(splitPassage(passage), usableTargets),
+      segments: buildSegments(splitPassage(passage), usableTargets, inflections),
     }
-    generated.targets = generated.targets?.map((target) => ({
-      ...target,
-      headword: expectedHeadwords.get(target.wordId) ?? target.headword,
-      choices: [...target.choices].sort((left, right) => hash(`${sessionId}:${target.wordId}:${left}`) - hash(`${sessionId}:${target.wordId}:${right}`)),
-    }))
+    generated.targets = generated.targets?.map((target) => {
+      const headword = expectedHeadwords.get(target.wordId) ?? target.headword
+      const surfaceForm = findTargetMatches(passage, [{ ...target, headword }], inflections)[0]?.text
+      return {
+        ...target,
+        headword,
+        surfaceForm: surfaceForm && normalizedMatchText(surfaceForm) !== normalizedMatchText(headword) ? surfaceForm : undefined,
+        choices: [...target.choices].sort((left, right) => hash(`${sessionId}:${target.wordId}:${left}`) - hash(`${sessionId}:${target.wordId}:${right}`)),
+      }
+    })
     const invalidTargets = generated.targets?.filter((target) => !hasDistinctChoices(target)) ?? []
     if (invalidTargets.length) {
       try {
@@ -856,16 +892,20 @@ async function generateReadingSessionImpl(options: {
     generated.translation = generated.translation || fallback.translation
     const completedTargets = passageRows.map((row) => validTargets.get(row.wordId)
       ?? fallback.targets.find((target) => target.wordId === row.wordId)!).filter(Boolean)
-    generated.targets = sortTargetsByPassageOrder(completedTargets, passage)
+    const coveredTargets = sortTargetsByPassageOrder(completedTargets, passage, inflections)
+    // A two-round passage can cover ten words, but answering ten consecutive
+    // multiple-choice questions turns reading into another card queue. Keep
+    // every covered form highlighted and cap the interactive checkpoint at 5.
+    generated.targets = coveredTargets.slice(0, 5)
     const generatedWordIds = generated.targets.map((target) => target.wordId)
-    generated.segments = buildSegments(splitPassage(passage), generated.targets ?? [])
+    generated.segments = buildSegments(splitPassage(passage), coveredTargets, inflections)
     validateResponse(generated, passageRows.filter((row) => generatedWordIds.includes(row.wordId)))
-    const generatedSet = new Set(generatedWordIds)
+    const coveredSet = new Set(coveredTargets.map((target) => target.wordId))
     session = {
       ...session,
       status: 'ready',
       targetWordIds: generatedWordIds,
-      omittedTargetWordIds: validWordIds.filter((wordId) => !generatedSet.has(wordId)),
+      omittedTargetWordIds: validWordIds.filter((wordId) => !coveredSet.has(wordId)),
       successfulGenerationCount: (session.successfulGenerationCount ?? 0) + 1,
       title: generated.title,
       segmentsJson: JSON.stringify(generated.segments),
@@ -959,9 +999,11 @@ export async function cancelReadingGeneration(sessionId: string): Promise<void> 
 export async function preGenerateDailyArticle(dayKey: string): Promise<ReadingSession | undefined> {
   const settings = await loadSettings()
   if (!settings.deepseekApiKey.trim()) return undefined
-  const firstBatch = (await getOrCreateReadingBatches(`daily:${dayKey}`, dayKey))[0]
-  if (!firstBatch?.length) return undefined
-  return generateReadingSession({ dayKey, batchIndex: 0, seed: 0, wordIds: firstBatch, level: settings.articleLevel })
+  const batches = await getOrCreateReadingBatches(`daily:${dayKey}`, dayKey)
+  const batchIndex = batches.length - 1
+  const batch = batches[batchIndex]
+  if (!batch?.length) return undefined
+  return generateReadingSession({ dayKey, batchIndex, seed: 0, wordIds: batch, level: settings.articleLevel })
 }
 
 export async function recordContextAttempt(

@@ -184,6 +184,10 @@ export interface DailyLearningSession {
   dismissedSourceRevision?: string
   baseWordCount?: number
   extensionBatchCount?: number
+  /** The active five-word learning round. Older sessions are upgraded lazily. */
+  activeRoundIndex?: number
+  /** Persisted round membership keeps in-progress cards stable while later rounds stay dynamic. */
+  roundsJson?: string
   articleGenerationWordCount?: number
   /** Stable article batch plan for resuming reading after navigation or reload. */
   readingBatchesJson?: string
@@ -201,6 +205,8 @@ export interface DailyQueueItem {
   kind: DailyQueueKind
   wordId?: string
   reason: DailyQueueReason
+  /** Identifies the frozen learning round that created this card. */
+  roundIndex?: number
   position: number
   status: 'pending' | 'active' | 'completed' | 'skipped'
   attemptNo: number
@@ -237,6 +243,8 @@ export interface DailyQueueAttempt {
 export interface ReadingTarget {
   wordId: string
   headword: string
+  /** The natural form that appeared in the generated passage, if it differs from the lemma. */
+  surfaceForm?: string
   /** Exact source sense selected from the current study-card definitions. */
   sourceSense?: string
   contextualMeaning: string

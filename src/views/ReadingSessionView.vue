@@ -474,7 +474,7 @@ onBeforeUnmount(() => {
         <section v-if="stage === 1 && currentTarget" class="quiz-list quiz-list-single" aria-live="polite">
           <div class="quiz-progress-row"><span>第 {{ quizCursor + 1 }} / {{ parsed.targets.length }} 题</span><progress :value="quizCursor + (currentTargetResult ? 1 : 0)" :max="parsed.targets.length" /></div>
           <article :key="currentTarget.wordId" class="entry-card context-question-card">
-            <h2>{{ currentTarget.headword }}</h2>
+            <h2>{{ currentTarget.headword }}<small v-if="currentTarget.surfaceForm">（文中：{{ currentTarget.surfaceForm }}）</small></h2>
             <div v-if="!currentTargetResult" class="context-choice-list">
               <button v-for="choice in currentTarget.choices" :key="choice" class="btn" type="button" @click="answer(currentTarget, choice)">{{ choice }}</button>
               <button class="btn btn-quiet" type="button" @click="answer(currentTarget)">不确定</button>
@@ -489,7 +489,7 @@ onBeforeUnmount(() => {
           <section v-if="currentResultTarget" class="quiz-result-carousel" aria-live="polite">
             <div class="quiz-progress-row"><strong>答题结果</strong><span>{{ resultCursor + 1 }} / {{ parsed.targets.length }}</span></div>
             <article class="entry-card context-result-card">
-              <h2>{{ currentResultTarget.headword }}</h2>
+              <h2>{{ currentResultTarget.headword }}<small v-if="currentResultTarget.surfaceForm">（文中：{{ currentResultTarget.surfaceForm }}）</small></h2>
               <div :class="['context-answer', results[currentResultTarget.wordId] === 'correct' ? 'correct' : 'incorrect']"><strong>{{ results[currentResultTarget.wordId] === 'correct' ? '回答正确' : results[currentResultTarget.wordId] === 'uncertain' ? '不确定' : '回答错误' }}</strong><p>答案：{{ currentResultTarget.contextualMeaning }}</p><p>{{ currentResultTarget.explanation }}</p></div>
             </article>
             <div class="quiz-result-nav"><button class="btn" type="button" :disabled="resultCursor === 0" @click="moveResultCursor(-1)">上一题</button><button class="btn" type="button" :disabled="resultCursor + 1 >= parsed.targets.length" @click="moveResultCursor(1)">下一题</button></div>

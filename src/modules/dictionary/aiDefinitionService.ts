@@ -12,6 +12,7 @@ import {
 } from '../sync/localSyncStore'
 import { buildPrefixTokens, normalizeWord, toLemmaCandidates } from './search'
 import { snapshotDictionaryEntry } from '../wordbook/vocabularyIntegrity'
+import { createDeepseekRequest } from '../ai/deepseekRequest'
 
 const AI_PROMPT_VERSION = 'v2-context-aware-bilingual'
 const AI_PROVIDER: AiOverrideRecord['provider'] = 'deepseek'
@@ -107,6 +108,9 @@ function normalizeAiDraft(raw: AiStructuredResponse, fallbackWord: string): AiDi
   if (senses.length === 0) {
     throw new Error('AI response missing senses')
   }
+  if (examples.length < 2) {
+    throw new Error('AI response missing examples')
+  }
 
   const refusalPattern = /(?:no such (?:word|term)|not (?:a |an )?(?:valid|recognized|real) (?:word|term)|does not exist|cannot (?:define|find)|没有(?:这个|该)?(?:单词|词语|词条)|不存在(?:这个|该)?(?:单词|词语|词条)|无法(?:识别|定义))/i
   if ([headword, ...senses, ...notes].some((value) => refusalPattern.test(value))) {
@@ -138,9 +142,10 @@ async function callDeepseek(
       'Content-Type': 'application/json',
       Authorization: `Bearer ${apiKey}`,
     },
-    body: JSON.stringify({
+    body: JSON.stringify(createDeepseekRequest({
       model,
-      temperature: 0.2,
+      responseFormat: true,
+      maxTokens: 3000,
       messages: [
         {
           role: 'system',
@@ -151,7 +156,7 @@ async function callDeepseek(
           content: buildDictionaryPrompt(word, context, retry),
         },
       ],
-    }),
+    })),
   })
 
   if (!response.ok) {
@@ -243,7 +248,7 @@ export async function fetchAiDictionaryDraft(options: {
     return await callDeepseek(lexicalItem, options.apiKey.trim(), options.baseUrl.trim(), options.model.trim(), options.context)
   } catch (error) {
     const retryable = error instanceof SyntaxError
-      || (error instanceof Error && /AI response|rejected|different headword|missing senses/i.test(error.message))
+      || (error instanceof Error && /AI response|rejected|different headword|missing senses|missing examples/i.test(error.message))
     if (!retryable) throw error
     return callDeepseek(lexicalItem, options.apiKey.trim(), options.baseUrl.trim(), options.model.trim(), options.context, true)
   }

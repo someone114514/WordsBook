@@ -42,6 +42,7 @@ const deepseekModel = ref('')
 const aiDefinitionBusy = ref(false)
 const aiDefinitionMessage = ref('')
 const aiDefinitionMessageTone = ref<'success' | 'error'>('success')
+const preloadingRound = ref<number | null>(null)
 
 const selectedListIds = computed(() => typeof route.query.lists === 'string'
   ? route.query.lists.split(',').filter(Boolean)
@@ -57,6 +58,7 @@ const queueLabel = computed(() => {
   const pending = snapshot.value?.items.filter((item) => item.kind === 'card' && item.status === 'pending').length ?? 0
   return `队列剩余 ${pending}`
 })
+const roundLabel = computed(() => `第 ${snapshot.value?.session.activeRoundIndex ?? 1} 组 · 每组最多 5 词`)
 const tomorrowPriorityCount = computed(() => snapshot.value?.items.filter((item) => item.tomorrowPriority).length ?? 0)
 const reasonLabel = computed(() => ({
   initial: '先回想释义，再查看答案',
@@ -116,6 +118,7 @@ async function initialize() {
     deepseekBaseUrl.value = settings.deepseekBaseUrl
     deepseekModel.value = settings.deepseekModel
     snapshot.value = await getOrCreateDailySession(selectedListIds.value)
+    void prewarmRoundContent()
     await loadCurrentCard()
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : String(reason)
@@ -130,6 +133,19 @@ watch(() => snapshot.value?.session.phase, async (phase) => {
   }
 })
 
+async function prewarmRoundContent() {
+  const currentRound = snapshot.value?.session.activeRoundIndex ?? 0
+  if (!deepseekApiKey.value.trim() || currentRound < 2 || currentRound % 2 !== 0 || preloadingRound.value === currentRound) return
+  preloadingRound.value = currentRound
+  try {
+    await preGenerateDailyArticle(snapshot.value!.session.dayKey)
+  } catch {
+    // Preloading is intentionally best-effort; the learning flow has a local fallback.
+  } finally {
+    preloadingRound.value = null
+  }
+}
+
 onMounted(() => void initialize())
 
 async function onGrade(rating: ReviewRating) {
@@ -140,6 +156,7 @@ async function onGrade(rating: ReviewRating) {
   stopActivePronunciation()
   try {
     snapshot.value = await answerDailyCard(snapshot.value.session.sessionId, item.itemId, rating)
+    void prewarmRoundContent()
     const attemptedWords = new Set(snapshot.value.attempts.map((attempt) => attempt.wordId))
     if (snapshot.value.session.articleStatus === 'waiting' && snapshot.value.session.initialWordIds.every((wordId) => attemptedWords.has(wordId))) {
       await setArticleStatus(snapshot.value.session.sessionId, 'generating')
@@ -264,7 +281,7 @@ async function enterArticle() {
   <section class="immersive-stage daily-queue-stage">
     <header class="immersive-header">
       <button class="btn" type="button" @click="router.push('/review')">退出</button>
-      <div class="immersive-progress"><span>今日学习</span><strong>{{ queueLabel }}</strong></div>
+      <div class="immersive-progress"><span>今日学习 · {{ roundLabel }}</span><strong>{{ queueLabel }}</strong></div>
       <span class="progress-chip">{{ progress }}%</span>
     </header>
     <div class="immersive-progress-bar"><span :style="{ width: `${progress}%` }" /></div>
@@ -284,6 +301,7 @@ async function enterArticle() {
           <span class="review-memory-confidence">短期记忆 {{ todayMastery }}%</span>
           <button class="review-delete-mini" :disabled="actionBusy" type="button" aria-haspopup="dialog" @click="showWordMenu = true">移除</button>
         </div>
+        <p class="review-round-note" aria-live="polite">当前组已锁定；现在查的新词会优先进入下一组。</p>
         <div class="review-card-content review-card-content-center">
           <div class="review-word-stack">
             <h1 class="review-word">{{ card.entry.headword }}</h1>
@@ -293,6 +311,10 @@ async function enterArticle() {
           <aside v-if="revealMeaning" class="review-answer-sheet review-answer-inline" aria-live="polite">
             <p class="muted">{{ card.entry.posList.join(' / ') || '释义' }}</p>
             <ul><li v-for="sense in parseJsonArray(card.entry.sensesJson)" :key="sense">{{ sense }}</li></ul>
+            <details v-if="parseJsonArray(card.entry.examplesJson).length" class="review-examples">
+              <summary>例句</summary>
+              <p v-for="example in parseJsonArray(card.entry.examplesJson)" :key="example" class="example">{{ example }}</p>
+            </details>
             <p v-if="card.note" class="example">{{ card.note }}</p>
             <div class="review-ai-definition">
               <button

@@ -188,7 +188,7 @@ describe('daily learning queue', () => {
     expect(applied.totalCards).toBe(1)
   })
 
-  it('fills only a started session new-word shortfall from a later import', async () => {
+  it('fills the next dynamic round from a later import without disrupting the current round', async () => {
     const now = '2026-07-13T08:00:00.000Z'
     await db.studyLists.put({ listId: 'list', name: 'List', description: '', studyEnabled: 1, createdAt: now, updatedAt: now })
     await db.settings.bulkPut([{ key: 'dailyNewLimit', value: 3 }, { key: 'dailyReviewLimit', value: 20 }])
@@ -207,10 +207,13 @@ describe('daily learning queue', () => {
     }
     await markStudyDataChanged()
     const changes = await previewDailyQueueChanges(snapshot.session.sessionId, new Date('2026-07-13T08:03:00.000Z'))
-    expect(changes.addedWordIds).toHaveLength(2)
+    expect(changes.addedWordIds).toEqual([])
     expect((await db.studyListItems.where('learningEnabled').equals(1).count())).toBe(1)
-    const applied = await applyDailyQueueChanges(snapshot.session.sessionId, new Date('2026-07-13T08:03:00.000Z'))
-    expect(applied.totalCards).toBe(3)
+    let advanced = await answerDailyCard(snapshot.session.sessionId, snapshot.current!.itemId, 'good', new Date('2026-07-13T08:03:00.000Z'))
+    advanced = await answerDailyCard(snapshot.session.sessionId, advanced.current!.itemId, 'good', new Date('2026-07-13T08:04:00.000Z'))
+    expect(advanced.totalCards).toBe(3)
+    expect(advanced.session.activeRoundIndex).toBe(2)
+    expect(advanced.items.filter((item) => item.roundIndex === 2 && item.status === 'pending')).toHaveLength(2)
     expect((await db.studyListItems.where('learningEnabled').equals(1).count())).toBe(3)
   })
 })

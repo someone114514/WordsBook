@@ -337,6 +337,60 @@ class WordsBookDB extends Dexie {
           })))
         }
       })
+
+    this.version(8)
+      .stores({
+        dictionaryMeta: '&id, version, installedAt',
+        dictionaryEntries: '&entryId, headwordLower',
+        dictionaryIndex: '&token',
+        wordbook: '&wordId, &entryId, headwordLower, addedAt, archived, integrityStatus',
+        reviewState: '&wordId, nextReviewAt, cycle, totalReviews, suspendedAt',
+        reviewLogs: '++id, wordId, reviewedAt, rating, source, [wordId+reviewedAt]',
+        settings: '&key',
+        aiOverrides: '&entryId, mode, createdAt',
+        aiOverrideHistory: '++id, entryId, createdAt',
+        syncMeta: '&key',
+        syncRecords: '&key, entity, recordId, updatedAt, deletedAt',
+        syncTombstones: '&key, entity, recordId, deletedAt',
+        studyLists: '&listId, studyEnabled, systemType, updatedAt',
+        studyListItems: '&membershipId, listId, wordId, learningEnabled, [listId+wordId]',
+        readingSessions: '&sessionId, dayKey, status, updatedAt',
+        contextAttempts: '&attemptId, sessionId, wordId, answeredAt',
+        localSecrets: '&key',
+        dailyLearningSessions: '&sessionId, dayKey, status, updatedAt',
+        dailyQueueItems: '&itemId, sessionId, status, position, wordId, [sessionId+status+position]',
+        dailyQueueAttempts: '&attemptId, sessionId, wordId, answeredAt, [sessionId+wordId]',
+      })
+      .upgrade(async (transaction) => {
+        const sessions = transaction.table<DailyLearningSession, string>('dailyLearningSessions')
+        const queue = transaction.table<DailyQueueItem, string>('dailyQueueItems')
+        const allSessions = await sessions.toArray()
+        for (const session of allSessions) {
+          const items = (await queue.where('sessionId').equals(session.sessionId).toArray())
+            .sort((left, right) => left.position - right.position)
+          const wordIds = [...new Set(items.filter((item) => item.kind === 'card' && item.wordId).map((item) => item.wordId!))]
+          const chunks = Array.from({ length: Math.ceil(wordIds.length / 5) }, (_, index) => wordIds.slice(index * 5, index * 5 + 5))
+          const pendingWordIds = new Set(items
+            .filter((item) => item.kind === 'card' && item.wordId && (item.status === 'pending' || item.status === 'active'))
+            .map((item) => item.wordId!))
+          const activeRoundIndex = Math.max(1, chunks.findIndex((chunk) => chunk.some((wordId) => pendingWordIds.has(wordId))) + 1)
+          const roundByWordId = new Map(chunks.flatMap((chunk, index) => chunk.map((wordId) => [wordId, index + 1] as const)))
+          const rounds = chunks.map((wordIds, index) => ({
+            index: index + 1,
+            wordIds,
+            status: index + 1 < activeRoundIndex ? 'completed' : 'active',
+          }))
+          await sessions.put({
+            ...session,
+            activeRoundIndex: session.activeRoundIndex ?? activeRoundIndex,
+            roundsJson: session.roundsJson ?? JSON.stringify(rounds),
+          })
+          if (items.length) await queue.bulkPut(items.map((item) => ({
+            ...item,
+            roundIndex: item.roundIndex ?? (item.wordId ? roundByWordId.get(item.wordId) : undefined) ?? 1,
+          })))
+        }
+      })
   }
 }
 

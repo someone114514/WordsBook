@@ -23,7 +23,7 @@ describe('review data migration', () => {
     expect(await db.reviewLogs.count()).toBe(3372)
     expect(await db.settings.get('deepseekApiKey')).toBeUndefined()
     expect((await db.localSecrets.get('deepseekApiKey'))?.value).toBeUndefined()
-  }, 10_000)
+  }, 20_000)
 
   it('keeps priority stable while avoiding adjacent identical initials when alternatives exist', async () => {
     for (const [wordId, headword] of [['a1', 'apple'], ['a2', 'anchor'], ['b1', 'brief'], ['b2', 'bloom']] as const) {

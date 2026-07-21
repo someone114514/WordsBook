@@ -1663,6 +1663,10 @@ input[type='number']:focus {
 .review-answer-sheet ul { margin: 0; padding-left: 1.25rem; }
 .review-answer-sheet li + li { margin-top: .35rem; }
 .review-answer-inline { position: static; z-index: auto; right: auto; bottom: auto; left: auto; width: min(30rem, 100%); max-height: min(30vh, 15rem); margin: .85rem 0 0; padding: .85rem 1rem; background: rgba(248,251,255,.9); box-shadow: none; text-align: left; }
+.review-examples { margin-top: .7rem; border-top: 1px solid var(--border); padding-top: .55rem; }
+.review-examples summary { cursor: pointer; color: var(--primary); font-weight: 700; }
+.review-examples .example { margin: .55rem 0 0; line-height: 1.5; }
+.review-round-note { width: min(30rem, 100%); margin: .75rem auto 0; color: var(--muted); font-size: .78rem; text-align: center; }
 .review-ai-definition { display: grid; gap: .35rem; margin-top: .75rem; padding-top: .65rem; border-top: 1px solid var(--border); }
 .review-ai-definition-btn { justify-self: start; min-height: 2.35rem; padding-inline: .7rem; font-size: .84rem; }
 .review-ai-definition-hint, .review-ai-definition-message { margin: 0; font-size: .78rem; }

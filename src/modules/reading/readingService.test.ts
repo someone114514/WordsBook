@@ -85,6 +85,8 @@ describe('reading target selection and context feedback', () => {
     expect(String(fetchMock.mock.calls[0]?.[1]?.body)).toContain('allowedSenses')
     expect(String(fetchMock.mock.calls[0]?.[1]?.body)).toContain('有韧性的')
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).response_format).toEqual({ type: 'json_object' })
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({ thinking: { type: 'enabled' }, reasoning_effort: 'high' })
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).temperature).toBeUndefined()
     expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body)).response_format).toEqual({ type: 'json_object' })
     expect((await db.readingSessions.get(session.sessionId))?.title).toBe('A Test')
   })
@@ -184,7 +186,17 @@ describe('reading target selection and context feedback', () => {
     await db.readingSessions.put({
       sessionId: 'reading:2026-07-13:0:4', dayKey: '2026-07-13', batchIndex: 4, selectionSeed: 0, level: 'B2', topic: '',
       targetWordIds: ['w4', 'w1', 'w5', 'w3'], status: 'ready', title: 'Water',
-      segmentsJson: JSON.stringify([{ text: 'A resilient and vivid, brief account covered scarce water.' }]),
+      segmentsJson: JSON.stringify([
+        { text: 'A ' },
+        { text: 'resilient', wordId: 'w1' },
+        { text: ' and ' },
+        { text: 'vivid', wordId: 'w3' },
+        { text: ', ' },
+        { text: 'brief', wordId: 'w5' },
+        { text: ' account covered ' },
+        { text: 'scarce', wordId: 'w4' },
+        { text: ' water.' },
+      ]),
       targetsJson: JSON.stringify(targets), translation: '译文', createdAt: now, updatedAt: now,
     })
 
@@ -209,6 +221,16 @@ describe('reading target selection and context feedback', () => {
     expect(paragraphs).toHaveLength(2)
     expect(paragraphs[0]?.map((segment) => segment.text).join('')).toBe('First target paragraph.')
     expect(paragraphs[1]?.map((segment) => segment.text).join('')).toBe('Second paragraph.')
+  })
+
+  it('orders a natural article inflection under its target lemma', () => {
+    const targets: ReadingTarget[] = [
+      { wordId: 'study', headword: 'study', contextualMeaning: '学习', choices: ['学习', '休息', '旅行'], explanation: '' },
+      { wordId: 'run', headword: 'run', contextualMeaning: '跑', choices: ['跑', '读', '写'], explanation: '' },
+      { wordId: 'good', headword: 'good', contextualMeaning: '好的', choices: ['好的', '慢的', '远的'], explanation: '' },
+    ]
+    const passage = 'She studies every day, then ran home feeling better.'
+    expect(sortTargetsByPassageOrder(targets, passage, { studies: 'study', ran: 'run', better: 'well|good|better' }).map((target) => target.wordId)).toEqual(['study', 'run', 'good'])
   })
 
   it('returns a structured error when article generation has no API key', async () => {

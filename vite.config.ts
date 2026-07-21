@@ -12,7 +12,6 @@ export default defineConfig(() => {
       ? `/${repoName}/`
       : '/'
   const base = normalizedBase.endsWith('/') ? normalizedBase : `${normalizedBase}/`
-  const dictionaryPrefix = `${base.replace(/\/$/, '')}/dictionaries/`
 
   return {
     base,
@@ -50,6 +49,9 @@ export default defineConfig(() => {
           cleanupOutdatedCaches: true,
           clientsClaim: true,
           skipWaiting: true,
+          // The offline ECDICT surface-form index is ~4.3 MiB and is required
+          // to recognize natural inflections in generated reading passages.
+          maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
           globPatterns: ['**/*.{js,css,html,svg,png,webp,json}'],
           runtimeCaching: [
             {
@@ -62,7 +64,9 @@ export default defineConfig(() => {
               },
             },
             {
-              urlPattern: ({ url }) => url.pathname.startsWith(dictionaryPrefix),
+              // Workbox serializes this predicate into the service worker, so
+              // it must not close over a config-time variable such as `base`.
+              urlPattern: ({ url }) => /\/dictionaries\//.test(url.pathname),
               handler: 'StaleWhileRevalidate',
               options: {
                 cacheName: 'dictionary-assets',
