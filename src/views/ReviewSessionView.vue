@@ -39,6 +39,7 @@ const ttsEngine = ref<'auto' | 'browser' | 'youdao' | 'google' | 'dictionaryapi'
 const deepseekApiKey = ref('')
 const deepseekBaseUrl = ref('')
 const deepseekModel = ref('')
+const articleEveryRounds = ref(2)
 const aiDefinitionBusy = ref(false)
 const aiDefinitionMessage = ref('')
 const aiDefinitionMessageTone = ref<'success' | 'error'>('success')
@@ -54,11 +55,8 @@ const progress = computed(() => {
   if (!snapshot.value?.totalCards) return 0
   return Math.min(100, Math.round(snapshot.value.completedCards / snapshot.value.totalCards * 100))
 })
-const queueLabel = computed(() => {
-  const pending = snapshot.value?.items.filter((item) => item.kind === 'card' && item.status === 'pending').length ?? 0
-  return `队列剩余 ${pending}`
-})
-const roundLabel = computed(() => `第 ${snapshot.value?.session.activeRoundIndex ?? 1} 组 · 每组最多 5 词`)
+const queueLabel = computed(() => `队列剩余 ${snapshot.value?.items.filter((item) => item.kind === 'card' && (item.status === 'pending' || item.status === 'active')).length ?? 0}`)
+const roundLabel = computed(() => `第 ${snapshot.value?.session.activeRoundIndex ?? 1} 组`)
 const tomorrowPriorityCount = computed(() => snapshot.value?.items.filter((item) => item.tomorrowPriority).length ?? 0)
 const reasonLabel = computed(() => ({
   initial: '先回想释义，再查看答案',
@@ -117,6 +115,7 @@ async function initialize() {
     deepseekApiKey.value = settings.deepseekApiKey
     deepseekBaseUrl.value = settings.deepseekBaseUrl
     deepseekModel.value = settings.deepseekModel
+    articleEveryRounds.value = settings.articleEveryRounds
     snapshot.value = await getOrCreateDailySession(selectedListIds.value)
     void prewarmRoundContent()
     await loadCurrentCard()
@@ -135,7 +134,7 @@ watch(() => snapshot.value?.session.phase, async (phase) => {
 
 async function prewarmRoundContent() {
   const currentRound = snapshot.value?.session.activeRoundIndex ?? 0
-  if (!deepseekApiKey.value.trim() || currentRound < 2 || currentRound % 2 !== 0 || preloadingRound.value === currentRound) return
+  if (!deepseekApiKey.value.trim() || currentRound < articleEveryRounds.value || currentRound % articleEveryRounds.value !== 0 || preloadingRound.value === currentRound) return
   preloadingRound.value = currentRound
   try {
     await preGenerateDailyArticle(snapshot.value!.session.dayKey)
@@ -301,7 +300,6 @@ async function enterArticle() {
           <span class="review-memory-confidence">短期记忆 {{ todayMastery }}%</span>
           <button class="review-delete-mini" :disabled="actionBusy" type="button" aria-haspopup="dialog" @click="showWordMenu = true">移除</button>
         </div>
-        <p class="review-round-note" aria-live="polite">当前组已锁定；现在查的新词会优先进入下一组。</p>
         <div class="review-card-content review-card-content-center">
           <div class="review-word-stack">
             <h1 class="review-word">{{ card.entry.headword }}</h1>
@@ -334,7 +332,7 @@ async function enterArticle() {
     </article>
 
     <section v-else-if="atQueueCheckpoint" class="immersive-empty queue-checkpoint" aria-live="polite">
-      <p class="eyebrow">本组完成</p>
+      <p class="eyebrow">今日卡片</p>
       <h1>{{ snapshot?.session.status === 'completed' ? '今天还想再学一点？' : '今日卡片已完成' }}</h1>
       <p class="muted">可以继续进入文章，也可以再加一组到同一个队列。</p>
       <p v-if="tomorrowPriorityCount" class="review-tomorrow-priority" role="status">{{ tomorrowPriorityCount }} 个单词今日尚未掌握，已安排明日优先复习。</p>

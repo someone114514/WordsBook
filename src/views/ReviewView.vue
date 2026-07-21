@@ -23,7 +23,6 @@ const error = ref('')
 const plan = ref<StudyPlan | null>(null)
 const refreshingPlan = ref(false)
 const session = ref<DailyLearningSession | null>(null)
-const remainingCards = ref(0)
 const snapshot = ref<DailyQueueSnapshot | null>(null)
 const queueChanges = ref<DailyQueueChangePreview | null>(null)
 const changeBusy = ref(false)
@@ -38,10 +37,12 @@ const total = computed(() => snapshot.value
 const sessionNewCount = computed(() => {
   const firstItems = new Map<string, boolean>()
   for (const item of snapshot.value?.items ?? []) {
+    if (item.status === 'skipped') continue
     if (item.wordId && !firstItems.has(item.wordId)) firstItems.set(item.wordId, Boolean(item.wasNew))
   }
   return [...firstItems.values()].filter(Boolean).length
 })
+const remainingCards = computed(() => snapshot.value?.items.filter((item) => item.kind === 'card' && (item.status === 'pending' || item.status === 'active')).length ?? 0)
 const visibleQueueChanges = computed(() => queueChanges.value && !queueChanges.value.dismissed
   ? queueChanges.value.addedWordIds.length + queueChanges.value.removedWordIds.length
   : 0)
@@ -84,9 +85,7 @@ async function load() {
         snapshot.value = await applyDailyQueueChanges(session.value.sessionId)
         session.value = snapshot.value.session
       }
-      remainingCards.value = loadedSnapshot.items.filter((item) => item.kind === 'card' && (item.status === 'pending' || item.status === 'active')).length
     } else {
-      remainingCards.value = 0
       snapshot.value = null
       queueChanges.value = null
     }
@@ -124,7 +123,6 @@ async function replanUnstarted() {
     const updated = await replanUnstartedDailyQueue(session.value.sessionId)
     snapshot.value = updated
     session.value = updated.session
-    remainingCards.value = updated.items.filter((item) => item.kind === 'card' && (item.status === 'pending' || item.status === 'active')).length
     queueChanges.value = await previewDailyQueueChanges(updated.session.sessionId)
     replanMessage.value = updated.attempts.length
       ? '已按最新新词额度重排未开始内容；正在学习的一组保持不变。'

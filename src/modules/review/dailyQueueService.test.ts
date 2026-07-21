@@ -15,6 +15,7 @@ import {
   nextTodayMastery,
   previewDailyQueueChanges,
   replanUnstartedDailyQueue,
+  resumeDailyCardsAfterArticle,
 } from './dailyQueueService'
 import { markStudyDataChanged } from './studyDataRevision'
 
@@ -189,7 +190,7 @@ describe('daily learning queue', () => {
     expect(applied.totalCards).toBe(1)
   })
 
-  it('fills the next dynamic round from a later import without disrupting the current round', async () => {
+  it('refreshes the remaining daily plan from a later import without disrupting completed cards', async () => {
     const now = '2026-07-13T08:00:00.000Z'
     await db.studyLists.put({ listId: 'list', name: 'List', description: '', studyEnabled: 1, createdAt: now, updatedAt: now })
     await db.settings.bulkPut([{ key: 'dailyNewLimit', value: 3 }, { key: 'dailyReviewLimit', value: 20 }])
@@ -212,6 +213,7 @@ describe('daily learning queue', () => {
     expect((await db.studyListItems.where('learningEnabled').equals(1).count())).toBe(1)
     let advanced = await answerDailyCard(snapshot.session.sessionId, snapshot.current!.itemId, 'good', new Date('2026-07-13T08:03:00.000Z'))
     advanced = await answerDailyCard(snapshot.session.sessionId, advanced.current!.itemId, 'good', new Date('2026-07-13T08:04:00.000Z'))
+    advanced = await replanUnstartedDailyQueue(snapshot.session.sessionId, new Date('2026-07-13T08:05:00.000Z'))
     expect(advanced.totalCards).toBe(3)
     expect(advanced.session.activeRoundIndex).toBe(2)
     expect(advanced.items.filter((item) => item.roundIndex === 2 && item.status === 'pending')).toHaveLength(2)
@@ -246,5 +248,26 @@ describe('daily learning queue', () => {
     expect(pending).toContain('lookup-new')
     expect(snapshot.session.initialWordIds).toEqual(pending)
     expect(snapshot.items.filter((item) => item.reason === 'initial' && item.status === 'skipped')).toHaveLength(3)
+  })
+
+  it('opens an interleaved article at the configured round boundary and resumes cards afterward', async () => {
+    await seed()
+    await db.settings.bulkPut([{ key: 'articleEveryRounds', value: 2 }, { key: 'roundWordCount', value: 1 }])
+    await db.dailyLearningSessions.update('daily:test', {
+      activeRoundIndex: 2,
+      roundsJson: JSON.stringify([
+        { index: 1, wordIds: ['done'], status: 'completed' },
+        { index: 2, wordIds: ['w1'], status: 'active' },
+      ]),
+    })
+    await db.dailyQueueItems.update('i-w1', { roundIndex: 2 })
+
+    let snapshot = await answerDailyCard('daily:test', 'i-w1', 'good', new Date('2026-07-13T08:01:00.000Z'))
+    snapshot = await answerDailyCard('daily:test', snapshot.current!.itemId, 'good', new Date('2026-07-13T08:02:00.000Z'))
+    expect(snapshot.session.phase).toBe('article')
+    expect(snapshot.session.activeReadingBatchIndex).toBe(0)
+
+    snapshot = await resumeDailyCardsAfterArticle('daily:test', new Date('2026-07-13T08:03:00.000Z'))
+    expect(snapshot.session.phase).toBe('summary')
   })
 })

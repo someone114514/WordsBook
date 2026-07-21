@@ -16,12 +16,12 @@ import { repairVocabularyIntegrity } from '../wordbook/vocabularyIntegrity'
 import { loadSettings } from '../settings/settingsService'
 
 const MAX_DAILY_ATTEMPTS = 5
-export const DAILY_ROUND_SIZE = 5
+export const DEFAULT_DAILY_ROUND_SIZE = 5
 
 type DailyRound = {
   index: number
   wordIds: string[]
-  status: 'active' | 'completed'
+  status: 'pending' | 'active' | 'completed'
   startedAt: string
   completedAt?: string
 }
@@ -210,77 +210,12 @@ function parseRounds(raw: string | undefined): DailyRound[] {
       return [{
         index,
         wordIds: row.wordIds.filter((wordId): wordId is string => typeof wordId === 'string'),
-        status: row.status === 'completed' ? 'completed' : 'active',
+        status: row.status === 'completed' || row.status === 'pending' ? row.status : 'active',
         startedAt: typeof row.startedAt === 'string' ? row.startedAt : '',
         completedAt: typeof row.completedAt === 'string' ? row.completedAt : undefined,
       }]
     })
   } catch { return [] }
-}
-
-async function nextRoundWordIds(session: DailyLearningSession, at: Date): Promise<string[]> {
-  const [items, settings] = await Promise.all([
-    db.dailyQueueItems.where('sessionId').equals(session.sessionId).toArray(),
-    loadSettings(),
-  ])
-  const started = new Map<string, boolean>()
-  for (const item of items) {
-    // Replanned legacy cards are retained for history as `skipped`; they must
-    // not consume today's new/review quota when the next live round is built.
-    if (item.kind !== 'card' || !item.wordId || item.reason !== 'initial' || item.status === 'skipped') continue
-    if (!started.has(item.wordId)) started.set(item.wordId, Boolean(item.wasNew))
-  }
-  const startedNew = [...started.values()].filter(Boolean).length
-  const startedReview = started.size - startedNew
-  const plan = await buildTodayPlan({
-    at,
-    listIds: session.selectedListIds.length ? session.selectedListIds : undefined,
-    excludeWordIds: [...started.keys()],
-    dailyNewLimit: Math.max(0, Math.floor(settings.dailyNewLimit) - startedNew),
-    dailyReviewLimit: Math.max(0, Math.floor(settings.dailyReviewLimit) - startedReview),
-    promoteImportBacklog: true,
-  })
-  return plan.queueWordIds.slice(0, DAILY_ROUND_SIZE)
-}
-
-async function startNextRound(sessionId: string, at = new Date()): Promise<boolean> {
-  const session = await db.dailyLearningSessions.get(sessionId)
-  if (!session || session.status === 'completed') return false
-  const wordIds = await nextRoundWordIds(session, at)
-  if (!wordIds.length) return false
-  const previousRoundIndex = session.activeRoundIndex ?? parseRounds(session.roundsJson).length
-  const roundIndex = previousRoundIndex + 1
-  const [states, existingItems] = await Promise.all([
-    db.reviewState.bulkGet(wordIds),
-    orderedItems(sessionId),
-  ])
-  const now = at.toISOString()
-  const items = createInitialQueueItems(session, wordIds, states, at, roundIndex).map((item, index) => ({
-    ...item,
-    itemId: `${sessionId}:round:${roundIndex}:card:${index}`,
-    position: existingItems.reduce((max, row) => Math.max(max, row.position), -1) + 1 + index,
-  }))
-  const rounds = parseRounds(session.roundsJson).map((round) => round.status === 'active'
-    ? { ...round, status: 'completed' as const, completedAt: now }
-    : round)
-  rounds.push({ index: roundIndex, wordIds, status: 'active', startedAt: now })
-  const updated: DailyLearningSession = {
-    ...session,
-    activeRoundIndex: roundIndex,
-    roundsJson: JSON.stringify(rounds),
-    initialWordIds: [...new Set([...session.initialWordIds, ...wordIds])],
-    phase: 'cards',
-    cardsCompletedAt: undefined,
-    articleStatus: session.articleStatus === 'completed' || session.articleStatus === 'skipped' ? 'waiting' : session.articleStatus,
-    updatedAt: now,
-  }
-  await db.transaction('rw', [db.dailyLearningSessions, db.dailyQueueItems], async () => {
-    await db.dailyQueueItems.bulkPut(items)
-    await db.dailyLearningSessions.put(updated)
-  })
-  for (const item of items) await markPayloadChanged('dailyQueueItems', item, now)
-  await markPayloadChanged('dailyLearningSessions', updated, now)
-  return true
 }
 
 /**
@@ -326,7 +261,7 @@ export async function replanUnstartedDailyQueue(sessionId: string, at = new Date
     dailyReviewLimit: Math.max(0, Math.floor(settings.dailyReviewLimit) - lockedReview),
     promoteImportBacklog: true,
   })
-  const refreshedWordIds = plan.queueWordIds.slice(0, DAILY_ROUND_SIZE)
+  const refreshedWordIds = plan.queueWordIds
   const now = at.toISOString()
   const skipped = items
     .filter((item) => (item.status === 'pending' || item.status === 'active') && (!item.wordId || !lockedWordIds.has(item.wordId)))
@@ -335,15 +270,25 @@ export async function replanUnstartedDailyQueue(sessionId: string, at = new Date
   let freshItems: DailyQueueItem[] = []
   let updatedRounds = parseRounds(session.roundsJson)
   let nextActiveRoundIndex = activeRoundIndex
-  if (!hasStarted && refreshedWordIds.length) {
+  if (refreshedWordIds.length) {
     const states = await db.reviewState.bulkGet(refreshedWordIds)
-    freshItems = createInitialQueueItems(session, refreshedWordIds, states, at, 1).map((item, index) => ({
+    const roundBase = hasStarted ? activeRoundIndex : 0
+    freshItems = createInitialQueueItems(session, refreshedWordIds, states, at, roundBase + 1).map((item, index) => ({
       ...item,
       itemId: `${sessionId}:refresh:${crypto.randomUUID()}:${index}`,
       position: items.reduce((max, row) => Math.max(max, row.position), -1) + 1 + index,
+      roundIndex: roundBase + Math.floor(index / settings.roundWordCount) + 1,
     }))
-    nextActiveRoundIndex = 1
-    updatedRounds = [{ index: 1, wordIds: refreshedWordIds, status: 'active', startedAt: now }]
+    nextActiveRoundIndex = hasStarted ? activeRoundIndex : 1
+    const retainedRounds = hasStarted
+      ? updatedRounds.filter((round) => round.index <= activeRoundIndex).map((round) => round.index === activeRoundIndex ? { ...round, status: 'active' as const } : round)
+      : []
+    updatedRounds = [...retainedRounds, ...Array.from({ length: Math.ceil(refreshedWordIds.length / settings.roundWordCount) }, (_, index) => ({
+      index: roundBase + index + 1,
+      wordIds: refreshedWordIds.slice(index * settings.roundWordCount, index * settings.roundWordCount + settings.roundWordCount),
+      status: !hasStarted && index === 0 ? 'active' as const : 'pending' as const,
+      startedAt: !hasStarted && index === 0 ? now : '',
+    }))]
   } else {
     updatedRounds = updatedRounds
       .filter((round) => round.index <= activeRoundIndex)
@@ -358,7 +303,7 @@ export async function replanUnstartedDailyQueue(sessionId: string, at = new Date
     phase: 'cards',
     activeRoundIndex: nextActiveRoundIndex,
     roundsJson: JSON.stringify(updatedRounds),
-    initialWordIds: hasStarted ? retainedWordIds : refreshedWordIds,
+    initialWordIds: [...retainedWordIds, ...refreshedWordIds].filter((wordId, index, rows) => rows.indexOf(wordId) === index),
     sourceRevision: revision,
     sourceEligibleWordIds: eligibleWordIds,
     dismissedSourceRevision: undefined,
@@ -376,6 +321,11 @@ export async function replanUnstartedDailyQueue(sessionId: string, at = new Date
   })
   for (const item of [...skipped, ...freshItems]) await markPayloadChanged('dailyQueueItems', item, now)
   await markPayloadChanged('dailyLearningSessions', updated, now)
+  const activeRoundStillHasCards = items.some((item) => item.kind === 'card'
+    && (item.status === 'pending' || item.status === 'active')
+    && (item.roundIndex ?? 1) === activeRoundIndex
+    && lockedWordIds.has(item.wordId ?? ''))
+  if (!activeRoundStillHasCards) await advanceToPlannedRound(sessionId, at)
   return loadDailyQueueSnapshot(sessionId)
 }
 
@@ -538,9 +488,10 @@ export async function getOrCreateDailySession(listIds?: string[], at = new Date(
   }
 
   const plan = await buildTodayPlan({ listIds, at })
-  const firstRoundWordIds = plan.queueWordIds.slice(0, DAILY_ROUND_SIZE)
+  const settings = await loadSettings()
+  const plannedWordIds = plan.queueWordIds
   const [states, revision] = await Promise.all([
-    db.reviewState.bulkGet(firstRoundWordIds),
+    db.reviewState.bulkGet(plannedWordIds),
     getStudyQueueRevision(),
   ])
   const now = at.toISOString()
@@ -548,20 +499,28 @@ export async function getOrCreateDailySession(listIds?: string[], at = new Date(
     sessionId: `daily:${today}`,
     dayKey: today,
     status: 'active',
-    phase: firstRoundWordIds.length ? 'cards' : 'article',
+    phase: plannedWordIds.length ? 'cards' : 'article',
     selectedListIds: listIds ?? plan.listIds ?? [],
-    initialWordIds: firstRoundWordIds,
+    initialWordIds: plannedWordIds,
     sourceRevision: revision,
     sourceEligibleWordIds: plan.eligibleWordIds ?? plan.queueWordIds,
     baseWordCount: plan.queueWordIds.length,
     extensionBatchCount: 0,
-    activeRoundIndex: firstRoundWordIds.length ? 1 : 0,
-    roundsJson: JSON.stringify(firstRoundWordIds.length ? [{ index: 1, wordIds: firstRoundWordIds, status: 'active', startedAt: now }] : []),
+    activeRoundIndex: plannedWordIds.length ? 1 : 0,
+    roundsJson: JSON.stringify(Array.from({ length: Math.ceil(plannedWordIds.length / settings.roundWordCount) }, (_, index) => ({
+      index: index + 1,
+      wordIds: plannedWordIds.slice(index * settings.roundWordCount, index * settings.roundWordCount + settings.roundWordCount),
+      status: index === 0 ? 'active' : 'pending',
+      startedAt: index === 0 ? now : '',
+    }))),
     articleStatus: 'waiting',
     createdAt: now,
     updatedAt: now,
   }
-  const items = createInitialQueueItems(session, firstRoundWordIds, states, at)
+  const items = createInitialQueueItems(session, plannedWordIds, states, at).map((item, index) => ({
+    ...item,
+    roundIndex: Math.floor(index / settings.roundWordCount) + 1,
+  }))
 
   await db.transaction('rw', [db.dailyLearningSessions, db.dailyQueueItems], async () => {
     await db.dailyLearningSessions.add(session)
@@ -629,16 +588,68 @@ async function markTomorrowPriority(wordId: string): Promise<void> {
   await markRecordChanged('reviewState', wordId)
 }
 
+async function pauseForScheduledArticle(sessionId: string, at: Date): Promise<boolean> {
+  const [session, settings] = await Promise.all([db.dailyLearningSessions.get(sessionId), loadSettings()])
+  if (!session || session.status === 'completed') return false
+  const roundIndex = session.activeRoundIndex ?? 0
+  if (!roundIndex || roundIndex % settings.articleEveryRounds !== 0 || session.lastArticleRoundIndex === roundIndex) return false
+  const now = at.toISOString()
+  const updated: DailyLearningSession = {
+    ...session,
+    phase: 'article',
+    activeReadingBatchIndex: Math.max(0, Math.floor(roundIndex / settings.articleEveryRounds) - 1),
+    lastArticleRoundIndex: roundIndex,
+    articleStatus: session.articleStatus === 'ready' || session.articleStatus === 'generating' ? session.articleStatus : 'waiting',
+    updatedAt: now,
+  }
+  await db.dailyLearningSessions.put(updated)
+  await markPayloadChanged('dailyLearningSessions', updated, now)
+  return true
+}
+
+async function advanceToPlannedRound(sessionId: string, at: Date): Promise<boolean> {
+  const session = await db.dailyLearningSessions.get(sessionId)
+  if (!session || session.status === 'completed') return false
+  const rounds = parseRounds(session.roundsJson)
+  const currentIndex = session.activeRoundIndex ?? 0
+  const next = rounds.find((round) => round.index > currentIndex && round.status === 'pending')
+  if (!next) return false
+  const now = at.toISOString()
+  const updated: DailyLearningSession = {
+    ...session,
+    activeRoundIndex: next.index,
+    roundsJson: JSON.stringify(rounds.map((round) => {
+      if (round.index === currentIndex) return { ...round, status: 'completed' as const, completedAt: now }
+      if (round.index === next.index) return { ...round, status: 'active' as const, startedAt: now }
+      return round
+    })),
+    phase: 'cards',
+    articleStatus: session.articleStatus === 'completed' || session.articleStatus === 'skipped' ? 'waiting' : session.articleStatus,
+    updatedAt: now,
+  }
+  await db.dailyLearningSessions.put(updated)
+  await markPayloadChanged('dailyLearningSessions', updated, now)
+  return true
+}
+
 async function advanceSessionIfCardsDone(sessionId: string, at = new Date()): Promise<void> {
+  const session = await db.dailyLearningSessions.get(sessionId)
+  if (!session) return
+  const activeRoundIndex = session.activeRoundIndex ?? 1
+  const pendingInActiveRound = await db.dailyQueueItems
+    .where('sessionId')
+    .equals(sessionId)
+    .filter((item) => item.kind === 'card' && (item.status === 'pending' || item.status === 'active') && (item.roundIndex ?? 1) === activeRoundIndex)
+    .count()
+  if (pendingInActiveRound > 0) return
+  if (await pauseForScheduledArticle(sessionId, at)) return
+  if (await advanceToPlannedRound(sessionId, at)) return
   const pending = await db.dailyQueueItems
     .where('sessionId')
     .equals(sessionId)
     .filter((item) => item.kind === 'card' && (item.status === 'pending' || item.status === 'active'))
     .count()
   if (pending > 0) return
-  if (await startNextRound(sessionId, at)) return
-  const session = await db.dailyLearningSessions.get(sessionId)
-  if (!session) return
   const now = new Date().toISOString()
   const updated: DailyLearningSession = {
     ...session,
@@ -647,6 +658,24 @@ async function advanceSessionIfCardsDone(sessionId: string, at = new Date()): Pr
   }
   await db.dailyLearningSessions.put(updated)
   await markPayloadChanged('dailyLearningSessions', updated, now)
+}
+
+/** Resume cards after an interleaved article, starting a fresh dynamic round when needed. */
+export async function resumeDailyCardsAfterArticle(sessionId: string, at = new Date()): Promise<DailyQueueSnapshot> {
+  const session = await db.dailyLearningSessions.get(sessionId)
+  if (!session) throw new Error('今日学习会话不存在')
+  const pending = await db.dailyQueueItems.where('sessionId').equals(sessionId)
+    .filter((item) => item.kind === 'card' && (item.status === 'pending' || item.status === 'active'))
+    .count()
+  const now = at.toISOString()
+  const resumed: DailyLearningSession = { ...session, phase: 'cards', status: 'active', updatedAt: now }
+  await db.dailyLearningSessions.put(resumed)
+  await markPayloadChanged('dailyLearningSessions', resumed, now)
+  if (pending || await advanceToPlannedRound(sessionId, at)) return loadDailyQueueSnapshot(sessionId)
+  const completed: DailyLearningSession = { ...resumed, phase: 'summary', status: 'completed', completedAt: now, updatedAt: now }
+  await db.dailyLearningSessions.put(completed)
+  await markPayloadChanged('dailyLearningSessions', completed, now)
+  return loadDailyQueueSnapshot(sessionId)
 }
 
 export async function finishCardPhase(sessionId: string): Promise<DailyQueueSnapshot> {

@@ -125,6 +125,8 @@ export interface AppSettings {
   ttsEngine: 'auto' | 'browser' | 'youdao' | 'google' | 'dictionaryapi'
   dailyNewLimit: number
   dailyReviewLimit: number
+  roundWordCount: number
+  articleEveryRounds: number
   deepseekApiKey: string
   deepseekBaseUrl: string
   deepseekModel: string
@@ -191,7 +193,11 @@ export interface DailyLearningSession {
   articleGenerationWordCount?: number
   /** Stable article batch plan for resuming reading after navigation or reload. */
   readingBatchesJson?: string
+  /** Settings value used to build the persisted reading batches. */
+  readingBatchRounds?: number
   activeReadingBatchIndex?: number
+  /** The latest round already handed off to its scheduled article. */
+  lastArticleRoundIndex?: number
   cardsCompletedAt?: string
   articleStatus: 'waiting' | 'generating' | 'ready' | 'completed' | 'skipped' | 'failed' | 'stale'
   createdAt: string

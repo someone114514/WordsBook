@@ -27,4 +27,13 @@ describe('review settings', () => {
     expect(await loadSettings()).toMatchObject({ dailyNewLimit: 200, dailyReviewLimit: 500 })
     expect(await saveSettings({ dailyNewLimit: -3, dailyReviewLimit: 900 })).toMatchObject({ dailyNewLimit: 0, dailyReviewLimit: 500 })
   })
+
+  it('keeps round and article cadence settings within usable bounds', async () => {
+    await db.settings.bulkPut([
+      { key: 'roundWordCount', value: 0 },
+      { key: 'articleEveryRounds', value: 99 },
+    ])
+    expect(await loadSettings()).toMatchObject({ roundWordCount: 1, articleEveryRounds: 12 })
+    expect(await saveSettings({ roundWordCount: 7, articleEveryRounds: 3 })).toMatchObject({ roundWordCount: 7, articleEveryRounds: 3 })
+  })
 })

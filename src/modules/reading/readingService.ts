@@ -139,7 +139,7 @@ function parseReadingBatches(raw: string | undefined): string[][] {
   try { return normalizeReadingBatches(JSON.parse(raw)) } catch { return [] }
 }
 
-function roundReadingBatches(raw: string | undefined): string[][] {
+function roundReadingBatches(raw: string | undefined, roundsPerArticle: number): string[][] {
   if (!raw) return []
   try {
     const rounds = JSON.parse(raw) as Array<{ wordIds?: unknown }>
@@ -148,9 +148,9 @@ function roundReadingBatches(raw: string | undefined): string[][] {
       ? round.wordIds.filter((wordId): wordId is string => typeof wordId === 'string')
       : [])
     const batches: string[][] = []
-    for (let index = 0; index < words.length; index += 2) {
-      const pair = [...new Set([...words[index]!, ...(words[index + 1] ?? [])])]
-      if (pair.length) batches.push(pair.slice(0, MAX_READING_BATCH_SIZE))
+    for (let index = 0; index < words.length; index += roundsPerArticle) {
+      const group = [...new Set(words.slice(index, index + roundsPerArticle).flat())]
+      if (group.length) batches.push(group.slice(0, MAX_READING_BATCH_SIZE))
     }
     return batches
   } catch { return [] }
@@ -163,6 +163,7 @@ export async function persistReadingBatches(
 ): Promise<string[][]> {
   const session = await db.dailyLearningSessions.get(sessionId)
   if (!session) return batches
+  const settings = await loadSettings()
   const normalized = normalizeReadingBatches(batches)
   const index = normalized.length
     ? Math.max(0, Math.min(activeBatchIndex ?? session.activeReadingBatchIndex ?? 0, normalized.length - 1))
@@ -170,6 +171,7 @@ export async function persistReadingBatches(
   const updated = {
     ...session,
     readingBatchesJson: JSON.stringify(normalized),
+    readingBatchRounds: settings.articleEveryRounds,
     activeReadingBatchIndex: index,
     updatedAt: new Date().toISOString(),
   }
@@ -184,8 +186,11 @@ export async function getOrCreateReadingBatches(
   seed = 0,
 ): Promise<string[][]> {
   const session = await db.dailyLearningSessions.get(sessionId)
+  const settings = await loadSettings()
   const cached = session?.articleStatus !== 'stale' ? parseReadingBatches(session?.readingBatchesJson) : []
-  const roundBatches = roundReadingBatches(session?.roundsJson)
+  const roundBatches = roundReadingBatches(session?.roundsJson, settings.articleEveryRounds)
+  const cadenceChanged = session?.readingBatchRounds !== undefined && session.readingBatchRounds !== settings.articleEveryRounds
+  if (cadenceChanged && roundBatches.length) return persistReadingBatches(sessionId, roundBatches, session?.activeReadingBatchIndex)
   if (roundBatches.length > cached.length) return persistReadingBatches(sessionId, roundBatches, session?.activeReadingBatchIndex)
   if (cached.length) return cached
   if (roundBatches.length) return persistReadingBatches(sessionId, roundBatches, session?.activeReadingBatchIndex)

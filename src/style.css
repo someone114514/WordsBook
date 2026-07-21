@@ -952,6 +952,7 @@ input[type='number']:focus {
   justify-content: center;
   gap: 0.65rem;
   min-width: 0;
+  overflow: hidden;
 }
 
 .immersive-progress span {
@@ -962,6 +963,10 @@ input[type='number']:focus {
 
 .immersive-progress strong {
   font-size: 1.04rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .immersive-header-actions {
@@ -1666,7 +1671,6 @@ input[type='number']:focus {
 .review-examples { margin-top: .7rem; border-top: 1px solid var(--border); padding-top: .55rem; }
 .review-examples summary { cursor: pointer; color: var(--primary); font-weight: 700; }
 .review-examples .example { margin: .55rem 0 0; line-height: 1.5; }
-.review-round-note { width: min(30rem, 100%); margin: .75rem auto 0; color: var(--muted); font-size: .78rem; text-align: center; }
 .review-ai-definition { display: grid; gap: .35rem; margin-top: .75rem; padding-top: .65rem; border-top: 1px solid var(--border); }
 .review-ai-definition-btn { justify-self: start; min-height: 2.35rem; padding-inline: .7rem; font-size: .84rem; }
 .review-ai-definition-hint, .review-ai-definition-message { margin: 0; font-size: .78rem; }

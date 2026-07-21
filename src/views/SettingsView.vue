@@ -167,7 +167,7 @@ async function onUpdateBoolean(key: 'autoPronunciation', event: Event) {
 }
 
 async function onUpdateNumber(
-  key: 'dailyNewLimit' | 'dailyReviewLimit' | 'speechRate',
+  key: 'dailyNewLimit' | 'dailyReviewLimit' | 'roundWordCount' | 'articleEveryRounds' | 'speechRate',
   event: Event,
 ): Promise<void> {
   const target = event.target as HTMLInputElement
@@ -508,7 +508,28 @@ async function onRunCloudSync(mode: CloudSyncMode) {
           @change="onUpdateNumber('dailyReviewLimit', $event)"
         />
       </label>
-      <p class="muted settings-hint">用于首次安排；完成后仍可继续加学。</p>
+      <label class="setting-row">
+        <span>每回合单词数</span>
+        <input
+          type="number"
+          min="1"
+          max="12"
+          :value="settings.roundWordCount"
+          @change="onUpdateNumber('roundWordCount', $event)"
+        />
+      </label>
+
+      <label class="setting-row">
+        <span>每几回合插入文章</span>
+        <input
+          type="number"
+          min="1"
+          max="12"
+          :value="settings.articleEveryRounds"
+          @change="onUpdateNumber('articleEveryRounds', $event)"
+        />
+      </label>
+      <p class="muted settings-hint">当天计划会按这些额度生成；刷新未开始内容后会按最新词表重排。文章会合并这一段回合的词并生成语境题。</p>
     </article>
 
     <article class="result-section">

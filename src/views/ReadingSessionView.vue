@@ -18,7 +18,7 @@ import {
   setActiveReadingBatch,
   ReadingGenerationError,
 } from '../modules/reading/readingService'
-import { completeDailySession, setArticleStatus } from '../modules/review/dailyQueueService'
+import { resumeDailyCardsAfterArticle, setArticleStatus } from '../modules/review/dailyQueueService'
 import { loadSettings } from '../modules/settings/settingsService'
 import { lookupWord } from '../modules/dictionary/dictionaryService'
 import { addEntryToStudyList, listStudyLists, LOOKUP_LIST_ID } from '../modules/wordbook/studyListService'
@@ -29,7 +29,10 @@ import { db } from '../db/database'
 const route = useRoute()
 const router = useRouter()
 const dailySessionId = computed(() => typeof route.query.session === 'string' ? route.query.session : `daily:${dayjs().format('YYYY-MM-DD')}`)
-const dayKey = dayjs().format('YYYY-MM-DD')
+const dayKey = computed(() => dailySessionId.value.startsWith('daily:')
+  ? dailySessionId.value.slice('daily:'.length)
+  : dayjs().format('YYYY-MM-DD'))
+const isHistoryReview = computed(() => route.query.history === '1')
 const batches = ref<string[][]>([])
 const batchIndex = ref(0)
 const session = ref<ReadingSession | null>(null)
@@ -78,7 +81,19 @@ const errorActionLabel = computed(() => generationErrorCode.value === 'details-i
   : generationErrorCode.value === 'cancelled' ? '继续生成' : '重试')
 
 function readingSessionId() {
-  return `reading:${dayKey}:0:${batchIndex.value}`
+  return `reading:${dayKey.value}:0:${batchIndex.value}`
+}
+
+async function restoreSavedArticle(cached: ReadingSession): Promise<void> {
+  session.value = cached
+  paragraphs.value = splitStoredPassage(cached)
+  generationErrorCode.value = cached.errorCode
+  const attempts = await loadContextAttempts(cached.sessionId)
+  results.value = Object.fromEntries(attempts.map((attempt) => [attempt.wordId, attempt.result]))
+  hadRetry.value = attempts.some((attempt) => attempt.result !== 'correct')
+  stage.value = cached.readerStage ?? (attempts.length ? 1 : 0)
+  showTranslation.value = cached.showTranslation ?? false
+  restoreCursors()
 }
 
 function splitStoredPassage(row: ReadingSession | null): string[] {
@@ -140,7 +155,7 @@ async function loadBatch(force = false) {
   await setArticleStatus(dailySessionId.value, 'generating')
   try {
     session.value = await generateReadingSession({
-      dayKey, batchIndex: batchIndex.value, seed: 0, wordIds, level: level.value, topic: topic.value, force,
+      dayKey: dayKey.value, batchIndex: batchIndex.value, seed: 0, wordIds, level: level.value, topic: topic.value, force,
       signal: controller.signal,
       onProgress(progress) {
         generationPhase.value = progress.phase
@@ -156,23 +171,14 @@ async function loadBatch(force = false) {
       return
     }
     await setArticleStatus(dailySessionId.value, 'ready')
-    const attempts = await loadContextAttempts(session.value.sessionId)
-    results.value = Object.fromEntries(attempts.map((attempt) => [attempt.wordId, attempt.result]))
-    hadRetry.value = attempts.some((attempt) => attempt.result !== 'correct')
-    stage.value = session.value.readerStage ?? (attempts.length ? 1 : 0)
-    showTranslation.value = session.value.showTranslation ?? false
-    restoreCursors()
+    await restoreSavedArticle(session.value)
     await carryOmittedToNextBatch()
     await setActiveReadingBatch(dailySessionId.value, batchIndex.value)
   } catch (reason) {
     generationErrorCode.value = reason instanceof ReadingGenerationError ? reason.code : undefined
     error.value = reason instanceof Error ? reason.message : String(reason)
     const cached = await db.readingSessions.get(readingSessionId())
-    if (cached) {
-      session.value = cached
-      paragraphs.value = splitStoredPassage(cached)
-      generationErrorCode.value = cached.errorCode ?? generationErrorCode.value
-    }
+    if (cached) await restoreSavedArticle(cached)
     if (generationErrorCode.value !== 'cancelled') await setArticleStatus(dailySessionId.value, 'failed')
   } finally {
     loading.value = false
@@ -184,10 +190,10 @@ async function initialize() {
   const settings = await loadSettings()
   level.value = settings.articleLevel
   noKey.value = !settings.deepseekApiKey.trim()
-  batches.value = await getOrCreateReadingBatches(dailySessionId.value, dayKey)
+  batches.value = await getOrCreateReadingBatches(dailySessionId.value, dayKey.value)
   if (!batches.value.length) {
-    await completeDailySession(dailySessionId.value, 'skipped')
-    await router.replace('/review')
+    const resumed = await resumeDailyCardsAfterArticle(dailySessionId.value)
+    await router.replace(resumed.session.status === 'completed' ? '/review' : '/review/session')
     return
   }
   const requestedBatch = Number(route.query.batch)
@@ -198,6 +204,17 @@ async function initialize() {
   if (requestedOrStoredBatch >= 0 && requestedOrStoredBatch < batches.value.length) {
     await setBatchIndex(requestedOrStoredBatch)
   }
+  const cached = await db.readingSessions.get(readingSessionId())
+  if (cached && (cached.status === 'ready' || cached.status === 'completed' || Boolean(splitStoredPassage(cached)))) {
+    if (route.query.restart === '1') {
+      await resetReadingSessionAttempts(cached.sessionId)
+      await saveReadingProgress(cached.sessionId, 0, false, 0, 0)
+      await restoreSavedArticle({ ...cached, readerStage: 0, showTranslation: false, quizCursor: 0, resultCursor: 0 })
+    } else {
+      await restoreSavedArticle(cached)
+    }
+    return
+  }
   if (dailySession?.articleStatus === 'stale') {
     staleArticle.value = true
     return
@@ -206,7 +223,7 @@ async function initialize() {
 }
 
 async function continuePreviousArticle() {
-  const cached = await db.readingSessions.get(`reading:${dayKey}:0:${batchIndex.value}`)
+  const cached = await db.readingSessions.get(readingSessionId())
   if (!cached) {
     staleArticle.value = false
     await loadBatch(true)
@@ -217,14 +234,7 @@ async function continuePreviousArticle() {
     await loadBatch(false)
     return
   }
-  session.value = cached
-  paragraphs.value = splitStoredPassage(cached)
-  const attempts = await loadContextAttempts(cached.sessionId)
-  results.value = Object.fromEntries(attempts.map((attempt) => [attempt.wordId, attempt.result]))
-  hadRetry.value = attempts.some((attempt) => attempt.result !== 'correct')
-  stage.value = cached.readerStage ?? (attempts.length ? 1 : 0)
-  showTranslation.value = cached.showTranslation ?? false
-  restoreCursors()
+  await restoreSavedArticle(cached)
   await carryOmittedToNextBatch()
   await setActiveReadingBatch(dailySessionId.value, batchIndex.value)
   staleArticle.value = false
@@ -302,20 +312,25 @@ async function nextBatch() {
     await loadBatch()
     return
   }
-  if (hadRetry.value) {
-    await setArticleStatus(dailySessionId.value, 'completed')
-    await router.replace('/review/session')
-  } else {
-    await completeDailySession(dailySessionId.value, 'completed')
-    await router.replace('/review')
+  if (isHistoryReview.value) {
+    await router.replace('/review/reading/history')
+    return
   }
+  await setArticleStatus(dailySessionId.value, 'completed')
+  const resumed = await resumeDailyCardsAfterArticle(dailySessionId.value)
+  await router.replace(resumed.session.status === 'completed' ? '/review' : '/review/session')
 }
 
 async function skip() {
   controller?.abort()
   await cancelReadingGeneration(readingSessionId())
-  await completeDailySession(dailySessionId.value, 'skipped')
-  await router.replace('/review')
+  if (isHistoryReview.value) {
+    await router.replace('/review/reading/history')
+    return
+  }
+  await setArticleStatus(dailySessionId.value, 'skipped')
+  const resumed = await resumeDailyCardsAfterArticle(dailySessionId.value)
+  await router.replace(resumed.session.status === 'completed' ? '/review' : '/review/session')
 }
 
 async function cancel() {
@@ -416,7 +431,7 @@ onBeforeUnmount(() => {
       <div class="action-row"><button class="btn btn-primary" :disabled="noKey" type="button" @click="regenerateStaleArticle">重新生成</button><button class="btn" type="button" @click="continuePreviousArticle">继续原文</button><button v-if="noKey" class="btn" type="button" @click="router.push('/settings')">配置 DeepSeek Key</button></div>
     </div>
 
-    <div v-else-if="noKey" class="immersive-empty">
+    <div v-else-if="noKey && !session" class="immersive-empty">
       <h1>需要配置 DeepSeek Key</h1>
       <p>文章是今日学习的可选步骤；不配置也可以完成卡片学习。</p>
       <div class="action-row"><button class="btn btn-primary" type="button" @click="router.push('/settings')">配置 DeepSeek Key</button><button class="btn" type="button" @click="skip">跳过文章并完成今日学习</button></div>
@@ -431,7 +446,7 @@ onBeforeUnmount(() => {
           <h1>{{ session?.title || '今日语境文章' }}</h1>
         </div>
         <button v-if="loading" class="btn btn-quiet" type="button" @click="cancel">取消生成</button>
-        <button v-else-if="session" class="btn btn-quiet" type="button" @click="regenerate">重新生成</button>
+        <button v-else-if="session" class="btn btn-quiet" :disabled="noKey" type="button" @click="regenerate">重新生成</button>
       </div>
       <p class="reading-generation-status" aria-live="polite">
         <template v-if="loading">{{ generationPhase === 'article' ? '正文流式生成中，完成后会在下方准备题目' : `正在准备测义题与翻译${generatedTargets ? ` · 已完成 ${generatedTargets} 题` : ''}` }}</template>
@@ -496,7 +511,7 @@ onBeforeUnmount(() => {
           </section>
           <button class="btn" type="button" @click="toggleTranslation">{{ showTranslation ? '隐藏全文翻译' : '显示全文翻译' }}</button>
           <p v-if="showTranslation" class="translation-panel">{{ session.translation }}</p>
-          <button class="btn btn-primary" type="button" @click="nextBatch">{{ batchIndex + 1 < batches.length ? '下一篇' : '完成今日学习' }}</button>
+          <button class="btn btn-primary" type="button" @click="nextBatch">{{ isHistoryReview ? '返回文章记录' : batchIndex + 1 < batches.length ? '下一篇' : '完成今日学习' }}</button>
         </template>
       </template>
     </article>

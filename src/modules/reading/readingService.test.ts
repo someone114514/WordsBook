@@ -175,6 +175,24 @@ describe('reading target selection and context feedback', () => {
     expect((await db.dailyLearningSessions.get('daily:2026-07-13'))?.activeReadingBatchIndex).toBe(0)
   })
 
+  it('groups persisted rounds using the configured article interval', async () => {
+    const now = '2026-07-13T08:00:00.000Z'
+    await db.settings.put({ key: 'articleEveryRounds', value: 3 })
+    await db.dailyLearningSessions.put({
+      sessionId: 'daily:2026-07-13', dayKey: '2026-07-13', status: 'active', phase: 'article',
+      selectedListIds: [], initialWordIds: ['w1', 'w2', 'w3', 'w4'], articleStatus: 'waiting',
+      roundsJson: JSON.stringify([
+        { index: 1, wordIds: ['w1'] },
+        { index: 2, wordIds: ['w2'] },
+        { index: 3, wordIds: ['w3'] },
+        { index: 4, wordIds: ['w4'] },
+      ]),
+      createdAt: now, updatedAt: now,
+    })
+
+    expect(await getOrCreateReadingBatches('daily:2026-07-13', '2026-07-13')).toEqual([['w1', 'w2', 'w3'], ['w4']])
+  })
+
   it('normalizes the order of previously cached article targets on restore', async () => {
     const now = '2026-07-13T08:00:00.000Z'
     const targets: ReadingTarget[] = [
