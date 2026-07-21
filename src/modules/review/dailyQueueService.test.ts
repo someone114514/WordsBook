@@ -14,6 +14,7 @@ import {
   masteryReinsertionGap,
   nextTodayMastery,
   previewDailyQueueChanges,
+  replanUnstartedDailyQueue,
 } from './dailyQueueService'
 import { markStudyDataChanged } from './studyDataRevision'
 
@@ -215,5 +216,35 @@ describe('daily learning queue', () => {
     expect(advanced.session.activeRoundIndex).toBe(2)
     expect(advanced.items.filter((item) => item.roundIndex === 2 && item.status === 'pending')).toHaveLength(2)
     expect((await db.studyListItems.where('learningEnabled').equals(1).count())).toBe(3)
+  })
+
+  it('replans an untouched legacy fixed queue under the current new-word limit', async () => {
+    const now = '2026-07-13T08:00:00.000Z'
+    await db.studyLists.put({ listId: 'list', name: 'List', description: '', studyEnabled: 1, createdAt: now, updatedAt: now })
+    await db.settings.bulkPut([{ key: 'dailyNewLimit', value: 2 }, { key: 'dailyReviewLimit', value: 0 }])
+    for (const [index, wordId] of ['old-1', 'old-2', 'old-3', 'lookup-new'].entries()) {
+      await db.dictionaryEntries.put({ entryId: `e-${wordId}`, headword: wordId, headwordLower: wordId, posList: [], sensesJson: '[]', examplesJson: '[]', usageJson: '[]' })
+      await db.wordbook.put({ wordId, entryId: `e-${wordId}`, addedAt: new Date(Date.parse(now) + index).toISOString(), note: '', tags: [], archived: 0 })
+      await db.reviewState.put({ wordId, cycle: 0, nextReviewAt: now, successCount: 0, lapseCount: 0, totalReviews: 0 })
+      await db.studyListItems.put({
+        membershipId: `list:${wordId}`,
+        listId: 'list',
+        wordId,
+        source: wordId === 'lookup-new' ? 'lookup' : 'manual',
+        learningEnabled: 1,
+        addedAt: new Date(Date.parse(now) + index).toISOString(),
+      })
+    }
+    await seed(['old-1', 'old-2', 'old-3'])
+    const session = await db.dailyLearningSessions.get('daily:test')
+    await db.dailyLearningSessions.put({ ...session!, selectedListIds: ['list'], activeRoundIndex: 1, roundsJson: JSON.stringify([{ index: 1, wordIds: ['old-1', 'old-2', 'old-3'], status: 'active', startedAt: now }]) })
+    await markStudyDataChanged()
+
+    const snapshot = await replanUnstartedDailyQueue('daily:test', new Date('2026-07-13T08:01:00.000Z'))
+    const pending = snapshot.items.filter((item) => item.status === 'pending').map((item) => item.wordId)
+    expect(pending).toHaveLength(2)
+    expect(pending).toContain('lookup-new')
+    expect(snapshot.session.initialWordIds).toEqual(pending)
+    expect(snapshot.items.filter((item) => item.reason === 'initial' && item.status === 'skipped')).toHaveLength(3)
   })
 })

@@ -1696,6 +1696,10 @@ input[type='number']:focus {
 .reading-card-stable .reading-title-row h1 { margin: .2rem 0 0; }
 .reading-generation-status { min-height: 1.7rem; margin: .35rem 0 0; color: var(--text-subtle); font-size: .9rem; }
 .study-plan-refresh { margin: .55rem 0 0; color: var(--text-subtle); font-size: .85rem; }
+.study-queue-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: .45rem .7rem; }
+.study-queue-replan { min-height: 2rem; padding: .3rem .6rem; font-size: .78rem; }
+.study-queue-tools .muted { font-size: .78rem; }
+.settings-version { margin: .25rem 0 1rem; text-align: center; font-size: .78rem; }
 .reading-copy-stable { display: block; min-height: min(48vh, 32rem); margin: 1rem 0; padding: clamp(1rem, 4vw, 2rem); overflow: auto; border: 1px solid var(--border); border-radius: var(--radius-lg); background: #fff; font-family: Georgia, 'Times New Roman', serif; font-size: clamp(1.04rem, 2.4vw, 1.18rem); line-height: 1.85; }
 .reading-copy-stable > p { margin: 0 0 1em; }
 .reading-copy-stable > p:last-child { margin-bottom: 0; }

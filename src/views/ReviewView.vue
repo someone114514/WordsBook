@@ -11,6 +11,7 @@ import {
   dismissDailyQueueChanges,
   loadDailyQueueSnapshot,
   previewDailyQueueChanges,
+  replanUnstartedDailyQueue,
   type DailyQueueChangePreview,
   type DailyQueueSnapshot,
 } from '../modules/review/dailyQueueService'
@@ -26,6 +27,7 @@ const remainingCards = ref(0)
 const snapshot = ref<DailyQueueSnapshot | null>(null)
 const queueChanges = ref<DailyQueueChangePreview | null>(null)
 const changeBusy = ref(false)
+const replanMessage = ref('')
 const readingHistory = ref<ReadingSession[]>([])
 const latestReading = computed(() => readingHistory.value[0] ?? null)
 const canResumeLatestReading = computed(() => latestReading.value?.dayKey === dayjs().format('YYYY-MM-DD'))
@@ -114,6 +116,24 @@ async function applyChanges() {
   finally { changeBusy.value = false }
 }
 
+async function replanUnstarted() {
+  if (!session.value || changeBusy.value) return
+  changeBusy.value = true
+  replanMessage.value = ''
+  try {
+    const updated = await replanUnstartedDailyQueue(session.value.sessionId)
+    snapshot.value = updated
+    session.value = updated.session
+    remainingCards.value = updated.items.filter((item) => item.kind === 'card' && (item.status === 'pending' || item.status === 'active')).length
+    queueChanges.value = await previewDailyQueueChanges(updated.session.sessionId)
+    replanMessage.value = updated.attempts.length
+      ? '已按最新新词额度重排未开始内容；正在学习的一组保持不变。'
+      : '已按最新新词额度重排今日学习。'
+  } finally {
+    changeBusy.value = false
+  }
+}
+
 async function dismissChanges() {
   if (!session.value || !queueChanges.value) return
   await dismissDailyQueueChanges(session.value.sessionId, queueChanges.value.revision)
@@ -155,6 +175,12 @@ onBeforeUnmount(() => window.removeEventListener(STUDY_PLAN_REFRESHED_EVENT, onP
       </div>
       <p v-if="!loading && recoveryText" class="recovery-note">{{ recoveryText }}</p>
       <p v-if="!loading && refreshingPlan" class="study-plan-refresh" aria-live="polite">正在后台更新今日计划…</p>
+      <div v-if="session && !loading" class="study-queue-tools">
+        <button class="btn btn-quiet study-queue-replan" :disabled="changeBusy" type="button" title="按最新词表与新词额度重排未开始内容" @click="replanUnstarted">
+          {{ changeBusy ? '重排中…' : '重排未开始内容' }}
+        </button>
+        <span v-if="replanMessage" class="muted" role="status">{{ replanMessage }}</span>
+      </div>
     </section>
 
     <template v-if="hasLoaded && !error">

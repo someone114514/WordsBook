@@ -20,6 +20,8 @@ import { getWordbookStats } from '../modules/wordbook/wordbookService'
 
 const settingsStore = useSettingsStore()
 const dictionaryStore = useDictionaryStore()
+const appVersion = '0.1.0-beta'
+const appUpdatedAt = '2026-07-21'
 
 const { settings } = storeToRefs(settingsStore)
 const { installedMeta, installing, progress, lastError, fullCacheProgress } = storeToRefs(dictionaryStore)
@@ -649,5 +651,9 @@ async function onRunCloudSync(mode: CloudSyncMode) {
         </label>
       </div>
     </article>
+
+    <footer class="settings-version muted" aria-label="应用版本">
+      WordsBook Beta · v{{ appVersion }} · 更新于 {{ appUpdatedAt }}
+    </footer>
   </section>
 </template>
