@@ -1,10 +1,12 @@
 import 'fake-indexeddb/auto'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { db } from '../../db/database'
 import { importUserData } from '../settings/backupService'
 import { avoidAdjacentWordInitials, buildTodayPlan, buildTodayPlanCached, invalidateStudyPlanCache } from './reviewService'
+
+const backupFixtureIt = existsSync(resolve('backup/wordsbook-backup-2026-06-08.json')) ? it : it.skip
 
 describe('review data migration', () => {
   beforeEach(async () => {
@@ -13,7 +15,7 @@ describe('review data migration', () => {
     await db.open()
   })
 
-  it('replays the 536-word legacy backup into FSRS without importing the API key', async () => {
+  backupFixtureIt('replays the 536-word legacy backup into FSRS without importing the API key', async () => {
     const bytes = readFileSync(resolve('backup/wordsbook-backup-2026-06-08.json'))
     await importUserData(new Blob([bytes], { type: 'application/json' }))
     await buildTodayPlan({ at: new Date('2026-07-13T08:00:00.000Z'), dailyNewLimit: 20, dailyReviewLimit: 200 })

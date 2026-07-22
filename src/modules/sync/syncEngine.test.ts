@@ -1,7 +1,7 @@
 /// <reference types="node" />
 
 import 'fake-indexeddb/auto'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { db } from '../../db/database'
@@ -65,12 +65,14 @@ function loadBackupFile(): Blob {
   return new Blob([raw], { type: 'application/json' })
 }
 
+const backupFixtureIt = existsSync(resolve('backup/wordsbook-backup-2026-06-08.json')) ? it : it.skip
+
 describe('cloud sync engine', () => {
   beforeEach(async () => {
     await resetDb()
   })
 
-  it('imports the current backup sample and exposes it as syncable local data', async () => {
+  backupFixtureIt('imports the current backup sample and exposes it as syncable local data', async () => {
     const report = await importUserData(loadBackupFile())
     const dataset = await collectLocalSyncDataset()
 
@@ -84,7 +86,7 @@ describe('cloud sync engine', () => {
     expect(dataset.records.filter((row) => row.entity === 'settings')).toHaveLength(7)
   })
 
-  it('uploads the backup sample and restores it into an empty local database', async () => {
+  backupFixtureIt('uploads the backup sample and restores it into an empty local database', async () => {
     await importUserData(loadBackupFile())
     const remote = new FakeRemote()
 
