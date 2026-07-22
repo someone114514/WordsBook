@@ -378,7 +378,9 @@ class WordsBookDB extends Dexie {
           const rounds = chunks.map((wordIds, index) => ({
             index: index + 1,
             wordIds,
-            status: index + 1 < activeRoundIndex ? 'completed' : 'active',
+            status: index + 1 < activeRoundIndex
+              ? 'completed'
+              : index + 1 === activeRoundIndex ? 'active' : 'pending',
           }))
           await sessions.put({
             ...session,

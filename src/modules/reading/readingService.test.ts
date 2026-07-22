@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { db } from '../../db/database'
 import type { ReadingTarget, ReviewLog } from '../../types/models'
-import { appendOmittedReadingTargets, buildReadingTargetBatches, generateReadingSession, getOrCreateReadingBatches, groupReadingSegmentsByParagraph, listReadingHistory, recordContextAttempt, resetReadingSessionAttempts, saveReadingProgress, sortTargetsByPassageOrder } from './readingService'
+import { appendOmittedReadingTargets, buildReadingTargetBatches, generateReadingSession, getOrCreateReadingBatches, groupReadingSegmentsByParagraph, listReadingHistory, readingBatchRangeForRound, recordContextAttempt, resetReadingSessionAttempts, saveReadingProgress, sortTargetsByPassageOrder } from './readingService'
 
 function log(wordId: string, rating: ReviewLog['rating'], wasNew = false): ReviewLog {
   return {
@@ -10,6 +10,22 @@ function log(wordId: string, rating: ReviewLog['rating'], wasNew = false): Revie
     cycleBefore: 0, cycleAfter: 0, nextReviewAtBefore: '2026-07-13T08:00:00.000Z',
     nextReviewAtAfter: '2026-07-14T08:00:00.000Z',
   }
+}
+
+function articleStream(input: {
+  title: string
+  paragraphs: string[]
+  targets?: ReadingTarget[]
+  translation: string
+}): Response {
+  const events = [
+    JSON.stringify({ type: 'meta', title: input.title }),
+    ...input.paragraphs.map((text) => JSON.stringify({ type: 'paragraph', text })),
+    ...(input.targets ?? []).map((target) => JSON.stringify({ type: 'target', ...target })),
+    JSON.stringify({ type: 'translation', text: input.translation }),
+    JSON.stringify({ type: 'done' }),
+  ].join('\n')
+  return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: `${events}\n` } }] })}\n\n`)
 }
 
 describe('reading target selection and context feedback', () => {
@@ -59,20 +75,14 @@ describe('reading target selection and context feedback', () => {
     ])
     await db.dictionaryEntries.put({ entryId: 'e1', headword: 'resilient', headwordLower: 'resilient', posList: ['adj'], sensesJson: '["有韧性的"]', examplesJson: '[]', usageJson: '[]' })
     await db.wordbook.put({ wordId: 'w1', entryId: 'e1', addedAt: '2026-07-13T00:00:00.000Z', note: '', tags: [], archived: 0 })
-    const passageStream = (article: string) => {
-      const json = JSON.stringify({ article })
-      const chunks = json.match(/.{1,12}/g) ?? [json]
-      return new Response(chunks.map((content) => `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`).join(''))
-    }
-    const detailsResponse = new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
-      title: 'A Test',
-      targets: [{ wordId: 'w1', headword: 'resilient', contextualMeaning: '有韧性的', choices: ['有韧性的', '迟缓的', '安静的'], explanation: '面对困难仍能恢复。' }],
-      translation: '她保持坚韧。',
-    }) } }] }), { headers: { 'Content-Type': 'application/json' } })
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(passageStream('She stayed calm.'))
-      .mockResolvedValueOnce(passageStream('She stayed resilient.'))
-      .mockResolvedValueOnce(detailsResponse)
+      .mockResolvedValueOnce(articleStream({ title: '', paragraphs: ['She stayed calm.'], translation: '她保持冷静。' }))
+      .mockResolvedValueOnce(articleStream({
+        title: 'A Test',
+        paragraphs: ['She stayed resilient.'],
+        targets: [{ wordId: 'w1', headword: 'resilient', contextualMeaning: '有韧性的', choices: ['有韧性的', '迟缓的', '安静的'], explanation: '面对困难仍能恢复。' }],
+        translation: '她保持坚韧。',
+      }))
     vi.stubGlobal('fetch', fetchMock)
     const staleWordId = 'd7d467fe-fd5e-48e7-81c8-e64b242c8a9b'
     const streamed: string[] = []
@@ -80,14 +90,13 @@ describe('reading target selection and context feedback', () => {
     expect(session.status).toBe('ready')
     expect(session.targetWordIds).toEqual(['w1'])
     expect(String(fetchMock.mock.calls[0]?.[1]?.body)).not.toContain(staleWordId)
-    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(streamed.some((text) => text.includes('resilient'))).toBe(true)
     expect(String(fetchMock.mock.calls[0]?.[1]?.body)).toContain('allowedSenses')
     expect(String(fetchMock.mock.calls[0]?.[1]?.body)).toContain('有韧性的')
-    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).response_format).toEqual({ type: 'json_object' })
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).response_format).toBeUndefined()
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({ thinking: { type: 'enabled' }, reasoning_effort: 'high' })
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).temperature).toBeUndefined()
-    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body)).response_format).toEqual({ type: 'json_object' })
     expect((await db.readingSessions.get(session.sessionId))?.title).toBe('A Test')
   })
 
@@ -96,18 +105,16 @@ describe('reading target selection and context feedback', () => {
     await db.settings.bulkPut([{ key: 'deepseekBaseUrl', value: 'https://example.test/chat' }, { key: 'deepseekModel', value: 'test-model' }])
     await db.dictionaryEntries.put({ entryId: 'core:marker', headword: 'marker', headwordLower: 'marker', posList: ['n'], sensesJson: '["标记物"]', examplesJson: '[]', usageJson: '[]' })
     await db.wordbook.put({ wordId: 'stable-marker-id', entryId: 'core:marker', headword: 'marker', headwordLower: 'marker', addedAt: '2026-07-13T00:00:00.000Z', note: '', tags: [], archived: 0 })
-    const passageJson = JSON.stringify({ article: 'A marker showed the path.' })
-    const stream = new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: passageJson } }] })}\n\n`)
-    const detailsResponse = (choices: string[]) => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ title: 'Markers', targets: [{ wordId: 'stable-marker-id', headword: 'marker', contextualMeaning: '标记物', choices, explanation: '用于指示位置。' }], translation: '一个标记物指出了道路。' }) } }] }), { headers: { 'Content-Type': 'application/json' } })
-    const repairResponse = new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ targets: [{ wordId: 'stable-marker-id', choices: ['标记物', '饮用容器', '交通工具'], explanation: '用于指示位置。' }] }) } }] }), { headers: { 'Content-Type': 'application/json' } })
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(stream)
-      .mockResolvedValueOnce(detailsResponse(['标记物', '标记的物体', '安静地点']))
-      .mockResolvedValueOnce(repairResponse)
+    const fetchMock = vi.fn().mockResolvedValueOnce(articleStream({
+      title: 'Markers',
+      paragraphs: ['A marker showed the path.'],
+      targets: [{ wordId: 'stable-marker-id', headword: 'marker', contextualMeaning: '标记物', choices: ['标记物', '标记的物体', '安静地点'], explanation: '用于指示位置。' }],
+      translation: '一个标记物指出了道路。',
+    }))
     vi.stubGlobal('fetch', fetchMock)
     const session = await generateReadingSession({ dayKey: '2026-07-13', batchIndex: 1, seed: 0, wordIds: ['stable-marker-id'], level: 'B2' })
     expect(session.status).toBe('ready')
-    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(session.segmentsJson).not.toMatch(/[0-9a-f]{8}-[0-9a-f-]{27,}/i)
   })
 
@@ -116,11 +123,11 @@ describe('reading target selection and context feedback', () => {
     await db.settings.bulkPut([{ key: 'deepseekBaseUrl', value: 'https://example.test/chat' }, { key: 'deepseekModel', value: 'test-model' }])
     await db.dictionaryEntries.put({ entryId: 'e1', headword: 'resilient', headwordLower: 'resilient', posList: ['adj'], sensesJson: '["有韧性的"]', examplesJson: '[]', usageJson: '[]' })
     await db.wordbook.put({ wordId: 'w1', entryId: 'e1', addedAt: '2026-07-13T00:00:00.000Z', note: '', tags: [], archived: 0 })
-    const stream = new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify({ article: 'She stayed resilient.' }) } }] })}\n\n`)
-    const invalidDetails = () => new Response(JSON.stringify({ choices: [{ message: { content: '{}' } }] }))
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(stream)
-      .mockResolvedValueOnce(invalidDetails())
+    const fetchMock = vi.fn().mockResolvedValueOnce(articleStream({
+      title: 'Context Reading',
+      paragraphs: ['She stayed resilient.'],
+      translation: '她保持坚韧。',
+    }))
     vi.stubGlobal('fetch', fetchMock)
 
     const session = await generateReadingSession({ dayKey: '2026-07-13', batchIndex: 2, seed: 0, wordIds: ['w1'] })
@@ -130,7 +137,7 @@ describe('reading target selection and context feedback', () => {
     expect(session.segmentsJson).toContain('resilient')
     expect(session.title).toBe('Context Reading')
     expect(JSON.parse(session.targetsJson)).toEqual([expect.objectContaining({ wordId: 'w1', headword: 'resilient' })])
-    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
   it('keeps a usable article and quizzes when only a small number of words are omitted', async () => {
@@ -141,18 +148,18 @@ describe('reading target selection and context feedback', () => {
       await db.dictionaryEntries.put({ entryId: `e-${wordId}`, headword, headwordLower: headword, posList: ['adj'], sensesJson: JSON.stringify([meaning]), examplesJson: '[]', usageJson: '[]' })
       await db.wordbook.put({ wordId, entryId: `e-${wordId}`, addedAt: '2026-07-13T00:00:00.000Z', note: '', tags: [], archived: 0 })
     }
-    const stream = new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify({ article: 'A resilient guide gave a vivid and brief account of the scarce water.' }) } }] })}\n\n`)
-    const details = new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+    const targets: ReadingTarget[] = [
+      { wordId: 'w1', headword: 'resilient', contextualMeaning: '有韧性的', choices: ['有韧性的', '潮湿的', '昂贵的'], explanation: '上下文释义。' },
+      { wordId: 'w3', headword: 'vivid', contextualMeaning: '生动的', choices: ['生动的', '生动描述', '很生动的'], explanation: '上下文释义。' },
+      { wordId: 'w4', headword: 'scarce', contextualMeaning: '稀缺的', choices: ['稀缺的', '笔直的', '喧闹的'], explanation: '上下文释义。' },
+      { wordId: 'w5', headword: 'brief', contextualMeaning: '简短的', choices: ['简短的', '透明的', '坚硬的'], explanation: '上下文释义。' },
+    ]
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(articleStream({
       title: 'Water',
-      targets: [
-        { wordId: 'w1', headword: 'resilient', contextualMeaning: '有韧性的', choices: ['有韧性的', '潮湿的', '昂贵的'], explanation: '上下文释义。' },
-        { wordId: 'w3', headword: 'vivid', contextualMeaning: '生动的', choices: ['生动的', '生动描述', '很生动的'], explanation: '上下文释义。' },
-        { wordId: 'w4', headword: 'scarce', contextualMeaning: '稀缺的', choices: ['稀缺的', '笔直的', '喧闹的'], explanation: '上下文释义。' },
-        { wordId: 'w5', headword: 'brief', contextualMeaning: '简短的', choices: ['简短的', '透明的', '坚硬的'], explanation: '上下文释义。' },
-      ],
+      paragraphs: ['A resilient guide gave a vivid and brief account of the scarce water.'],
+      targets,
       translation: '一位坚韧的向导生动而简短地讲述了稀缺的水。',
-    }) } }] }))
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(stream).mockResolvedValueOnce(details))
+    })))
     const session = await generateReadingSession({ dayKey: '2026-07-13', batchIndex: 3, seed: 0, wordIds: ['w1', 'w2', 'w3', 'w4', 'w5'] })
     expect(session.status).toBe('ready')
     expect(session.targetWordIds).toEqual(['w1', 'w3', 'w5', 'w4'])
@@ -191,6 +198,33 @@ describe('reading target selection and context feedback', () => {
     })
 
     expect(await getOrCreateReadingBatches('daily:2026-07-13', '2026-07-13')).toEqual([['w1', 'w2', 'w3'], ['w4']])
+  })
+
+  it('splits an oversized round group instead of dropping article targets', async () => {
+    const now = '2026-07-13T08:00:00.000Z'
+    const wordIds = Array.from({ length: 15 }, (_, index) => `w${index + 1}`)
+    await db.settings.put({ key: 'articleEveryRounds', value: 3 })
+    await db.dailyLearningSessions.put({
+      sessionId: 'daily:2026-07-13', dayKey: '2026-07-13', status: 'active', phase: 'cards',
+      selectedListIds: [], initialWordIds: wordIds, articleStatus: 'waiting',
+      roundsJson: JSON.stringify(Array.from({ length: 3 }, (_, index) => ({ index: index + 1, wordIds: wordIds.slice(index * 5, index * 5 + 5) }))),
+      createdAt: now, updatedAt: now,
+    })
+
+    const batches = await getOrCreateReadingBatches('daily:2026-07-13', '2026-07-13')
+    expect(batches.map((batch) => batch.length)).toEqual([12, 3])
+    expect(batches.flat()).toEqual(wordIds)
+  })
+
+  it('maps later round groups past every split batch from earlier groups', () => {
+    const rounds = JSON.stringify([
+      { index: 1, wordIds: Array.from({ length: 7 }, (_, index) => `a${index}`) },
+      { index: 2, wordIds: Array.from({ length: 6 }, (_, index) => `b${index}`) },
+      { index: 3, wordIds: ['c1', 'c2'] },
+      { index: 4, wordIds: ['d1', 'd2'] },
+    ])
+    expect(readingBatchRangeForRound(rounds, 1, 2)).toEqual({ start: 0, end: 1 })
+    expect(readingBatchRangeForRound(rounds, 3, 2)).toEqual({ start: 2, end: 2 })
   })
 
   it('normalizes the order of previously cached article targets on restore', async () => {

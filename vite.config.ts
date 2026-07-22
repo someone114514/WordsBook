@@ -15,6 +15,10 @@ export default defineConfig(() => {
 
   return {
     base,
+    define: {
+      __APP_VERSION__: JSON.stringify(process.env.npm_package_version ?? '0.2.0-beta'),
+      __APP_UPDATED_AT__: JSON.stringify(new Date().toISOString().slice(0, 10)),
+    },
     plugins: [
       vue(),
       VitePWA({

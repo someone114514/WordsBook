@@ -42,7 +42,12 @@ const sessionNewCount = computed(() => {
   }
   return [...firstItems.values()].filter(Boolean).length
 })
-const remainingCards = computed(() => snapshot.value?.items.filter((item) => item.kind === 'card' && (item.status === 'pending' || item.status === 'active')).length ?? 0)
+const remainingCards = computed(() => new Set(snapshot.value?.items
+  .filter((item) => item.kind === 'card' && item.wordId && (item.status === 'pending' || item.status === 'active'))
+  .map((item) => item.wordId)).size)
+const repeatCards = computed(() => snapshot.value?.items.filter((item) => item.kind === 'card'
+  && (item.status === 'pending' || item.status === 'active')
+  && (item.attemptNo > 1 || item.reason === 'context-retry')).length ?? 0)
 const visibleQueueChanges = computed(() => queueChanges.value && !queueChanges.value.dismissed
   ? queueChanges.value.addedWordIds.length + queueChanges.value.removedWordIds.length
   : 0)
@@ -125,7 +130,7 @@ async function replanUnstarted() {
     session.value = updated.session
     queueChanges.value = await previewDailyQueueChanges(updated.session.sessionId)
     replanMessage.value = updated.attempts.length
-      ? '已按最新新词额度重排未开始内容；正在学习的一组保持不变。'
+      ? '已按最新词表与新词额度重排未开始内容。'
       : '已按最新新词额度重排今日学习。'
   } finally {
     changeBusy.value = false
@@ -161,14 +166,15 @@ onBeforeUnmount(() => window.removeEventListener(STUDY_PLAN_REFRESHED_EVENT, onP
         <strong v-else>{{ total }}</strong>
         <span>今日单词</span>
       </div>
-      <div class="study-metrics study-metrics-two">
+      <div :class="['study-metrics', { 'study-metrics-two': !snapshot }]">
         <template v-if="!snapshot">
           <div><span v-if="loading" class="study-number-skeleton" /><strong v-else>{{ plan?.dueCount ?? 0 }}</strong><span>复习</span></div>
           <div><span v-if="loading" class="study-number-skeleton" /><strong v-else>{{ plan?.newCount ?? 0 }}</strong><span>新词</span></div>
         </template>
         <template v-else>
-          <div><span v-if="loading" class="study-number-skeleton" /><strong v-else>{{ remainingCards }}</strong><span>队列剩余</span></div>
+          <div><span v-if="loading" class="study-number-skeleton" /><strong v-else>{{ remainingCards }}</strong><span>剩余单词</span></div>
           <div><span v-if="loading" class="study-number-skeleton" /><strong v-else>{{ sessionNewCount }}</strong><span>今日新词</span></div>
+          <div><span v-if="loading" class="study-number-skeleton" /><strong v-else>{{ repeatCards }}</strong><span>待重现</span></div>
         </template>
       </div>
       <p v-if="!loading && recoveryText" class="recovery-note">{{ recoveryText }}</p>

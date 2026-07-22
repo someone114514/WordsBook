@@ -11,6 +11,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   dailyReviewLimit: 200,
   roundWordCount: 5,
   articleEveryRounds: 2,
+  practiceQuestionLimit: 6,
   deepseekApiKey: '',
   deepseekBaseUrl: 'https://api.deepseek.com/v1/chat/completions',
   deepseekModel: 'deepseek-v4-flash',
@@ -22,6 +23,7 @@ export const DAILY_NEW_LIMIT_MAX = 200
 export const DAILY_REVIEW_LIMIT_MAX = 500
 export const ROUND_WORD_COUNT_MAX = 12
 export const ARTICLE_EVERY_ROUNDS_MAX = 12
+export const PRACTICE_QUESTION_LIMIT_MAX = 12
 
 function clampInteger(value: number, maximum: number): number {
   return Math.min(maximum, Math.max(0, Math.floor(value)))
@@ -71,6 +73,10 @@ export async function loadSettings(): Promise<AppSettings> {
       output.articleEveryRounds = row.value
     }
 
+    if (row.key === 'practiceQuestionLimit' && typeof row.value === 'number') {
+      output.practiceQuestionLimit = row.value
+    }
+
     if (
       row.key === 'deepseekApiKey' &&
       typeof row.value === 'string' &&
@@ -110,6 +116,7 @@ export async function loadSettings(): Promise<AppSettings> {
   output.dailyReviewLimit = clampInteger(output.dailyReviewLimit, DAILY_REVIEW_LIMIT_MAX)
   output.roundWordCount = Math.max(1, clampInteger(output.roundWordCount, ROUND_WORD_COUNT_MAX))
   output.articleEveryRounds = Math.max(1, clampInteger(output.articleEveryRounds, ARTICLE_EVERY_ROUNDS_MAX))
+  output.practiceQuestionLimit = clampInteger(output.practiceQuestionLimit, PRACTICE_QUESTION_LIMIT_MAX)
   return output
 }
 
@@ -121,6 +128,7 @@ export async function saveSettings(patch: Partial<AppSettings>): Promise<AppSett
     ...(patch.dailyReviewLimit === undefined ? {} : { dailyReviewLimit: clampInteger(patch.dailyReviewLimit, DAILY_REVIEW_LIMIT_MAX) }),
     ...(patch.roundWordCount === undefined ? {} : { roundWordCount: Math.max(1, clampInteger(patch.roundWordCount, ROUND_WORD_COUNT_MAX)) }),
     ...(patch.articleEveryRounds === undefined ? {} : { articleEveryRounds: Math.max(1, clampInteger(patch.articleEveryRounds, ARTICLE_EVERY_ROUNDS_MAX)) }),
+    ...(patch.practiceQuestionLimit === undefined ? {} : { practiceQuestionLimit: clampInteger(patch.practiceQuestionLimit, PRACTICE_QUESTION_LIMIT_MAX) }),
   }
   const nextSettings = { ...previousSettings, ...sanitizedPatch }
 
@@ -147,7 +155,8 @@ export async function saveSettings(patch: Partial<AppSettings>): Promise<AppSett
   if ((sanitizedPatch.dailyNewLimit !== undefined && sanitizedPatch.dailyNewLimit !== previousSettings.dailyNewLimit)
     || (sanitizedPatch.dailyReviewLimit !== undefined && sanitizedPatch.dailyReviewLimit !== previousSettings.dailyReviewLimit)
     || (sanitizedPatch.roundWordCount !== undefined && sanitizedPatch.roundWordCount !== previousSettings.roundWordCount)
-    || (sanitizedPatch.articleEveryRounds !== undefined && sanitizedPatch.articleEveryRounds !== previousSettings.articleEveryRounds)) {
+    || (sanitizedPatch.articleEveryRounds !== undefined && sanitizedPatch.articleEveryRounds !== previousSettings.articleEveryRounds)
+    || (sanitizedPatch.practiceQuestionLimit !== undefined && sanitizedPatch.practiceQuestionLimit !== previousSettings.practiceQuestionLimit)) {
     await markStudyDataChanged({ affectsQueue: false })
   }
 

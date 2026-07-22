@@ -12,7 +12,8 @@ import {
   setArticleStatus,
   skipWordInDailySession,
 } from '../modules/review/dailyQueueService'
-import { preGenerateDailyArticle } from '../modules/reading/readingService'
+import { preGenerateDailyArticle, readingBatchRangeForRound } from '../modules/reading/readingService'
+import { scheduleRoundPractice } from '../modules/reading/practiceService'
 import { loadReviewCards, setWordSuspended } from '../modules/review/reviewService'
 import { enhanceOrCreateVocabularyEntry, fetchAiDictionaryDraft } from '../modules/dictionary/aiDefinitionService'
 import { removeWordFromWordbook } from '../modules/wordbook/wordbookService'
@@ -43,7 +44,7 @@ const articleEveryRounds = ref(2)
 const aiDefinitionBusy = ref(false)
 const aiDefinitionMessage = ref('')
 const aiDefinitionMessageTone = ref<'success' | 'error'>('success')
-const preloadingRound = ref<number | null>(null)
+const preloadingRound = ref<string | null>(null)
 
 const selectedListIds = computed(() => typeof route.query.lists === 'string'
   ? route.query.lists.split(',').filter(Boolean)
@@ -55,7 +56,9 @@ const progress = computed(() => {
   if (!snapshot.value?.totalCards) return 0
   return Math.min(100, Math.round(snapshot.value.completedCards / snapshot.value.totalCards * 100))
 })
-const queueLabel = computed(() => `队列剩余 ${snapshot.value?.items.filter((item) => item.kind === 'card' && (item.status === 'pending' || item.status === 'active')).length ?? 0}`)
+const queueLabel = computed(() => `剩余 ${new Set(snapshot.value?.items
+  .filter((item) => item.kind === 'card' && item.wordId && (item.status === 'pending' || item.status === 'active'))
+  .map((item) => item.wordId)).size}`)
 const roundLabel = computed(() => `第 ${snapshot.value?.session.activeRoundIndex ?? 1} 组`)
 const tomorrowPriorityCount = computed(() => snapshot.value?.items.filter((item) => item.tomorrowPriority).length ?? 0)
 const reasonLabel = computed(() => ({
@@ -117,6 +120,10 @@ async function initialize() {
     deepseekModel.value = settings.deepseekModel
     articleEveryRounds.value = settings.articleEveryRounds
     snapshot.value = await getOrCreateDailySession(selectedListIds.value)
+    if (snapshot.value.session.phase === 'practice') {
+      await router.replace({ path: '/review/practice', query: { session: snapshot.value.session.sessionId } })
+      return
+    }
     void prewarmRoundContent()
     await loadCurrentCard()
   } catch (reason) {
@@ -127,17 +134,52 @@ async function initialize() {
 }
 
 watch(() => snapshot.value?.session.phase, async (phase) => {
+  if (phase === 'practice') {
+    await router.replace({ path: '/review/practice', query: { session: snapshot.value?.session.sessionId } })
+    return
+  }
   if (phase === 'article') {
     await router.replace({ path: '/review/reading', query: { session: snapshot.value?.session.sessionId } })
   }
 })
 
-async function prewarmRoundContent() {
-  const currentRound = snapshot.value?.session.activeRoundIndex ?? 0
-  if (!deepseekApiKey.value.trim() || currentRound < articleEveryRounds.value || currentRound % articleEveryRounds.value !== 0 || preloadingRound.value === currentRound) return
-  preloadingRound.value = currentRound
+async function maybeSchedulePractice(rating: ReviewRating, wordId: string) {
+  if (!snapshot.value) return
+  const roundIndex = snapshot.value.session.activeRoundIndex ?? 1
+  let roundWordIds: string[] = []
   try {
-    await preGenerateDailyArticle(snapshot.value!.session.dayKey)
+    const rounds = JSON.parse(snapshot.value.session.roundsJson ?? '[]') as Array<{ index: number; wordIds: string[] }>
+    roundWordIds = rounds.find((round) => round.index === roundIndex)?.wordIds ?? []
+  } catch { roundWordIds = [] }
+  if (!roundWordIds.length) return
+  const attempted = new Set(snapshot.value.attempts
+    .filter((attempt) => roundWordIds.includes(attempt.wordId))
+    .map((attempt) => attempt.wordId))
+  attempted.add(wordId)
+  const reachedPreloadPoint = attempted.size >= Math.ceil(roundWordIds.length * 0.6)
+  if (!reachedPreloadPoint && rating !== 'hard' && rating !== 'again') return
+  await scheduleRoundPractice(snapshot.value.session.sessionId, roundIndex, { wordId, rating })
+}
+
+async function prewarmRoundContent() {
+  const currentRound = snapshot.value?.session.activeRoundIndex ?? 1
+  const range = readingBatchRangeForRound(
+    snapshot.value?.session.roundsJson,
+    currentRound,
+    Math.max(1, articleEveryRounds.value),
+  )
+  const preloadKey = `${range.start}-${range.end}`
+  if (!deepseekApiKey.value.trim() || preloadingRound.value === preloadKey) return
+  preloadingRound.value = preloadKey
+  try {
+    const articles = await Promise.all(Array.from(
+      { length: range.end - range.start + 1 },
+      (_, index) => preGenerateDailyArticle(snapshot.value!.session.dayKey, range.start + index),
+    ))
+    if (articles.every((article) => article?.status === 'ready' || article?.status === 'completed') && snapshot.value) {
+      await setArticleStatus(snapshot.value.session.sessionId, 'ready')
+      snapshot.value.session.articleStatus = 'ready'
+    }
   } catch {
     // Preloading is intentionally best-effort; the learning flow has a local fallback.
   } finally {
@@ -149,22 +191,14 @@ onMounted(() => void initialize())
 
 async function onGrade(rating: ReviewRating) {
   const item = currentItem.value
-  if (!item || !snapshot.value) return
+  if (!item?.wordId || !snapshot.value) return
   grading.value = true
   error.value = ''
   stopActivePronunciation()
   try {
+    await maybeSchedulePractice(rating, item.wordId)
     snapshot.value = await answerDailyCard(snapshot.value.session.sessionId, item.itemId, rating)
     void prewarmRoundContent()
-    const attemptedWords = new Set(snapshot.value.attempts.map((attempt) => attempt.wordId))
-    if (snapshot.value.session.articleStatus === 'waiting' && snapshot.value.session.initialWordIds.every((wordId) => attemptedWords.has(wordId))) {
-      await setArticleStatus(snapshot.value.session.sessionId, 'generating')
-      snapshot.value.session.articleStatus = 'generating'
-      void preGenerateDailyArticle(snapshot.value.session.dayKey).then(async (article) => {
-        if (!snapshot.value) return
-        await setArticleStatus(snapshot.value.session.sessionId, article?.status === 'ready' ? 'ready' : article ? 'failed' : 'waiting')
-      })
-    }
     if (snapshot.value.session.phase === 'summary') {
       await router.replace('/review')
       return

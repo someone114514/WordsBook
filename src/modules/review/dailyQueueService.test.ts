@@ -209,7 +209,7 @@ describe('daily learning queue', () => {
     }
     await markStudyDataChanged()
     const changes = await previewDailyQueueChanges(snapshot.session.sessionId, new Date('2026-07-13T08:03:00.000Z'))
-    expect(changes.addedWordIds).toEqual([])
+    expect(changes.addedWordIds).toEqual(['later-0', 'later-1'])
     expect((await db.studyListItems.where('learningEnabled').equals(1).count())).toBe(1)
     let advanced = await answerDailyCard(snapshot.session.sessionId, snapshot.current!.itemId, 'good', new Date('2026-07-13T08:03:00.000Z'))
     advanced = await answerDailyCard(snapshot.session.sessionId, advanced.current!.itemId, 'good', new Date('2026-07-13T08:04:00.000Z'))
@@ -248,26 +248,51 @@ describe('daily learning queue', () => {
     expect(pending).toContain('lookup-new')
     expect(snapshot.session.initialWordIds).toEqual(pending)
     expect(snapshot.items.filter((item) => item.reason === 'initial' && item.status === 'skipped')).toHaveLength(3)
+    expect(snapshot.session.activeRoundIndex).toBe(1)
+    expect(snapshot.current?.wordId).toBeDefined()
   })
 
   it('opens an interleaved article at the configured round boundary and resumes cards afterward', async () => {
     await seed()
-    await db.settings.bulkPut([{ key: 'articleEveryRounds', value: 2 }, { key: 'roundWordCount', value: 1 }])
+    await db.settings.bulkPut([{ key: 'articleEveryRounds', value: 2 }, { key: 'roundWordCount', value: 10 }])
     await db.dailyLearningSessions.update('daily:test', {
-      activeRoundIndex: 2,
+      activeRoundIndex: 4,
       roundsJson: JSON.stringify([
-        { index: 1, wordIds: ['done'], status: 'completed' },
-        { index: 2, wordIds: ['w1'], status: 'active' },
+        { index: 1, wordIds: Array.from({ length: 7 }, (_, index) => `old-a-${index}`), status: 'completed' },
+        { index: 2, wordIds: Array.from({ length: 6 }, (_, index) => `old-b-${index}`), status: 'completed' },
+        { index: 3, wordIds: ['done'], status: 'completed' },
+        { index: 4, wordIds: ['w1'], status: 'active' },
       ]),
     })
-    await db.dailyQueueItems.update('i-w1', { roundIndex: 2 })
+    await db.dailyQueueItems.update('i-w1', { roundIndex: 4 })
 
     let snapshot = await answerDailyCard('daily:test', 'i-w1', 'good', new Date('2026-07-13T08:01:00.000Z'))
     snapshot = await answerDailyCard('daily:test', snapshot.current!.itemId, 'good', new Date('2026-07-13T08:02:00.000Z'))
     expect(snapshot.session.phase).toBe('article')
-    expect(snapshot.session.activeReadingBatchIndex).toBe(0)
+    expect(snapshot.session.activeReadingBatchIndex).toBe(2)
 
     snapshot = await resumeDailyCardsAfterArticle('daily:test', new Date('2026-07-13T08:03:00.000Z'))
     expect(snapshot.session.phase).toBe('summary')
+  })
+
+  it('repairs legacy migrated rounds so only the current round is active', async () => {
+    const now = '2026-07-13T08:00:00.000Z'
+    await seed(['w1', 'w2', 'w3'])
+    await db.dailyQueueItems.update('i-w1', { roundIndex: 1, status: 'completed' })
+    await db.dailyQueueItems.update('i-w2', { roundIndex: 2 })
+    await db.dailyQueueItems.update('i-w3', { roundIndex: 3 })
+    await db.dailyLearningSessions.update('daily:test', {
+      activeRoundIndex: 2,
+      roundsJson: JSON.stringify([
+        { index: 1, wordIds: ['w1'], status: 'active', startedAt: now },
+        { index: 2, wordIds: ['w2'], status: 'active', startedAt: now },
+        { index: 3, wordIds: ['w3'], status: 'active', startedAt: now },
+      ]),
+    })
+
+    const snapshot = await getOrCreateDailySession(undefined, new Date('2026-07-13T08:01:00.000Z'))
+    const rounds = JSON.parse(snapshot.session.roundsJson ?? '[]') as Array<{ index: number; status: string }>
+    expect(rounds.map((round) => round.status)).toEqual(['completed', 'active', 'pending'])
+    expect(snapshot.current?.wordId).toBe('w2')
   })
 })

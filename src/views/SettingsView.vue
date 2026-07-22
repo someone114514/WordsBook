@@ -20,8 +20,8 @@ import { getWordbookStats } from '../modules/wordbook/wordbookService'
 
 const settingsStore = useSettingsStore()
 const dictionaryStore = useDictionaryStore()
-const appVersion = '0.1.0-beta'
-const appUpdatedAt = '2026-07-21'
+const appVersion = __APP_VERSION__
+const appUpdatedAt = __APP_UPDATED_AT__
 
 const { settings } = storeToRefs(settingsStore)
 const { installedMeta, installing, progress, lastError, fullCacheProgress } = storeToRefs(dictionaryStore)
@@ -167,7 +167,7 @@ async function onUpdateBoolean(key: 'autoPronunciation', event: Event) {
 }
 
 async function onUpdateNumber(
-  key: 'dailyNewLimit' | 'dailyReviewLimit' | 'roundWordCount' | 'articleEveryRounds' | 'speechRate',
+  key: 'dailyNewLimit' | 'dailyReviewLimit' | 'roundWordCount' | 'articleEveryRounds' | 'practiceQuestionLimit' | 'speechRate',
   event: Event,
 ): Promise<void> {
   const target = event.target as HTMLInputElement
@@ -529,7 +529,17 @@ async function onRunCloudSync(mode: CloudSyncMode) {
           @change="onUpdateNumber('articleEveryRounds', $event)"
         />
       </label>
-      <p class="muted settings-hint">当天计划会按这些额度生成；刷新未开始内容后会按最新词表重排。文章会合并这一段回合的词并生成语境题。</p>
+      <label class="setting-row">
+        <span>每日语境练习题数上限</span>
+        <input
+          type="number"
+          min="0"
+          max="12"
+          :value="settings.practiceQuestionLimit"
+          @change="onUpdateNumber('practiceQuestionLimit', $event)"
+        />
+      </label>
+      <p class="muted settings-hint">设为 0 可关闭语境练习；算法每轮最多选择 2 题，不会强制用满上限。文章会合并这一段回合的词。</p>
     </article>
 
     <article class="result-section">

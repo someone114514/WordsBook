@@ -12,6 +12,7 @@ import {
   generateReadingSession,
   loadContextAttempts,
   parseReadingSession,
+  readingBatchRangeForRound,
   recordContextAttempt,
   resetReadingSessionAttempts,
   saveReadingProgress,
@@ -190,13 +191,43 @@ async function initialize() {
   const settings = await loadSettings()
   level.value = settings.articleLevel
   noKey.value = !settings.deepseekApiKey.trim()
+  const requestedBatch = Number(route.query.batch)
+  if (isHistoryReview.value && Number.isInteger(requestedBatch) && requestedBatch >= 0) {
+    batchIndex.value = requestedBatch
+    const historical = await db.readingSessions.get(readingSessionId())
+    if (historical) {
+      if (historical.status === 'ready' || historical.status === 'completed') {
+        if (route.query.restart === '1') {
+          await resetReadingSessionAttempts(historical.sessionId)
+          await saveReadingProgress(historical.sessionId, 0, false, 0, 0)
+          await restoreSavedArticle({ ...historical, readerStage: 0, showTranslation: false, quizCursor: 0, resultCursor: 0 })
+        } else {
+          await restoreSavedArticle(historical)
+        }
+        return
+      }
+      const sourceWords = historical.sourceWordIds?.length ? historical.sourceWordIds : historical.targetWordIds
+      if (sourceWords.length) {
+        batches.value = Array.from({ length: requestedBatch + 1 }, (_, index) => index === requestedBatch ? sourceWords : [])
+        await loadBatch()
+        return
+      }
+      if (route.query.restart === '1') {
+        await resetReadingSessionAttempts(historical.sessionId)
+        await saveReadingProgress(historical.sessionId, 0, false, 0, 0)
+        await restoreSavedArticle({ ...historical, readerStage: 0, showTranslation: false, quizCursor: 0, resultCursor: 0 })
+      } else {
+        await restoreSavedArticle(historical)
+      }
+      return
+    }
+  }
   batches.value = await getOrCreateReadingBatches(dailySessionId.value, dayKey.value)
   if (!batches.value.length) {
     const resumed = await resumeDailyCardsAfterArticle(dailySessionId.value)
     await router.replace(resumed.session.status === 'completed' ? '/review' : '/review/session')
     return
   }
-  const requestedBatch = Number(route.query.batch)
   const dailySession = await db.dailyLearningSessions.get(dailySessionId.value)
   const requestedOrStoredBatch = Number.isInteger(requestedBatch) && requestedBatch >= 0
     ? requestedBatch
@@ -205,7 +236,7 @@ async function initialize() {
     await setBatchIndex(requestedOrStoredBatch)
   }
   const cached = await db.readingSessions.get(readingSessionId())
-  if (cached && (cached.status === 'ready' || cached.status === 'completed' || Boolean(splitStoredPassage(cached)))) {
+  if (cached && (cached.status === 'ready' || cached.status === 'completed')) {
     if (route.query.restart === '1') {
       await resetReadingSessionAttempts(cached.sessionId)
       await saveReadingProgress(cached.sessionId, 0, false, 0, 0)
@@ -307,13 +338,19 @@ async function regenerateStaleArticle() {
 }
 
 async function nextBatch() {
-  if (batchIndex.value + 1 < batches.value.length) {
-    await setBatchIndex(batchIndex.value + 1)
-    await loadBatch()
-    return
-  }
   if (isHistoryReview.value) {
     await router.replace('/review/reading/history')
+    return
+  }
+  const daily = await db.dailyLearningSessions.get(dailySessionId.value)
+  const range = readingBatchRangeForRound(
+    daily?.roundsJson,
+    daily?.lastArticleRoundIndex ?? daily?.activeRoundIndex ?? 1,
+    daily?.readingBatchRounds ?? 2,
+  )
+  if (batchIndex.value < range.end && batchIndex.value + 1 < batches.value.length) {
+    await setBatchIndex(batchIndex.value + 1)
+    await loadBatch()
     return
   }
   await setArticleStatus(dailySessionId.value, 'completed')
@@ -511,7 +548,7 @@ onBeforeUnmount(() => {
           </section>
           <button class="btn" type="button" @click="toggleTranslation">{{ showTranslation ? '隐藏全文翻译' : '显示全文翻译' }}</button>
           <p v-if="showTranslation" class="translation-panel">{{ session.translation }}</p>
-          <button class="btn btn-primary" type="button" @click="nextBatch">{{ isHistoryReview ? '返回文章记录' : batchIndex + 1 < batches.length ? '下一篇' : '完成今日学习' }}</button>
+          <button class="btn btn-primary" type="button" @click="nextBatch">{{ isHistoryReview ? '返回文章记录' : '继续学习' }}</button>
         </template>
       </template>
     </article>

@@ -32,8 +32,9 @@ describe('review settings', () => {
     await db.settings.bulkPut([
       { key: 'roundWordCount', value: 0 },
       { key: 'articleEveryRounds', value: 99 },
+      { key: 'practiceQuestionLimit', value: 99 },
     ])
-    expect(await loadSettings()).toMatchObject({ roundWordCount: 1, articleEveryRounds: 12 })
-    expect(await saveSettings({ roundWordCount: 7, articleEveryRounds: 3 })).toMatchObject({ roundWordCount: 7, articleEveryRounds: 3 })
+    expect(await loadSettings()).toMatchObject({ roundWordCount: 1, articleEveryRounds: 12, practiceQuestionLimit: 12 })
+    expect(await saveSettings({ roundWordCount: 7, articleEveryRounds: 3, practiceQuestionLimit: 0 })).toMatchObject({ roundWordCount: 7, articleEveryRounds: 3, practiceQuestionLimit: 0 })
   })
 })

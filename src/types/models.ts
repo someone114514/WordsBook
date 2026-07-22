@@ -127,6 +127,7 @@ export interface AppSettings {
   dailyReviewLimit: number
   roundWordCount: number
   articleEveryRounds: number
+  practiceQuestionLimit: number
   deepseekApiKey: string
   deepseekBaseUrl: string
   deepseekModel: string
@@ -178,7 +179,7 @@ export interface DailyLearningSession {
   sessionId: string
   dayKey: string
   status: 'active' | 'completed'
-  phase: 'cards' | 'article' | 'summary'
+  phase: 'cards' | 'practice' | 'article' | 'summary'
   selectedListIds: string[]
   initialWordIds: string[]
   sourceRevision?: string
@@ -198,6 +199,9 @@ export interface DailyLearningSession {
   activeReadingBatchIndex?: number
   /** The latest round already handed off to its scheduled article. */
   lastArticleRoundIndex?: number
+  pendingPracticeRoundIndex?: number
+  pendingPracticeSessionId?: string
+  lastPracticeRoundIndex?: number
   cardsCompletedAt?: string
   articleStatus: 'waiting' | 'generating' | 'ready' | 'completed' | 'skipped' | 'failed' | 'stale'
   createdAt: string
@@ -258,6 +262,22 @@ export interface ReadingTarget {
   explanation: string
 }
 
+export type PracticeQuestionType = 'meaning-in-context' | 'usage-discrimination'
+
+export interface PracticeQuestion {
+  questionId: string
+  type: PracticeQuestionType
+  focusWordId: string
+  headword: string
+  passage?: string
+  stem: string
+  options: string[]
+  correctIndex: number
+  evidence: string[]
+  explanation: string
+  distractorExplanations: string[]
+}
+
 export type ReadingErrorCode =
   | 'missing-key'
   | 'auth'
@@ -282,6 +302,16 @@ export interface ReadingSession {
   selectionSeed: number
   level: AppSettings['articleLevel']
   topic: string
+  /** Article is the legacy/default value; round-practice stores a preloaded exercise bundle. */
+  contentKind?: 'article' | 'round-practice'
+  sourceWordIds?: string[]
+  sourceWordSetHash?: string
+  promptVersion?: string
+  plannedQuestionCount?: number
+  candidateWordIds?: string[]
+  questionsJson?: string
+  practiceSpecJson?: string
+  skippedAt?: string
   targetWordIds: string[]
   /** Words requested for this batch but omitted by the generated passage/details. */
   omittedTargetWordIds?: string[]
@@ -311,6 +341,11 @@ export interface ContextAttempt {
   sessionId: string
   wordId: string
   selectedMeaning?: string
+  questionId?: string
+  questionType?: PracticeQuestionType
+  selectedOptionIndex?: number
+  correctOptionIndex?: number
+  roundIndex?: number
   result: 'correct' | 'wrong' | 'uncertain'
   answeredAt: string
 }

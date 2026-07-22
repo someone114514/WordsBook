@@ -26,6 +26,11 @@ export const router = createRouter({
       meta: { title: '语境阅读', immersive: true },
     },
     {
+      path: '/review/practice',
+      component: () => import('../views/PracticeSessionView.vue'),
+      meta: { title: '语境练习', immersive: true },
+    },
+    {
       path: '/review/reading/history',
       component: () => import('../views/ReadingHistoryView.vue'),
       meta: { title: '文章记录' },
