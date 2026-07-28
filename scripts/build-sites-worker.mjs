@@ -4,16 +4,27 @@ import { resolve } from 'node:path'
 // Sites serves the contents of dist/ through the ASSETS binding. This worker
 // keeps the SPA fallback working for deep links while leaving all app logic
 // client-side and offline-first.
-const worker = `const worker = {
+const worker = `function withLearningEngineHeaders(response) {
+  const headers = new Headers(response.headers)
+  headers.set('Cross-Origin-Opener-Policy', 'same-origin')
+  headers.set('Cross-Origin-Embedder-Policy', 'credentialless')
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  })
+}
+
+const worker = {
   async fetch(request, env) {
     const response = await env.ASSETS.fetch(request)
-    if (response.status !== 404) return response
+    if (response.status !== 404) return withLearningEngineHeaders(response)
 
     const acceptsHtml = request.headers.get('accept')?.includes('text/html')
-    if (!acceptsHtml) return response
+    if (!acceptsHtml) return withLearningEngineHeaders(response)
 
     const fallback = new URL('/index.html', request.url)
-    return env.ASSETS.fetch(new Request(fallback, request))
+    return withLearningEngineHeaders(await env.ASSETS.fetch(new Request(fallback, request)))
   },
 }
 

@@ -15,6 +15,20 @@ export default defineConfig(() => {
 
   return {
     base,
+    server: {
+      headers: {
+        'Cross-Origin-Opener-Policy': 'same-origin',
+        // credentialless keeps third-party pronunciation media usable while
+        // still exposing SharedArrayBuffer to the local FSRS WASI worker.
+        'Cross-Origin-Embedder-Policy': 'credentialless',
+      },
+    },
+    preview: {
+      headers: {
+        'Cross-Origin-Opener-Policy': 'same-origin',
+        'Cross-Origin-Embedder-Policy': 'credentialless',
+      },
+    },
     define: {
       __APP_VERSION__: JSON.stringify(process.env.npm_package_version ?? '0.2.0-beta'),
       __APP_UPDATED_AT__: JSON.stringify(new Date().toISOString().slice(0, 10)),
@@ -53,10 +67,14 @@ export default defineConfig(() => {
           cleanupOutdatedCaches: true,
           clientsClaim: true,
           skipWaiting: true,
+          // Let the document runtime route handle navigations so its response
+          // header plugin also runs on GitHub Pages. The same plugin supplies
+          // the precached SPA shell when a navigation is fully offline.
+          navigateFallback: null,
           // The offline ECDICT surface-form index is ~4.3 MiB and is required
           // to recognize natural inflections in generated reading passages.
           maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
-          globPatterns: ['**/*.{js,css,html,svg,png,webp,json}'],
+          globPatterns: ['**/*.{js,css,html,svg,png,webp,json,wasm}'],
           runtimeCaching: [
             {
               urlPattern: ({ request }) => request.destination === 'document',
@@ -65,6 +83,45 @@ export default defineConfig(() => {
                 cacheName: 'pages',
                 networkTimeoutSeconds: 1,
                 expiration: { maxEntries: 50 },
+                plugins: [
+                  {
+                    /**
+                     * GitHub Pages cannot configure response headers. Adding
+                     * them in the existing Workbox navigation route keeps the
+                     * portable FSRS WASI worker available after the PWA takes
+                     * control, without registering a competing service worker.
+                     */
+                    fetchDidSucceed: async ({ response }: { response: Response }) => {
+                      if (!response || response.type === 'opaque') return response
+                      const headers = new Headers(response.headers)
+                      headers.set('Cross-Origin-Opener-Policy', 'same-origin')
+                      headers.set('Cross-Origin-Embedder-Policy', 'credentialless')
+                      return new Response(response.body, {
+                        status: response.status,
+                        statusText: response.statusText,
+                        headers,
+                      })
+                    },
+                    handlerDidError: async () => {
+                      const workerGlobal = globalThis as unknown as {
+                        registration: { scope: string }
+                        caches: { match(url: string, options: { ignoreSearch: boolean }): Promise<Response | undefined> }
+                      }
+                      const scope = workerGlobal.registration.scope
+                      const fallbackUrl = new URL('index.html', scope).href
+                      const response = await workerGlobal.caches.match(fallbackUrl, { ignoreSearch: true })
+                      if (!response) return Response.error()
+                      const headers = new Headers(response.headers)
+                      headers.set('Cross-Origin-Opener-Policy', 'same-origin')
+                      headers.set('Cross-Origin-Embedder-Policy', 'credentialless')
+                      return new Response(response.body, {
+                        status: response.status,
+                        statusText: response.statusText,
+                        headers,
+                      })
+                    },
+                  },
+                ],
               },
             },
             {

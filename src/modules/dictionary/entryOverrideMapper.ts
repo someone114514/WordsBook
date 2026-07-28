@@ -35,6 +35,7 @@ export function applyAiOverrideToEntryView(
     return {
       ...entry,
       sensesJson: override.aiSensesJson,
+      senseRecordsJson: undefined,
       examplesJson: override.aiExamplesJson,
       usageJson: override.aiUsageJson,
       aiEnhanced: true,
@@ -46,6 +47,7 @@ export function applyAiOverrideToEntryView(
   return {
     ...entry,
     sensesJson: toJsonArray([...parseJsonArray(entry.sensesJson), ...parseJsonArray(override.aiSensesJson)]),
+    senseRecordsJson: undefined,
     examplesJson: toJsonArray([
       ...parseJsonArray(entry.examplesJson),
       ...parseJsonArray(override.aiExamplesJson),

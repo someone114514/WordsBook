@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { db } from '../db/database'
 import type { ContextAttempt, PracticeQuestion, ReadingSession } from '../types/models'
@@ -8,7 +8,6 @@ import {
   generateRoundPractice,
   loadPracticeQuestions,
   recordPracticeAnswer,
-  retryRoundPractice,
 } from '../modules/reading/practiceService'
 import { resumeDailyCardsAfterPractice } from '../modules/review/dailyQueueService'
 
@@ -22,6 +21,7 @@ const cursor = ref(0)
 const busy = ref(false)
 const error = ref('')
 let pollTimer = 0
+let questionShownAt = Date.now()
 
 const current = computed(() => questions.value[cursor.value])
 const currentAttempt = computed(() => current.value ? attempts.value[current.value.questionId] : undefined)
@@ -29,6 +29,13 @@ const statusText = computed(() => content.value?.status === 'failed'
   ? '语境练习生成失败'
   : content.value?.status === 'ready' || content.value?.status === 'completed'
     ? '' : '正在准备语境练习…')
+const questionKindLabel = computed(() => current.value?.type === 'meaning-in-context'
+  ? '英文释义辨析'
+  : current.value?.type === 'usage-discrimination' ? '四语境辨用法' : '本地主动回忆')
+
+watch(() => current.value?.questionId, () => {
+  questionShownAt = Date.now()
+})
 
 async function refresh() {
   const daily = await db.dailyLearningSessions.get(dailySessionId.value)
@@ -40,6 +47,12 @@ async function refresh() {
   content.value = await db.readingSessions.get(sessionId) ?? null
   if (!content.value) {
     error.value = '语境练习记录不存在，可跳过后继续学习。'
+    return
+  }
+  if (content.value.status === 'failed' || content.value.status === 'skipped') {
+    // Practice is an optional enhancement. Contract, network and credential
+    // failures must never strand the learner on a dead-end screen.
+    await finish(true)
     return
   }
   if (content.value.status === 'pending' || content.value.status === 'streaming') {
@@ -65,6 +78,7 @@ async function answer(index?: number) {
       index,
       dailySessionId.value,
       content.value.batchIndex,
+      { responseMs: Math.max(0, Date.now() - questionShownAt), hintLevel: current.value.hintLevel ?? 0 },
     )
     attempts.value[current.value.questionId] = attempt
   } finally { busy.value = false }
@@ -93,18 +107,6 @@ async function finish(skipped: boolean) {
   } finally { busy.value = false }
 }
 
-async function retry() {
-  if (!content.value || busy.value) return
-  busy.value = true
-  error.value = ''
-  try {
-    content.value = await retryRoundPractice(content.value.sessionId)
-    await refresh()
-  } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : String(reason)
-  } finally { busy.value = false }
-}
-
 onMounted(async () => {
   await refresh()
   pollTimer = window.setInterval(() => {
@@ -129,14 +131,9 @@ onBeforeUnmount(() => window.clearInterval(pollTimer))
       <button class="btn" type="button" :disabled="busy" @click="finish(true)">跳过本次</button>
     </section>
 
-    <section v-else-if="content.status === 'failed'" class="immersive-card empty-state">
-      <h1>语境练习生成失败</h1>
-      <p class="error">{{ error || content.error }}</p>
-      <div class="action-row"><button class="btn btn-primary" type="button" :disabled="busy" @click="retry">{{ busy ? '重试中…' : '手动重试' }}</button><button class="btn" type="button" @click="finish(true)">跳过本次</button></div>
-    </section>
-
     <section v-else-if="current" class="immersive-card practice-question-card">
-      <p class="eyebrow">{{ current.type === 'meaning-in-context' ? '英文释义辨析' : '四语境辨用法' }}</p>
+      <p class="eyebrow">{{ questionKindLabel }}</p>
+      <p v-if="content?.errorCode" class="muted">AI 增强当前不可用，已使用无需联网的本地练习。</p>
       <h1>{{ current.headword }}</h1>
       <p v-if="current.passage" class="practice-passage">{{ current.passage }}</p>
       <h2>{{ current.stem }}</h2>
@@ -145,8 +142,8 @@ onBeforeUnmount(() => window.clearInterval(pollTimer))
         <button v-if="!currentAttempt" class="btn btn-quiet" type="button" :disabled="busy" @click="answer()">不确定</button>
       </div>
       <div v-if="currentAttempt" :class="['context-answer', currentAttempt.result === 'correct' ? 'correct' : 'incorrect']">
-        <strong>{{ currentAttempt.result === 'correct' ? '回答正确' : currentAttempt.result === 'uncertain' ? '不确定' : '回答错误' }}</strong>
-        <p>答案：{{ current.options[current.correctIndex] }}</p>
+        <strong>{{ current.type === 'self-recall' ? '自评完成' : currentAttempt.result === 'correct' ? '回答正确' : currentAttempt.result === 'uncertain' ? '不确定' : '回答错误' }}</strong>
+        <p v-if="current.type !== 'self-recall'">答案：{{ current.options[current.correctIndex] }}</p>
         <p>{{ current.explanation }}</p>
         <ul><li v-for="clue in current.evidence" :key="clue">{{ clue }}</li></ul>
         <details><summary>查看选项辨析</summary><p v-for="(reason, index) in current.distractorExplanations" :key="index">{{ String.fromCharCode(65 + index) }}. {{ reason }}</p></details>

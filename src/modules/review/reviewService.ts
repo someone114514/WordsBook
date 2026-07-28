@@ -1,6 +1,13 @@
 ﻿import dayjs from 'dayjs'
 import { db } from '../../db/database'
-import type { ReviewCard, ReviewRating, ReviewState, StudyPlan, WordbookItem } from '../../types/models'
+import type {
+  ReviewCard,
+  ReviewLog,
+  ReviewRating,
+  ReviewState,
+  StudyPlan,
+  WordbookItem,
+} from '../../types/models'
 import { dictionaryEntryFromWordbook, repairVocabularyIntegrity } from '../wordbook/vocabularyIntegrity'
 import { applyAiOverrides } from '../dictionary/entryOverrideMapper'
 import { loadSettings } from '../settings/settingsService'
@@ -23,6 +30,7 @@ interface BuildPlanOptions {
   excludeWordIds?: string[]
   includeImportBacklog?: boolean
   promoteImportBacklog?: boolean
+  allowRecoveryNewWords?: boolean
 }
 
 interface PlanCache {
@@ -31,6 +39,7 @@ interface PlanCache {
   dailyNewLimit: number
   dailyReviewLimit: number
   dayKey: string
+  nextDueAt?: string
   stale?: boolean
 }
 
@@ -65,6 +74,34 @@ const SOURCE_PRIORITY = {
   import: 2,
   migration: 1,
 } as const
+
+function interleaveRecoveryRows<T extends { wordId: string; state: ReviewState }>(
+  rows: T[],
+  at: Date,
+): T[] {
+  const risk = [...rows]
+  const oldest = [...rows].sort((left, right) => left.state.nextReviewAt.localeCompare(right.state.nextReviewAt))
+  const easier = [...rows].sort((left, right) =>
+    getReviewRetrievability(right.state, at) - getReviewRetrievability(left.state, at))
+  const used = new Set<string>()
+  const output: T[] = []
+  const take = (source: T[], count: number) => {
+    for (const row of source) {
+      if (used.has(row.wordId)) continue
+      used.add(row.wordId)
+      output.push(row)
+      if (--count === 0) break
+    }
+  }
+  while (output.length < rows.length) {
+    const before = output.length
+    take(risk, 5)
+    take(oldest, 3)
+    take(easier, 2)
+    if (output.length === before) break
+  }
+  return output
+}
 
 function normalizedInitial(value: string | undefined): string {
   return (value ?? '').replace(/^[^a-z]+/i, '').charAt(0).toLowerCase()
@@ -211,16 +248,34 @@ export async function buildTodayPlan(options: BuildPlanOptions = {}): Promise<St
   const rows = (await getActiveStateRows(options.listIds, options.includeImportBacklog ?? true))
     .filter((row) => !excludedWordIds.has(row.wordId))
 
-  const dueRows = rows
+  const sortedDueRows = rows
     .filter((row) => {
       if (row.state.suspendedAt) return false
-      return (row.state.reps ?? row.state.totalReviews) > 0 && !dayjs(row.state.nextReviewAt).isAfter(nowIso)
+      const manualRelearnDue = row.state.sameDayRelearnAt
+        && !dayjs(row.state.sameDayRelearnAt).isAfter(nowIso)
+      return Boolean(manualRelearnDue)
+        || ((row.state.reps ?? row.state.totalReviews) > 0 && !dayjs(row.state.nextReviewAt).isAfter(nowIso))
     })
     .sort((left, right) => {
+      const manualPriority = Number(Boolean(right.state.sameDayRelearnAt))
+        - Number(Boolean(left.state.sameDayRelearnAt))
+      if (manualPriority) return manualPriority
       const retrievabilityDiff = getReviewRetrievability(left.state, now) - getReviewRetrievability(right.state, now)
       if (Math.abs(retrievabilityDiff) > 1e-6) return retrievabilityDiff
       return left.state.nextReviewAt.localeCompare(right.state.nextReviewAt)
     })
+  const todayKey = dayjs(now).format('YYYY-MM-DD')
+  const previousSession = await db.dailyLearningSessions
+    .where('dayKey')
+    .below(todayKey)
+    .reverse()
+    .first()
+  const daysSinceLastStudy = previousSession
+    ? Math.max(0, dayjs(now).startOf('day').diff(previousSession.dayKey, 'day'))
+    : 0
+  const recoveryMode = daysSinceLastStudy >= 2
+    || (dailyReviewLimit > 0 && sortedDueRows.length > dailyReviewLimit)
+  const dueRows = recoveryMode ? interleaveRecoveryRows(sortedDueRows, now) : sortedDueRows
 
   const newRows = rows
     .filter((row) => !row.state.suspendedAt && (row.state.reps ?? row.state.totalReviews) === 0)
@@ -230,7 +285,9 @@ export async function buildTodayPlan(options: BuildPlanOptions = {}): Promise<St
       || left.state.nextReviewAt.localeCompare(right.state.nextReviewAt))
 
   const selectedDue = dueRows.slice(0, dailyReviewLimit)
-  const effectiveNewLimit = dueRows.length > dailyReviewLimit
+  const effectiveNewLimit = recoveryMode && !options.allowRecoveryNewWords
+    ? 0
+    : dueRows.length > dailyReviewLimit
     ? 0
     : dueRows.length > dailyReviewLimit * 0.5
       ? Math.ceil(dailyNewLimit / 2)
@@ -264,12 +321,16 @@ export async function buildTodayPlan(options: BuildPlanOptions = {}): Promise<St
     name: list.name,
     count: selectedRows.filter((row) => row.listIds.includes(enabledListIds[index]!)).length,
   }] : [])
-  const previousSession = await db.dailyLearningSessions.orderBy('dayKey').last()
-  const daysSinceLastStudy = previousSession ? Math.max(0, dayjs(now).startOf('day').diff(previousSession.dayKey, 'day')) : 0
-
   const headwords = new Map(rows.map((row) => [row.wordId, row.headword]))
   const queueWordIds = await avoidAdjacentWordInitials(selectedRows.map((row) => row.wordId), headwords)
   const eligibleWordIds = await avoidAdjacentWordInitials([...dueRows, ...newRows].map((row) => row.wordId), headwords)
+  const endOfDay = dayjs(now).add(1, 'day').startOf('day')
+  const laterToday = rows
+    .filter((row) => !row.state.suspendedAt
+      && (row.state.reps ?? row.state.totalReviews) > 0
+      && dayjs(row.state.nextReviewAt).isAfter(nowIso)
+      && dayjs(row.state.nextReviewAt).isBefore(endOfDay))
+    .sort((left, right) => left.state.nextReviewAt.localeCompare(right.state.nextReviewAt))
   return {
     // These counts describe the actual queue, not the entire backlog. This keeps
     // the headline total equal to "复习 + 新词" and makes the configured limits visible.
@@ -277,11 +338,16 @@ export async function buildTodayPlan(options: BuildPlanOptions = {}): Promise<St
     newCount: selectedNew.length,
     queueWordIds,
     eligibleWordIds,
-    laterTodayCount: 0,
+    laterTodayCount: laterToday.length,
     listIds: options.listIds,
     effectiveNewLimit,
-    recoveryDays: dailyReviewLimit > 0 ? Math.max(1, Math.ceil(dueRows.length / dailyReviewLimit)) : 0,
+    recoveryDays: dailyReviewLimit > 0
+      ? (recoveryMode ? Math.max(3, Math.ceil(dueRows.length / dailyReviewLimit)) : Math.max(1, Math.ceil(dueRows.length / dailyReviewLimit)))
+      : 0,
     daysSinceLastStudy,
+    recoveryMode,
+    backlogDueCount: dueRows.length,
+    nextDueAt: laterToday[0]?.state.nextReviewAt,
     listContributions,
   }
 }
@@ -318,6 +384,7 @@ export async function buildTodayPlanCached(): Promise<StudyPlan> {
     planCache.revision === revision &&
     planCache.dailyNewLimit === settings.dailyNewLimit &&
     planCache.dailyReviewLimit === settings.dailyReviewLimit
+    && (!planCache.nextDueAt || Date.parse(planCache.nextDueAt) > Date.now())
     && !planCache.stale
   ) {
     return planCache.plan
@@ -334,6 +401,7 @@ export async function buildTodayPlanCached(): Promise<StudyPlan> {
     dailyNewLimit: settings.dailyNewLimit,
     dailyReviewLimit: settings.dailyReviewLimit,
     dayKey,
+    nextDueAt: plan.nextDueAt,
     stale: false,
   }
 
@@ -499,59 +567,84 @@ export async function gradeCard(
     masteryAfter: number
   },
 ): Promise<ReviewState> {
-  const reviewedAtIso = reviewedAt.toISOString()
-
   return db.transaction('rw', [db.reviewState, db.reviewLogs, db.syncMeta, db.syncRecords, db.syncTombstones], async () => {
-    const state = await db.reviewState.get(wordId)
-    if (!state) {
-      throw new Error('Review state missing')
-    }
-
-    const normalizedState = state.schedulerVersion === 'fsrs-5'
-      ? state
-      : migrateLegacyReviewState(
-          state,
-          await db.reviewLogs.where('wordId').equals(wordId).toArray(),
-          state.nextReviewAt,
-        )
-    const result = scheduleFsrsReview(normalizedState, rating, reviewedAt)
-
-    const updatedState: ReviewState = {
-      ...cardToReviewState(wordId, result.card, normalizedState),
-      cycle: normalizedState.cycle,
-      successCount: normalizedState.successCount + (rating === 'good' ? 1 : 0),
-      lapseCount: result.card.lapses,
-      totalReviews: result.card.reps,
-      sameDayRelearnAt: undefined,
-    }
-
-    await db.reviewState.put(updatedState)
-    const log = {
-      wordId,
-      reviewedAt: reviewedAtIso,
-      rating,
-      source: 'flashcard' as const,
-      wasNew: (normalizedState.reps ?? normalizedState.totalReviews) === 0,
-      cycleBefore: normalizedState.cycle,
-      cycleAfter: updatedState.cycle,
-      nextReviewAtBefore: normalizedState.nextReviewAt,
-      nextReviewAtAfter: updatedState.nextReviewAt,
-      stateBefore: normalizedState.fsrsState,
-      stateAfter: updatedState.fsrsState,
-      stabilityBefore: normalizedState.stability,
-      stabilityAfter: updatedState.stability,
-      difficultyBefore: normalizedState.difficulty,
-      difficultyAfter: updatedState.difficulty,
-      sessionAttemptCount: session?.attemptCount,
-      sessionRatings: session?.ratings,
-      todayMasteryBefore: session?.masteryBefore,
-      todayMasteryAfter: session?.masteryAfter,
-    }
-    await db.reviewLogs.add(log)
-    await markRecordChanged('reviewState', wordId, reviewedAtIso)
-    await markPayloadChanged('reviewLogs', log, reviewedAtIso)
-    return updatedState
+    const prepared = await prepareCardGrade(wordId, rating, reviewedAt, session)
+    await persistPreparedCardGrade(prepared)
+    return prepared.updatedState
   })
+}
+
+export interface PreparedCardGrade {
+  updatedState: ReviewState
+  log: ReviewLog
+}
+
+/**
+ * Builds an FSRS transition without opening a transaction. Queue commands use
+ * this inside their own transaction so the canonical grade, activity evidence
+ * and queue mutation either all commit or all roll back.
+ */
+export async function prepareCardGrade(
+  wordId: string,
+  rating: ReviewRating,
+  reviewedAt = new Date(),
+  session?: {
+    attemptCount: number
+    ratings: ReviewRating[]
+    masteryBefore: number
+    masteryAfter: number
+  },
+  source: ReviewLog['source'] = 'flashcard',
+): Promise<PreparedCardGrade> {
+  const state = await db.reviewState.get(wordId)
+  if (!state) throw new Error('Review state missing')
+
+  const normalizedState = state.schedulerVersion === 'fsrs-5'
+    ? state
+    : migrateLegacyReviewState(
+        state,
+        await db.reviewLogs.where('wordId').equals(wordId).toArray(),
+        state.nextReviewAt,
+      )
+  const result = scheduleFsrsReview(normalizedState, rating, reviewedAt)
+  const updatedState: ReviewState = {
+    ...cardToReviewState(wordId, result.card, normalizedState),
+    cycle: normalizedState.cycle,
+    successCount: normalizedState.successCount + (rating === 'good' || rating === 'easy' ? 1 : 0),
+    lapseCount: result.card.lapses,
+    totalReviews: result.card.reps,
+    sameDayRelearnAt: undefined,
+  }
+  const log: ReviewLog = {
+    wordId,
+    reviewedAt: reviewedAt.toISOString(),
+    rating,
+    source,
+    wasNew: (normalizedState.reps ?? normalizedState.totalReviews) === 0,
+    cycleBefore: normalizedState.cycle,
+    cycleAfter: updatedState.cycle,
+    nextReviewAtBefore: normalizedState.nextReviewAt,
+    nextReviewAtAfter: updatedState.nextReviewAt,
+    stateBefore: normalizedState.fsrsState,
+    stateAfter: updatedState.fsrsState,
+    stabilityBefore: normalizedState.stability,
+    stabilityAfter: updatedState.stability,
+    difficultyBefore: normalizedState.difficulty,
+    difficultyAfter: updatedState.difficulty,
+    sessionAttemptCount: session?.attemptCount,
+    sessionRatings: session?.ratings,
+    todayMasteryBefore: session?.masteryBefore,
+    todayMasteryAfter: session?.masteryAfter,
+  }
+  return { updatedState, log }
+}
+
+/** Persists a prepared transition in the caller's current Dexie transaction. */
+export async function persistPreparedCardGrade(prepared: PreparedCardGrade): Promise<void> {
+  await db.reviewState.put(prepared.updatedState)
+  await db.reviewLogs.add(prepared.log)
+  await markRecordChanged('reviewState', prepared.updatedState.wordId, prepared.log.reviewedAt)
+  await markPayloadChanged('reviewLogs', prepared.log, prepared.log.reviewedAt)
 }
 
 export async function previewCardIntervals(
@@ -565,6 +658,7 @@ export async function previewCardIntervals(
     again: formatInterval(reviewedAt, preview.again.card.due),
     hard: formatInterval(reviewedAt, preview.hard.card.due),
     good: formatInterval(reviewedAt, preview.good.card.due),
+    easy: formatInterval(reviewedAt, preview.easy.card.due),
   }
 }
 

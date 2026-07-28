@@ -9,13 +9,14 @@ export const DEFAULT_SETTINGS: AppSettings = {
   ttsEngine: 'auto',
   dailyNewLimit: 20,
   dailyReviewLimit: 200,
-  roundWordCount: 5,
-  articleEveryRounds: 2,
+  roundWordCount: 10,
+  articleEveryRounds: 1,
   practiceQuestionLimit: 6,
   deepseekApiKey: '',
   deepseekBaseUrl: 'https://api.deepseek.com/v1/chat/completions',
   deepseekModel: 'deepseek-v4-flash',
   articleLevel: 'B2',
+  definitionLanguage: 'adaptive',
   syncDeepseekApiKey: false,
 }
 
@@ -105,6 +106,14 @@ export async function loadSettings(): Promise<AppSettings> {
       output.articleLevel = row.value as AppSettings['articleLevel']
     }
 
+    if (
+      row.key === 'definitionLanguage' &&
+      typeof row.value === 'string' &&
+      ['adaptive', 'english-first', 'chinese-first'].includes(row.value)
+    ) {
+      output.definitionLanguage = row.value as AppSettings['definitionLanguage']
+    }
+
     if (row.key === 'syncDeepseekApiKey' && typeof row.value === 'boolean') {
       output.syncDeepseekApiKey = row.value
     }
@@ -114,7 +123,7 @@ export async function loadSettings(): Promise<AppSettings> {
   // constrain the current form and cannot repair older oversized values.
   output.dailyNewLimit = clampInteger(output.dailyNewLimit, DAILY_NEW_LIMIT_MAX)
   output.dailyReviewLimit = clampInteger(output.dailyReviewLimit, DAILY_REVIEW_LIMIT_MAX)
-  output.roundWordCount = Math.max(1, clampInteger(output.roundWordCount, ROUND_WORD_COUNT_MAX))
+  output.roundWordCount = Math.max(8, clampInteger(output.roundWordCount, ROUND_WORD_COUNT_MAX))
   output.articleEveryRounds = Math.max(1, clampInteger(output.articleEveryRounds, ARTICLE_EVERY_ROUNDS_MAX))
   output.practiceQuestionLimit = clampInteger(output.practiceQuestionLimit, PRACTICE_QUESTION_LIMIT_MAX)
   return output
@@ -126,7 +135,7 @@ export async function saveSettings(patch: Partial<AppSettings>): Promise<AppSett
     ...patch,
     ...(patch.dailyNewLimit === undefined ? {} : { dailyNewLimit: clampInteger(patch.dailyNewLimit, DAILY_NEW_LIMIT_MAX) }),
     ...(patch.dailyReviewLimit === undefined ? {} : { dailyReviewLimit: clampInteger(patch.dailyReviewLimit, DAILY_REVIEW_LIMIT_MAX) }),
-    ...(patch.roundWordCount === undefined ? {} : { roundWordCount: Math.max(1, clampInteger(patch.roundWordCount, ROUND_WORD_COUNT_MAX)) }),
+    ...(patch.roundWordCount === undefined ? {} : { roundWordCount: Math.max(8, clampInteger(patch.roundWordCount, ROUND_WORD_COUNT_MAX)) }),
     ...(patch.articleEveryRounds === undefined ? {} : { articleEveryRounds: Math.max(1, clampInteger(patch.articleEveryRounds, ARTICLE_EVERY_ROUNDS_MAX)) }),
     ...(patch.practiceQuestionLimit === undefined ? {} : { practiceQuestionLimit: clampInteger(patch.practiceQuestionLimit, PRACTICE_QUESTION_LIMIT_MAX) }),
   }

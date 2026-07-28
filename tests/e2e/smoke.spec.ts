@@ -2,16 +2,60 @@
 
 import type { Page } from '@playwright/test'
 
-async function finishCardsUntilCheckpoint(page: Page): Promise<void> {
-  for (let step = 0; step < 20; step += 1) {
-    const checkpoint = page.getByRole('heading', { name: '今日卡片已完成' })
-    const reveal = page.getByRole('button', { name: '显示释义' })
-    await expect(checkpoint.or(reveal)).toBeVisible()
-    if (await checkpoint.isVisible()) return
-    await reveal.click()
-    await page.getByRole('button', { name: /记得/ }).click()
+async function finishLocalReading(page: Page): Promise<void> {
+  await expect(page.getByText('AI 暂不可用，已自动切换到本地词典阅读包；核心学习可继续完成。')).toBeVisible()
+  await page.getByRole('button', { name: '我已读完，继续学习' }).click()
+  await page.getByRole('button', { name: '继续学习', exact: true }).click()
+}
+
+async function finishLocalPractice(page: Page): Promise<void> {
+  const recalled = page.locator('.context-choice-list button').first()
+  const continueLearning = page.getByRole('button', { name: '继续学习', exact: true })
+  if (!await recalled.isVisible() && !await continueLearning.isVisible()) return
+  if (!await continueLearning.isVisible()) {
+    await expect(recalled).toBeEnabled()
+    await recalled.click({ force: true, timeout: 2_000 }).catch(() => undefined)
   }
-  throw new Error('Daily queue did not reach its checkpoint')
+  if (await continueLearning.isVisible()) {
+    await continueLearning.click({ force: true, timeout: 2_000 }).catch(() => undefined)
+  }
+}
+
+async function finishLearningFlow(page: Page): Promise<void> {
+  for (let step = 0; step < 30; step += 1) {
+    const completed = page.getByRole('button', { name: '查看今日学习' })
+    const localReading = page.getByRole('button', { name: '我已读完，继续学习' })
+    const localPractice = page.locator('.context-choice-list')
+    const reveal = page.getByRole('button', { name: '显示释义' })
+    const enterArticle = page.getByRole('button', { name: '进入今日文章' })
+    const returnHome = page.getByRole('button', { name: '返回学习首页' })
+    await expect(completed.or(localReading).or(localPractice).or(reveal).or(enterArticle).or(returnHome))
+      .toBeVisible({ timeout: 15_000 })
+    if (await completed.isVisible()) return
+    if (await enterArticle.isVisible()) {
+      await enterArticle.click()
+      continue
+    }
+    if (await returnHome.isVisible()) {
+      // Completion handlers route back to /review; this checkpoint can be a
+      // one-frame liveQuery state whose button detaches during the transition.
+      await page.waitForTimeout(100)
+      continue
+    }
+    if (await localReading.isVisible()) {
+      await finishLocalReading(page)
+      continue
+    }
+    if (await localPractice.isVisible()) {
+      await finishLocalPractice(page)
+      continue
+    }
+    if (await reveal.isVisible()) {
+      await reveal.click()
+      await page.getByRole('button', { name: '记得，按 Good 评分' }).click()
+    }
+  }
+  throw new Error('Daily learning flow did not complete')
 }
 
 test('home page loads', async ({ page }) => {
@@ -53,19 +97,17 @@ test('installs the core dictionary and completes lookup to daily review', async 
   await page.getByRole('link', { name: '学习' }).click()
   await expect(page.locator('.study-total strong')).toHaveText('1')
   await page.getByRole('button', { name: '开始今日学习' }).click()
+  await finishLocalReading(page)
   await expect(page.getByRole('heading', { level: 1, name: 'habit' })).toBeVisible()
   await page.getByRole('button', { name: '显示释义' }).click()
-  await page.getByRole('button', { name: /记得\s*65%/ }).click()
-  await page.getByRole('button', { name: '显示释义' }).click()
-  await page.getByRole('button', { name: /记得\s*100%/ }).click()
-  await expect(page.getByRole('heading', { name: '今日卡片已完成' })).toBeVisible()
-  await page.getByRole('button', { name: '进入今日文章' }).click()
-  await expect(page.getByRole('heading', { name: '需要配置 DeepSeek Key' })).toBeVisible()
-  await page.getByRole('button', { name: '跳过文章并完成今日学习' }).click()
+  await page.getByRole('button', { name: '记得，按 Good 评分' }).click()
+  if (await page.locator('.context-choice-list').isVisible({ timeout: 5_000 }).catch(() => false)) {
+    await finishLocalPractice(page)
+  }
   await expect(page.getByRole('button', { name: '查看今日学习' })).toBeVisible()
 })
 
-test('imports a list and completes the three-grade daily queue without an AI key', async ({ page }) => {
+test('imports a list and completes the four-grade daily queue without an AI key', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto('/lists')
   await expect(page.getByRole('heading', { level: 1, name: '词表' })).toBeVisible()
@@ -86,6 +128,7 @@ test('imports a list and completes the three-grade daily queue without an AI key
   await page.getByRole('link', { name: '学习' }).click()
   await expect(page.getByText('今日单词')).toBeVisible()
   await page.getByRole('button', { name: '开始今日学习' }).click()
+  await finishLocalReading(page)
   await expect(page.getByRole('heading', { level: 1, name: 'inventedword' })).toBeVisible()
   await page.getByRole('button', { name: '显示释义' }).click()
   await expect(page.getByRole('button', { name: '移除' })).toBeVisible()
@@ -93,27 +136,25 @@ test('imports a list and completes the three-grade daily queue without an AI key
   await expect(page.getByRole('button', { name: 'AI 优化释义' })).toBeDisabled()
   await expect(page.getByText('配置 DeepSeek Key 后可用')).toBeVisible()
   await expect(page.locator('.review-memory-grid')).toHaveCount(0)
-  await expect(page.locator('.review-grade-dock-three .review-action-btn')).toHaveText([/记得\s*65%/, /模糊\s*25%/, /不知道\s*0%/])
-  await expect(page.getByRole('button', { name: /不知道/ })).toBeVisible()
-  await expect(page.getByRole('button', { name: /模糊/ })).toBeVisible()
-  await expect(page.getByRole('button', { name: /记得/ })).toBeVisible()
-  await expect(page.getByRole('button', { name: /太简单/ })).toHaveCount(0)
-  await page.getByRole('button', { name: /记得/ }).click()
-  await expect(page.getByRole('button', { name: '显示释义' })).toBeVisible()
-  await page.getByRole('button', { name: '显示释义' }).click()
-  await page.getByRole('button', { name: /记得/ }).click()
-  await expect(page.getByRole('heading', { name: '今日卡片已完成' })).toBeVisible()
+  await expect(page.locator('.review-grade-dock-four .review-action-btn')).toHaveCount(4)
+  await expect(page.getByRole('button', { name: '不知道，按 Again 评分' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '模糊，按 Hard 评分' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '记得，按 Good 评分' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '秒懂，按 Easy 评分' })).toBeVisible()
+  await page.getByRole('button', { name: '记得，按 Good 评分' }).click()
+  if (await page.locator('.context-choice-list').isVisible({ timeout: 5_000 }).catch(() => false)) {
+    await finishLocalPractice(page)
+  }
+  await expect(page.getByRole('button', { name: '查看今日学习' })).toBeVisible()
+  await page.getByRole('button', { name: '查看今日学习' }).click()
+  await expect(page.getByRole('heading', { name: '今天还想再学一点？' })).toBeVisible()
   await page.getByRole('button', { name: '再学一组' }).click()
   await page.getByRole('button', { name: '再学 5 个' }).click()
   await expect(page.getByText('暂无更多可学单词。')).toBeVisible()
-  await page.getByRole('button', { name: '进入今日文章' }).click()
-  await expect(page.getByRole('heading', { name: '需要配置 DeepSeek Key' })).toBeVisible()
-  await page.getByRole('button', { name: '跳过文章并完成今日学习' }).click()
-  await expect(page.getByRole('button', { name: '查看今日学习' })).toBeVisible()
 })
 
 test('keeps the started queue stable, applies list changes, and adds another group', async ({ page }) => {
-  test.setTimeout(60_000)
+  test.setTimeout(90_000)
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto('/lists')
   await page.getByLabel('词表名称').fill('稳定队列表')
@@ -135,6 +176,7 @@ test('keeps the started queue stable, applies list changes, and adds another gro
   await expect(page.locator('.study-total strong')).toHaveText('1')
   await expect(page.getByText(/修订号|查词优先|混合比例/)).toHaveCount(0)
   await page.getByRole('button', { name: '开始今日学习' }).click()
+  await finishLocalReading(page)
   const firstWord = await page.locator('.review-word').textContent()
   await page.getByRole('button', { name: '退出' }).click()
   await page.getByRole('button', { name: '继续今日学习' }).click()
@@ -151,11 +193,11 @@ test('keeps the started queue stable, applies list changes, and adds another gro
   await expect(page.getByText(/词表有 .* 个变化/)).toHaveCount(0)
   await expect(page.locator('.study-total strong')).toHaveText('1')
   await page.getByRole('button', { name: '继续今日学习' }).click()
-  await finishCardsUntilCheckpoint(page)
+  await finishLearningFlow(page)
+  await page.getByRole('button', { name: '查看今日学习' }).click()
 
   await page.getByRole('button', { name: '再学一组' }).click()
   await page.getByRole('button', { name: '再学 5 个' }).click()
-  await expect(page.locator('.review-word')).toBeVisible()
-  await finishCardsUntilCheckpoint(page)
-  await expect(page.getByRole('heading', { name: '今日卡片已完成' })).toBeVisible()
+  await finishLearningFlow(page)
+  await expect(page.getByRole('button', { name: '查看今日学习' })).toBeVisible()
 })

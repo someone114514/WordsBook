@@ -64,6 +64,7 @@ const selectedListId = ref('')
 const choosingList = ref(false)
 let controller: AbortController | null = null
 let selectionToken = 0
+let questionShownAt = Date.now()
 
 const parsed = computed(() => session.value ? parseReadingSession(session.value) : { segments: [], targets: [] })
 const renderedParagraphs = computed(() => session.value ? groupReadingSegmentsByParagraph(parsed.value.segments) : [])
@@ -250,7 +251,7 @@ async function initialize() {
     staleArticle.value = true
     return
   }
-  if (!noKey.value) await loadBatch()
+  await loadBatch()
 }
 
 async function continuePreviousArticle() {
@@ -273,14 +274,25 @@ async function continuePreviousArticle() {
 }
 
 async function answer(target: ReadingTarget, choice?: string) {
-  const attempt = await recordContextAttempt(session.value!.sessionId, target, choice, dailySessionId.value)
+  const attempt = await recordContextAttempt(
+    session.value!.sessionId,
+    target,
+    choice,
+    dailySessionId.value,
+    { responseMs: Math.max(0, Date.now() - questionShownAt), hintLevel: 0 },
+  )
   results.value[target.wordId] = attempt.result
   if (attempt.result !== 'correct') hadRetry.value = true
   await persistProgress()
 }
 
 async function revealTargets() {
+  if (!parsed.value.targets.length) {
+    await finishBatch()
+    return
+  }
   stage.value = 1
+  questionShownAt = Date.now()
   quizCursor.value = parsed.value.targets.findIndex((target) => !(target.wordId in results.value))
   if (quizCursor.value < 0) quizCursor.value = 0
   await persistProgress()
@@ -290,6 +302,7 @@ async function nextQuestion() {
   if (!currentTargetResult.value) return
   if (quizCursor.value + 1 < parsed.value.targets.length) {
     quizCursor.value += 1
+    questionShownAt = Date.now()
     await persistProgress()
     return
   }
@@ -343,11 +356,13 @@ async function nextBatch() {
     return
   }
   const daily = await db.dailyLearningSessions.get(dailySessionId.value)
-  const range = readingBatchRangeForRound(
-    daily?.roundsJson,
-    daily?.lastArticleRoundIndex ?? daily?.activeRoundIndex ?? 1,
-    daily?.readingBatchRounds ?? 2,
-  )
+  const range = daily?.engineVersion === 2
+    ? { start: batchIndex.value, end: batchIndex.value }
+    : readingBatchRangeForRound(
+        daily?.roundsJson,
+        daily?.lastArticleRoundIndex ?? daily?.activeRoundIndex ?? 1,
+        daily?.readingBatchRounds ?? 2,
+      )
   if (batchIndex.value < range.end && batchIndex.value + 1 < batches.value.length) {
     await setBatchIndex(batchIndex.value + 1)
     await loadBatch()
@@ -465,17 +480,12 @@ onBeforeUnmount(() => {
     <div v-if="staleArticle" class="immersive-empty article-stale-state">
       <h1>文章需要更新</h1>
       <p>新增词尚未包含在原文章中，可以重新生成，也可以继续阅读原文。</p>
-      <div class="action-row"><button class="btn btn-primary" :disabled="noKey" type="button" @click="regenerateStaleArticle">重新生成</button><button class="btn" type="button" @click="continuePreviousArticle">继续原文</button><button v-if="noKey" class="btn" type="button" @click="router.push('/settings')">配置 DeepSeek Key</button></div>
-    </div>
-
-    <div v-else-if="noKey && !session" class="immersive-empty">
-      <h1>需要配置 DeepSeek Key</h1>
-      <p>文章是今日学习的可选步骤；不配置也可以完成卡片学习。</p>
-      <div class="action-row"><button class="btn btn-primary" type="button" @click="router.push('/settings')">配置 DeepSeek Key</button><button class="btn" type="button" @click="skip">跳过文章并完成今日学习</button></div>
+      <div class="action-row"><button class="btn btn-primary" type="button" @click="regenerateStaleArticle">重新准备</button><button class="btn" type="button" @click="continuePreviousArticle">继续原文</button><button v-if="noKey" class="btn" type="button" @click="router.push('/settings')">配置 DeepSeek Key</button></div>
     </div>
 
     <article v-else class="reading-card reading-card-stable" :aria-busy="loading">
       <p v-if="usingPreviousArticle" class="reading-coverage-note">原文章未包含后来加入的单词</p>
+      <p v-else-if="session?.status === 'ready' && session?.errorCode" class="reading-coverage-note">AI 暂不可用，已自动切换到本地词典阅读包；核心学习可继续完成。</p>
       <p v-else-if="session?.omittedTargetWordIds?.length" class="reading-coverage-note">本篇已保留可用内容；{{ session.omittedTargetWordIds.length }} 个未自然覆盖的词将顺延到下一篇。</p>
       <div class="reading-title-row">
         <div>
@@ -483,12 +493,12 @@ onBeforeUnmount(() => {
           <h1>{{ session?.title || '今日语境文章' }}</h1>
         </div>
         <button v-if="loading" class="btn btn-quiet" type="button" @click="cancel">取消生成</button>
-        <button v-else-if="session" class="btn btn-quiet" :disabled="noKey" type="button" @click="regenerate">重新生成</button>
+        <button v-else-if="session" class="btn btn-quiet" type="button" @click="regenerate">重新准备</button>
       </div>
       <p class="reading-generation-status" aria-live="polite">
         <template v-if="loading">{{ generationPhase === 'article' ? '正文流式生成中，完成后会在下方准备题目' : `正在准备测义题与翻译${generatedTargets ? ` · 已完成 ${generatedTargets} 题` : ''}` }}</template>
         <template v-else-if="error">{{ errorTitle }}</template>
-        <template v-else-if="session">读完正文后开始测义</template>
+        <template v-else-if="session">{{ parsed.targets.length ? '读完正文后开始测义' : '本地阅读包不生成未经验证的选择题' }}</template>
         <template v-else>正在恢复文章进度…</template>
       </p>
 
@@ -522,7 +532,7 @@ onBeforeUnmount(() => {
       </section>
 
       <template v-else-if="session">
-        <button v-if="stage === 0" class="btn btn-primary" type="button" @click="revealTargets">我已读完，标出目标词</button>
+        <button v-if="stage === 0" class="btn btn-primary" type="button" @click="revealTargets">{{ parsed.targets.length ? '我已读完，开始测义' : '我已读完，继续学习' }}</button>
         <section v-if="stage === 1 && currentTarget" class="quiz-list quiz-list-single" aria-live="polite">
           <div class="quiz-progress-row"><span>第 {{ quizCursor + 1 }} / {{ parsed.targets.length }} 题</span><progress :value="quizCursor + (currentTargetResult ? 1 : 0)" :max="parsed.targets.length" /></div>
           <article :key="currentTarget.wordId" class="entry-card context-question-card">

@@ -59,6 +59,17 @@ const buttonLabel = computed(() => {
   return session.value ? '继续今日学习' : '开始今日学习'
 })
 const recoveryText = computed(() => {
+  if (session.value?.recoveryMode) {
+    const count = session.value.recoveryCalibrationCount ?? 0
+    const accuracy = session.value.recoveryAccuracy
+    const calibration = count
+      ? `已校准 ${count}/15${accuracy === undefined ? '' : `，首次提取正确率 ${Math.round(accuracy * 100)}%`}`
+      : '先用 15 个分层到期词校准'
+    return `恢复模式：今日包受上限保护，预计 ${session.value.recoveryDays ?? 3} 天消化；${calibration}。`
+  }
+  if (plan.value?.recoveryMode) {
+    return `恢复模式：共 ${plan.value.backlogDueCount ?? plan.value.dueCount} 个到期词，今日安排 ${plan.value.dueCount} 个，预计 ${plan.value.recoveryDays ?? 3} 天消化；先完成 15 词校准，暂缓新词。`
+  }
   const days = plan.value?.daysSinceLastStudy ?? 0
   if (days < 2) return ''
   return `间隔 ${days} 天，预计用 ${plan.value?.recoveryDays ?? 1} 天恢复；今天先处理最需要回忆的词。`

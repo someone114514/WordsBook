@@ -2,6 +2,7 @@ import {
   Rating,
   State,
   createEmptyCard,
+  default_w,
   fsrs,
   type Card,
   type Grade,
@@ -10,15 +11,28 @@ import {
 import type { ReviewLog, ReviewRating, ReviewState, SchedulerRating } from '../../types/models'
 
 export const REVIEW_INTERVAL_DAYS = [0, 1, 2, 4, 7, 15, 30, 60] as const
+export const DEFAULT_FSRS_PARAMETERS = [...default_w]
 
-export const reviewScheduler = fsrs({
-  request_retention: 0.9,
-  maximum_interval: 36500,
-  enable_fuzz: true,
-  enable_short_term: false,
-  learning_steps: [],
-  relearning_steps: [],
-})
+function createReviewScheduler(parameters = DEFAULT_FSRS_PARAMETERS) {
+  return fsrs({
+    w: parameters,
+    request_retention: 0.9,
+    maximum_interval: 36500,
+    enable_fuzz: true,
+    enable_short_term: false,
+    learning_steps: [],
+    relearning_steps: [],
+  })
+}
+
+export let reviewScheduler = createReviewScheduler()
+
+export function configureReviewScheduler(parameters?: readonly number[]): boolean {
+  const next = parameters ?? DEFAULT_FSRS_PARAMETERS
+  if (next.length !== DEFAULT_FSRS_PARAMETERS.length || next.some((value) => !Number.isFinite(value))) return false
+  reviewScheduler = createReviewScheduler([...next])
+  return true
+}
 
 export const RATING_TO_FSRS: Record<SchedulerRating, Grade> = {
   again: Rating.Again,
@@ -75,6 +89,7 @@ export function cardToReviewState(
     lapses: card.lapses,
     suspendedAt: previous?.suspendedAt,
     sameDayRelearnAt: previous?.sameDayRelearnAt,
+    skillEvidenceJson: previous?.skillEvidenceJson,
     schedulerVersion: 'fsrs-5',
   }
 }
@@ -85,6 +100,7 @@ export function previewFsrsReviews(state: ReviewState, reviewedAt = new Date()):
     again: preview[Rating.Again],
     hard: preview[Rating.Hard],
     good: preview[Rating.Good],
+    easy: preview[Rating.Easy],
   }
 }
 
@@ -102,7 +118,14 @@ export function migrateLegacyReviewState(
   createdAt: string,
 ): ReviewState {
   if (state.schedulerVersion === 'fsrs-5') return state
+  return replayReviewState(state, logs, createdAt)
+}
 
+export function replayReviewState(
+  state: ReviewState,
+  logs: ReviewLog[],
+  createdAt: string,
+): ReviewState {
   let card = createEmptyCard(createdAt)
   const ordered = [...logs].sort((a, b) => a.reviewedAt.localeCompare(b.reviewedAt))
   for (const log of ordered) {
@@ -124,8 +147,13 @@ export function formatInterval(from: Date, due: Date): string {
 
 export function getReviewRetrievability(state: ReviewState, at = new Date()): number {
   if ((state.reps ?? state.totalReviews) === 0 || state.schedulerVersion !== 'fsrs-5') return 0
-  const value = reviewScheduler.get_retrievability(reviewStateToCard(state), at, false)
-  return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0
+  try {
+    const value = reviewScheduler.get_retrievability(reviewStateToCard(state), at, false)
+    return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0
+  } catch {
+    // A partially imported FSRS card must not make the learning queue unusable.
+    return 0
+  }
 }
 
 // Backwards-compatible helpers retained for old imports and backup tests.

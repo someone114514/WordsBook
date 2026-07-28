@@ -1653,12 +1653,13 @@ input[type='number']:focus {
 .word-list-clean small { color: var(--text-quiet); }
 .mobile-batch-bar, .review-grade-dock { position: fixed; z-index: 20; right: .7rem; bottom: calc(4.7rem + env(safe-area-inset-bottom)); left: .7rem; display: grid; gap: .45rem; width: min(720px, calc(100% - 1.4rem)); margin: auto; padding: .55rem; border: 1px solid var(--border); border-radius: var(--radius-lg); background: rgba(255,255,255,.97); box-shadow: var(--shadow-md); }
 .mobile-batch-bar { grid-template-columns: minmax(7rem, 1fr) repeat(3, auto); }
-.review-grade-dock-three { grid-template-columns: repeat(3, minmax(0, 1fr)); bottom: max(.7rem, env(safe-area-inset-bottom)); }
+.review-grade-dock-four { grid-template-columns: repeat(4, minmax(0, 1fr)); bottom: max(.7rem, env(safe-area-inset-bottom)); }
 .review-reveal-dock { grid-template-columns: 1fr; bottom: max(.7rem, env(safe-area-inset-bottom)); }
 .review-reveal-action { min-height: 3.5rem; width: 100%; font-size: 1rem; }
-.review-grade-dock-three .review-action-btn { min-width: 0; min-height: 3.5rem; padding-inline: .4rem; }
-.review-grade-dock-three .review-action-btn small { display: block; margin-top: .18rem; font-size: .76rem; font-weight: 750; opacity: .82; }
+.review-grade-dock-four .review-action-btn { min-width: 0; min-height: 3.5rem; padding-inline: .4rem; }
+.review-grade-dock-four .review-action-btn small { display: block; margin-top: .18rem; font-size: .76rem; font-weight: 750; opacity: .82; }
 .review-hard { color: #92400e; border-color: #f59e0b; background: #fffbeb; }
+.review-easy { color: #166534; border-color: #86efac; background: #f0fdf4; }
 .review-memory-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .55rem; width: min(19rem, 100%); margin-top: 1.2rem; }
 .review-memory-grid > div { display: grid; gap: .15rem; padding: .65rem .8rem; border: 1px solid #d7e3f2; border-radius: 12px; background: rgba(255,255,255,.72); }
 .review-memory-grid span { color: var(--text-quiet); font-size: .78rem; }
@@ -1667,6 +1668,12 @@ input[type='number']:focus {
 .review-answer-sheet p { margin: 0 0 .45rem; }
 .review-answer-sheet ul { margin: 0; padding-left: 1.25rem; }
 .review-answer-sheet li + li { margin-top: .35rem; }
+.review-definition-list { display: grid; gap: .55rem; list-style: none; padding-left: 0 !important; }
+.review-definition-list > li { display: grid; grid-template-columns: auto 1fr; gap: .25rem .45rem; align-items: baseline; }
+.review-definition-pos { padding: .12rem .35rem; border-radius: 6px; color: var(--text-subtle); background: var(--bg-soft); font-weight: 700; }
+.review-secondary-definition { grid-column: 2; color: var(--text-subtle); font-size: .86rem; }
+.review-secondary-definition summary { cursor: pointer; color: var(--primary); }
+.review-secondary-definition p { margin: .3rem 0 0; }
 .review-answer-inline { position: static; z-index: auto; right: auto; bottom: auto; left: auto; width: min(30rem, 100%); max-height: min(30vh, 15rem); margin: .85rem 0 0; padding: .85rem 1rem; background: rgba(248,251,255,.9); box-shadow: none; text-align: left; }
 .review-examples { margin-top: .7rem; border-top: 1px solid var(--border); padding-top: .55rem; }
 .review-examples summary { cursor: pointer; color: var(--primary); font-weight: 700; }
@@ -1677,6 +1684,8 @@ input[type='number']:focus {
 .sheet-backdrop { position: fixed; z-index: 60; inset: 0; display: grid; align-items: end; padding: 1rem; background: rgba(15,23,42,.34); }
 .bottom-action-sheet { display: grid; gap: .65rem; width: min(34rem, 100%); margin: 0 auto max(0px, env(safe-area-inset-bottom)); padding: 1rem; border-radius: 18px; background: #fff; box-shadow: 0 18px 50px rgba(15,23,42,.24); }
 .bottom-action-sheet p { margin: .2rem 0 0; }
+.review-coaching-sheet { max-height: min(78vh, 42rem); overflow-y: auto; overscroll-behavior: contain; }
+.review-coaching-sheet h2 { margin: .15rem 0 0; font-size: clamp(1.7rem, 6vw, 2.4rem); }
 .stepper { display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem; margin-bottom: 1rem; }
 .stepper span { padding: .6rem; border-bottom: 3px solid var(--border); color: var(--text-quiet); text-align: center; }
 .stepper span.active { color: var(--primary); border-color: var(--primary); }
@@ -1788,7 +1797,7 @@ input[type='number']:focus {
   .preview-stats { grid-template-columns: repeat(2, 1fr); }
   .mobile-batch-bar { grid-template-columns: 1fr repeat(3, auto); bottom: calc(4.45rem + env(safe-area-inset-bottom)); }
   .mobile-batch-bar .btn { padding-inline: .55rem; }
-  .review-grade-dock-three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .review-grade-dock-four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .queue-change-panel { align-items: stretch; flex-direction: column; }
   .queue-change-panel .actions { display: grid; grid-template-columns: 1fr auto; }
 }

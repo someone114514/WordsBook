@@ -39,7 +39,7 @@ describe('review scheduler', () => {
     expect(updated.cycleAfter).toBe(0)
   })
 
-  it('offers three date-level FSRS outcomes without same-session minute steps', () => {
+  it('offers four date-level FSRS outcomes without same-session minute steps', () => {
     const now = new Date('2026-07-13T08:00:00.000Z')
     const state = {
       wordId: 'fsrs-new', cycle: 0, nextReviewAt: now.toISOString(), successCount: 0,
@@ -49,7 +49,8 @@ describe('review scheduler', () => {
     expect(preview.again.card.due.getTime()).toBeGreaterThan(now.getTime())
     expect(preview.hard.card.due.getTime()).toBeGreaterThan(now.getTime())
     expect(preview.good.card.state).toBe(2)
-    expect(Object.keys(preview)).toEqual(['again', 'hard', 'good'])
+    expect(preview.easy.card.due.getTime()).toBeGreaterThanOrEqual(preview.good.card.due.getTime())
+    expect(Object.keys(preview)).toEqual(['again', 'hard', 'good', 'easy'])
   })
 
   it('replays legacy remember/forget logs into an FSRS card idempotently', () => {

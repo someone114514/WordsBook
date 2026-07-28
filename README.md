@@ -27,9 +27,11 @@ npm run test:e2e
 
 - First launch: install mixed dictionaries, now including ECDICT full generated from `asserts/ECDICT-master/ecdict.csv`.
 - Lookup order: exact -> lemma -> prefix -> fuzzy.
-- Review schedule: FSRS 5 with Again / Hard / Good / Easy grading and same-day learning steps.
+- Review schedule: FSRS with Again / Hard / Good / Easy grading; only the first valid unprompted grade per word/day updates long-term memory.
+- Learning flow: rolling 8–12 word units combine due-word probing, short reading, new/relearn cards, transfer practice, and delayed retries.
 - Study lists: lookup collection and study membership are independent; TXT/CSV/TSV imports are supported.
-- Context reading: DeepSeek can generate resumable graded passages from today's new and difficult words.
+- Context reading: DeepSeek can generate resumable graded passages, with verified local dictionary examples as a non-blocking offline fallback.
+- Personalization: after 400 effective daily-first grades, the official FSRS optimizer can train locally and only activates parameters that beat defaults on a holdout set.
 - Backup: export/import available in Settings.
 
 ## Dictionary Source

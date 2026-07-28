@@ -21,9 +21,19 @@ export interface DictionaryEntry {
   phonetic?: string
   posList: string[]
   sensesJson: string
+  /** Structured bilingual senses. Older dictionary packages may omit this. */
+  senseRecordsJson?: string
   examplesJson: string
   usageJson: string
   audioKey?: string
+}
+
+export interface SenseRecord {
+  senseId: string
+  pos?: string
+  definitionEn?: string
+  glossZh?: string
+  examples: string[]
 }
 
 export interface DictionaryIndexRow {
@@ -37,7 +47,7 @@ export interface WordbookItem {
   /** Stable vocabulary identity. Dictionary package entry ids may change between installs. */
   headword?: string
   headwordLower?: string
-  entrySnapshot?: Pick<DictionaryEntry, 'headword' | 'headwordLower' | 'phonetic' | 'posList' | 'sensesJson' | 'examplesJson' | 'usageJson' | 'audioKey'>
+  entrySnapshot?: Pick<DictionaryEntry, 'headword' | 'headwordLower' | 'phonetic' | 'posList' | 'sensesJson' | 'senseRecordsJson' | 'examplesJson' | 'usageJson' | 'audioKey'>
   integrityStatus?: 'ready' | 'needs-repair'
   addedAt: string
   note: string
@@ -85,6 +95,8 @@ export interface ReviewState {
   lapses?: number
   suspendedAt?: string
   sameDayRelearnAt?: string
+  /** Per-skill evidence is deliberately separate from the FSRS memory state. */
+  skillEvidenceJson?: string
   schedulerVersion?: 'fsrs-5'
 }
 
@@ -93,7 +105,7 @@ export interface ReviewLog {
   wordId: string
   reviewedAt: string
   rating: 'remember' | 'forget' | 'again' | 'hard' | 'good' | 'easy'
-  source?: 'flashcard' | 'context'
+  source?: 'flashcard' | 'context' | 'manual-relearn'
   wasNew?: boolean
   cycleBefore: number
   cycleAfter: number
@@ -111,8 +123,8 @@ export interface ReviewLog {
   todayMasteryAfter?: number
 }
 
-export type ReviewRating = 'again' | 'hard' | 'good'
-export type SchedulerRating = ReviewRating | 'easy'
+export type ReviewRating = 'again' | 'hard' | 'good' | 'easy'
+export type SchedulerRating = ReviewRating
 
 export interface SettingItem {
   key: string
@@ -132,6 +144,7 @@ export interface AppSettings {
   deepseekBaseUrl: string
   deepseekModel: string
   articleLevel: 'A2' | 'B1' | 'B2' | 'C1'
+  definitionLanguage: 'adaptive' | 'english-first' | 'chinese-first'
   syncDeepseekApiKey: boolean
 }
 
@@ -161,10 +174,31 @@ export interface StudyPlan {
   effectiveNewLimit?: number
   recoveryDays?: number
   daysSinceLastStudy?: number
+  recoveryMode?: boolean
+  backlogDueCount?: number
+  nextDueAt?: string
   listContributions?: Array<{ listId: string; name: string; count: number }>
 }
 
 export type DailyQueueKind = 'card' | 'article-read' | 'context-quiz' | 'summary'
+export type LearningStage = 'probe' | 'read' | 'learn' | 'transfer' | 'retry'
+export type LearningSkill = 'meaning-recall' | 'context-sense' | 'production' | 'spelling'
+export type LearningEvidenceKind =
+  | 'unprompted-card'
+  | 'meaning-choice'
+  | 'context-cloze'
+  | 'manual-relearn'
+
+export interface LearningUnit {
+  unitId: string
+  index: number
+  wordIds: string[]
+  dueWordIds: string[]
+  newWordIds: string[]
+  status: 'pending' | 'active' | 'completed'
+  articleCompletedAt?: string
+}
+
 export type DailyQueueReason =
   | 'initial'
   | 'new-repeat'
@@ -178,8 +212,15 @@ export type DailyQueueReason =
 export interface DailyLearningSession {
   sessionId: string
   dayKey: string
-  status: 'active' | 'completed'
-  phase: 'cards' | 'practice' | 'article' | 'summary'
+  status: 'active' | 'completed' | 'rolled-over'
+  /** Legacy route phases remain readable while v2 uses learningStage for semantics. */
+  phase: 'cards' | 'practice' | 'article' | 'summary' | 'probe' | 'read' | 'learn' | 'transfer' | 'retry'
+  engineVersion?: 1 | 2
+  sessionRevision?: number
+  activityOrdinal?: number
+  learningStage?: LearningStage
+  activeUnitIndex?: number
+  unitsJson?: string
   selectedListIds: string[]
   initialWordIds: string[]
   sourceRevision?: string
@@ -207,6 +248,14 @@ export interface DailyLearningSession {
   createdAt: string
   updatedAt: string
   completedAt?: string
+  recoveryMode?: boolean
+  recoveryBacklogCount?: number
+  recoveryDays?: number
+  recoveryCalibrationCount?: number
+  recoveryCalibrationCorrect?: number
+  recoveryAccuracy?: number
+  recoveryNewWordsAdded?: boolean
+  recoveryNewWordScale?: 0 | 0.5 | 1
 }
 
 export interface DailyQueueItem {
@@ -217,6 +266,12 @@ export interface DailyQueueItem {
   reason: DailyQueueReason
   /** Identifies the frozen learning round that created this card. */
   roundIndex?: number
+  unitId?: string
+  stage?: LearningStage
+  eligibleAfterOrdinal?: number
+  notBeforeAt?: string
+  canonicalGradeCommitted?: boolean
+  memoryStatus?: 'pending' | 'retry-later' | 'passed' | 'tomorrow'
   position: number
   status: 'pending' | 'active' | 'completed' | 'skipped'
   attemptNo: number
@@ -232,6 +287,8 @@ export interface DailyQueueItem {
   attemptCount?: number
   nextGap?: number
   tomorrowPriority?: boolean
+  /** After repeated failures, show instruction before the delayed micro-review. */
+  coachingRequired?: boolean
   createdAt: string
   updatedAt: string
 }
@@ -247,6 +304,11 @@ export interface DailyQueueAttempt {
   masteryAfter?: number
   reinsertionGap?: number
   effectiveFsrsRating?: ReviewRating
+  activityOrdinal?: number
+  evidenceKind?: LearningEvidenceKind
+  skill?: LearningSkill
+  responseMs?: number
+  hintLevel?: number
   answeredAt: string
 }
 
@@ -262,13 +324,17 @@ export interface ReadingTarget {
   explanation: string
 }
 
-export type PracticeQuestionType = 'meaning-in-context' | 'usage-discrimination'
+export type PracticeQuestionType = 'meaning-in-context' | 'usage-discrimination' | 'self-recall'
 
 export interface PracticeQuestion {
   questionId: string
   type: PracticeQuestionType
   focusWordId: string
   headword: string
+  /** Prompt strength selected by the learning engine, independent of answer correctness. */
+  hintLevel?: 0 | 1 | 2
+  /** Exact structured dictionary sense selected before generation. */
+  sourceSense: string
   passage?: string
   stem: string
   options: string[]
@@ -281,10 +347,15 @@ export interface PracticeQuestion {
 export type ReadingErrorCode =
   | 'missing-key'
   | 'auth'
+  | 'unauthorized'
   | 'quota'
   | 'rate-limit'
+  | 'rate-limited'
+  | 'server'
   | 'network'
   | 'timeout'
+  | 'invalid-json'
+  | 'contract-invalid'
   | 'passage-invalid'
   | 'details-invalid'
   | 'cancelled'
@@ -347,6 +418,9 @@ export interface ContextAttempt {
   correctOptionIndex?: number
   roundIndex?: number
   result: 'correct' | 'wrong' | 'uncertain'
+  responseMs?: number
+  hintLevel?: number
+  skill?: LearningSkill
   answeredAt: string
 }
 

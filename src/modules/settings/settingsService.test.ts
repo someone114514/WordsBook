@@ -34,7 +34,7 @@ describe('review settings', () => {
       { key: 'articleEveryRounds', value: 99 },
       { key: 'practiceQuestionLimit', value: 99 },
     ])
-    expect(await loadSettings()).toMatchObject({ roundWordCount: 1, articleEveryRounds: 12, practiceQuestionLimit: 12 })
-    expect(await saveSettings({ roundWordCount: 7, articleEveryRounds: 3, practiceQuestionLimit: 0 })).toMatchObject({ roundWordCount: 7, articleEveryRounds: 3, practiceQuestionLimit: 0 })
+    expect(await loadSettings()).toMatchObject({ roundWordCount: 8, articleEveryRounds: 12, practiceQuestionLimit: 12 })
+    expect(await saveSettings({ roundWordCount: 7, articleEveryRounds: 3, practiceQuestionLimit: 0 })).toMatchObject({ roundWordCount: 8, articleEveryRounds: 3, practiceQuestionLimit: 0 })
   })
 })

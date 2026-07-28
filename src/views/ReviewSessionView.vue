@@ -1,33 +1,38 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { liveQuery } from 'dexie'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { DailyQueueSnapshot } from '../modules/review/dailyQueueService'
 import type { ReviewCard, ReviewRating } from '../types/models'
 import {
-  answerDailyCard,
-  computeShortTermReview,
+  answerLearningActivity,
   extendDailyQueue,
   finishCardPhase,
   getOrCreateDailySession,
+  loadDailyQueueSnapshot,
   setArticleStatus,
   skipWordInDailySession,
 } from '../modules/review/dailyQueueService'
 import { preGenerateDailyArticle, readingBatchRangeForRound } from '../modules/reading/readingService'
 import { scheduleRoundPractice } from '../modules/reading/practiceService'
-import { loadReviewCards, setWordSuspended } from '../modules/review/reviewService'
+import { loadReviewCards, previewCardIntervals, setWordSuspended } from '../modules/review/reviewService'
 import { enhanceOrCreateVocabularyEntry, fetchAiDictionaryDraft } from '../modules/dictionary/aiDefinitionService'
 import { removeWordFromWordbook } from '../modules/wordbook/wordbookService'
 import { playEntryPronunciation, stopActivePronunciation } from '../modules/dictionary/audioService'
 import { loadSettings } from '../modules/settings/settingsService'
 import { parseJsonArray } from '../utils/json'
+import { definitionLines } from '../modules/dictionary/senseRecords'
 
 const router = useRouter()
 const route = useRoute()
 const loading = ref(true)
+const cardLoading = ref(false)
 const grading = ref(false)
 const revealMeaning = ref(false)
 const snapshot = ref<DailyQueueSnapshot | null>(null)
 const card = ref<ReviewCard | null>(null)
+const coachingCard = ref<ReviewCard | null>(null)
+const coachingVisible = ref(false)
 const error = ref('')
 const showWordMenu = ref(false)
 const actionBusy = ref(false)
@@ -41,16 +46,29 @@ const deepseekApiKey = ref('')
 const deepseekBaseUrl = ref('')
 const deepseekModel = ref('')
 const articleEveryRounds = ref(2)
+const articleLevel = ref<'A2' | 'B1' | 'B2' | 'C1'>('B2')
+const definitionLanguage = ref<'adaptive' | 'english-first' | 'chinese-first'>('adaptive')
 const aiDefinitionBusy = ref(false)
 const aiDefinitionMessage = ref('')
 const aiDefinitionMessageTone = ref<'success' | 'error'>('success')
 const preloadingRound = ref<string | null>(null)
+const intervals = ref<Record<ReviewRating, string>>({
+  again: '明天',
+  hard: '明天',
+  good: '明天',
+  easy: '明天',
+})
+let cardShownAt = Date.now()
+let liveSubscription: { unsubscribe(): void } | undefined
+let wakeupTimer: ReturnType<typeof setTimeout> | undefined
+let cardLoadToken = 0
 
 const selectedListIds = computed(() => typeof route.query.lists === 'string'
   ? route.query.lists.split(',').filter(Boolean)
   : undefined)
 const currentItem = computed(() => snapshot.value?.current)
 const atQueueCheckpoint = computed(() => Boolean(snapshot.value && !snapshot.value.current
+  && !snapshot.value.items.some((item) => item.status === 'pending' || item.status === 'active')
   && (snapshot.value.session.phase === 'cards' || snapshot.value.session.phase === 'summary')))
 const progress = computed(() => {
   if (!snapshot.value?.totalCards) return 0
@@ -67,43 +85,65 @@ const reasonLabel = computed(() => ({
   'again-repeat': '重新回忆',
   'hard-repeat': '再确认一次',
   'context-retry': '文章错词',
-  reencounter: '最近再次遇到，作为新词重学',
+  reencounter: '重新学习 · 先理解，再主动回忆',
   'list-change': '今日新增',
   'extra-batch': '继续学习',
 }[currentItem.value?.reason ?? 'initial']))
-const todayMastery = computed(() => currentItem.value?.todayMastery ?? 0)
-const previewRating = (rating: ReviewRating) => computeShortTermReview({
-  mastery: todayMastery.value,
-  recallStreak: currentItem.value?.recallStreak,
-  weakSeen: currentItem.value?.weakSeen,
-  wasNew: currentItem.value?.wasNew,
-  startingLongTermRetrievability: currentItem.value?.startingLongTermRetrievability,
-}, rating)
-const masteryPreview = computed(() => ({
-  good: previewRating('good'),
-  hard: previewRating('hard'),
-  again: previewRating('again'),
-}))
-const recallHint = computed(() => {
-  const preview = masteryPreview.value.good
-  if (preview.passed) return '这次记得即可通过'
-  return `还需连续记得 ${Math.max(1, preview.requiredRecallStreak - preview.recallStreak)} 次`
+const memoryStateLabel = computed(() => currentItem.value?.stage === 'retry'
+  ? '需稍后再测'
+  : currentItem.value?.stage === 'learn' ? '待首次提取' : '到期提取')
+const displayedDefinitions = computed(() => card.value
+  ? definitionLines(card.value.entry, articleLevel.value, definitionLanguage.value)
+  : [])
+const coachingDefinitions = computed(() => coachingCard.value
+  ? definitionLines(coachingCard.value.entry, articleLevel.value, definitionLanguage.value)
+  : [])
+const englishDefinitionFirst = computed(() => definitionLanguage.value === 'english-first'
+  || (definitionLanguage.value === 'adaptive' && (articleLevel.value === 'B2' || articleLevel.value === 'C1')))
+const deferredPending = computed(() => Boolean(snapshot.value
+  && !snapshot.value.current
+  && snapshot.value.session.phase === 'cards'
+  && snapshot.value.items.some((item) => item.status === 'pending' || item.status === 'active')))
+const waitMessage = computed(() => {
+  if (snapshot.value?.nextAvailableAt) {
+    const seconds = Math.max(1, Math.ceil((Date.parse(snapshot.value.nextAvailableAt) - Date.now()) / 1000))
+    return `这个词需要留出间隔，约 ${seconds} 秒后可再测。`
+  }
+  if (snapshot.value?.waitingForActivities) return `还需间隔 ${snapshot.value.waitingForActivities} 个不同活动；系统会跨学习单元安排。`
+  return '正在寻找下一项合适的学习活动。'
 })
 
 async function loadCurrentCard() {
   const item = snapshot.value?.current
+  const token = ++cardLoadToken
   if (!item?.wordId) {
     card.value = null
+    cardLoading.value = false
     return
   }
-  card.value = (await loadReviewCards([item.wordId]))[0] ?? null
-  revealMeaning.value = false
-  showWordMenu.value = false
-  if (card.value && autoPronunciation.value) {
-    void playEntryPronunciation(card.value.entry, {
-      rate: speechRate.value,
-      ttsEngine: ttsEngine.value,
-    })
+  if (card.value?.wordId !== item.wordId) card.value = null
+  cardLoading.value = true
+  try {
+    const [cards, nextIntervals] = await Promise.all([
+      loadReviewCards([item.wordId]),
+      previewCardIntervals(item.wordId),
+    ])
+    // A newer load token or a different queue item always wins. Revision-only
+    // changes do not invalidate the dictionary payload for the same card.
+    if (token !== cardLoadToken || snapshot.value?.current?.itemId !== item.itemId) return
+    card.value = cards[0] ?? null
+    intervals.value = nextIntervals
+    cardShownAt = Date.now()
+    revealMeaning.value = false
+    showWordMenu.value = false
+    if (card.value && autoPronunciation.value) {
+      void playEntryPronunciation(card.value.entry, {
+        rate: speechRate.value,
+        ttsEngine: ttsEngine.value,
+      })
+    }
+  } finally {
+    if (token === cardLoadToken) cardLoading.value = false
   }
 }
 
@@ -119,7 +159,10 @@ async function initialize() {
     deepseekBaseUrl.value = settings.deepseekBaseUrl
     deepseekModel.value = settings.deepseekModel
     articleEveryRounds.value = settings.articleEveryRounds
+    articleLevel.value = settings.articleLevel
+    definitionLanguage.value = settings.definitionLanguage
     snapshot.value = await getOrCreateDailySession(selectedListIds.value)
+    subscribeToSession(snapshot.value.session.sessionId)
     if (snapshot.value.session.phase === 'practice') {
       await router.replace({ path: '/review/practice', query: { session: snapshot.value.session.sessionId } })
       return
@@ -131,6 +174,46 @@ async function initialize() {
   } finally {
     loading.value = false
   }
+}
+
+function scheduleQueueWakeup(nextAvailableAt?: string) {
+  if (wakeupTimer) clearTimeout(wakeupTimer)
+  if (!nextAvailableAt) return
+  const delay = Math.max(50, Math.min(2_147_000_000, Date.parse(nextAvailableAt) - Date.now() + 50))
+  wakeupTimer = setTimeout(async () => {
+    try {
+      if (!snapshot.value) return
+      snapshot.value = await loadDailyQueueSnapshot(snapshot.value.session.sessionId)
+      await loadCurrentCard()
+    } catch (reason) {
+      error.value = reason instanceof Error ? reason.message : String(reason)
+    }
+  }, delay)
+}
+
+function subscribeToSession(sessionId: string) {
+  liveSubscription?.unsubscribe()
+  liveSubscription = liveQuery(() => loadDailyQueueSnapshot(sessionId)).subscribe({
+    next: (fresh) => {
+      const currentRevision = snapshot.value?.session.sessionRevision ?? 0
+      const incomingRevision = fresh.session.sessionRevision ?? 0
+      if (incomingRevision < currentRevision) return
+      const previousItemId = snapshot.value?.current?.itemId
+      snapshot.value = fresh
+      scheduleQueueWakeup(fresh.nextAvailableAt)
+      if (
+        !grading.value
+        && (fresh.current?.itemId !== previousItemId || incomingRevision !== currentRevision)
+      ) {
+        void loadCurrentCard().catch((reason) => {
+          error.value = reason instanceof Error ? reason.message : String(reason)
+        })
+      }
+    },
+    error: (reason) => {
+      error.value = reason instanceof Error ? reason.message : String(reason)
+    },
+  })
 }
 
 watch(() => snapshot.value?.session.phase, async (phase) => {
@@ -152,6 +235,9 @@ async function maybeSchedulePractice(rating: ReviewRating, wordId: string) {
     roundWordIds = rounds.find((round) => round.index === roundIndex)?.wordIds ?? []
   } catch { roundWordIds = [] }
   if (!roundWordIds.length) return
+  // A one-word unit cannot provide meaningful spacing after a successful card.
+  // Leave its second retrieval for a later session instead of immediate overlearning.
+  if (roundWordIds.length === 1 && (rating === 'good' || rating === 'easy')) return
   const attempted = new Set(snapshot.value.attempts
     .filter((attempt) => roundWordIds.includes(attempt.wordId))
     .map((attempt) => attempt.wordId))
@@ -163,11 +249,16 @@ async function maybeSchedulePractice(rating: ReviewRating, wordId: string) {
 
 async function prewarmRoundContent() {
   const currentRound = snapshot.value?.session.activeRoundIndex ?? 1
-  const range = readingBatchRangeForRound(
-    snapshot.value?.session.roundsJson,
-    currentRound,
-    Math.max(1, articleEveryRounds.value),
-  )
+  const range = snapshot.value?.session.engineVersion === 2
+    ? {
+        start: snapshot.value?.session.activeUnitIndex ?? 0,
+        end: snapshot.value?.session.activeUnitIndex ?? 0,
+      }
+    : readingBatchRangeForRound(
+        snapshot.value?.session.roundsJson,
+        currentRound,
+        Math.max(1, articleEveryRounds.value),
+      )
   const preloadKey = `${range.start}-${range.end}`
   if (!deepseekApiKey.value.trim() || preloadingRound.value === preloadKey) return
   preloadingRound.value = preloadKey
@@ -188,16 +279,43 @@ async function prewarmRoundContent() {
 }
 
 onMounted(() => void initialize())
+onBeforeUnmount(() => {
+  liveSubscription?.unsubscribe()
+  if (wakeupTimer) clearTimeout(wakeupTimer)
+})
 
 async function onGrade(rating: ReviewRating) {
   const item = currentItem.value
-  if (!item?.wordId || !snapshot.value) return
+  const answeredCard = card.value
+  if (!item?.wordId || !snapshot.value || !answeredCard || answeredCard.wordId !== item.wordId || cardLoading.value) return
   grading.value = true
   error.value = ''
   stopActivePronunciation()
   try {
     await maybeSchedulePractice(rating, item.wordId)
-    snapshot.value = await answerDailyCard(snapshot.value.session.sessionId, item.itemId, rating)
+    snapshot.value = await loadDailyQueueSnapshot(snapshot.value.session.sessionId)
+    snapshot.value = await answerLearningActivity({
+      sessionId: snapshot.value.session.sessionId,
+      itemId: item.itemId,
+      rating,
+      expectedSessionRevision: snapshot.value.session.sessionRevision ?? 0,
+      responseMs: Math.max(0, Date.now() - cardShownAt),
+      evidenceKind: 'unprompted-card',
+      skill: 'meaning-recall',
+      hintLevel: revealMeaning.value ? 1 : 0,
+    })
+    const coachingItem = snapshot.value.items.find((row) =>
+      row.wordId === item.wordId
+      && row.coachingRequired
+      && row.status === 'pending')
+    if (coachingItem) {
+      coachingCard.value = answeredCard
+      coachingVisible.value = true
+      void playEntryPronunciation(answeredCard.entry, {
+        rate: speechRate.value,
+        ttsEngine: ttsEngine.value,
+      })
+    }
     void prewarmRoundContent()
     if (snapshot.value.session.phase === 'summary') {
       await router.replace('/review')
@@ -331,7 +449,7 @@ async function enterArticle() {
       <section class="immersive-card review-flashcard">
         <div class="review-card-topline">
           <span class="immersive-caption">{{ reasonLabel }}</span>
-          <span class="review-memory-confidence">短期记忆 {{ todayMastery }}%</span>
+          <span class="review-memory-confidence">{{ memoryStateLabel }}</span>
           <button class="review-delete-mini" :disabled="actionBusy" type="button" aria-haspopup="dialog" @click="showWordMenu = true">移除</button>
         </div>
         <div class="review-card-content review-card-content-center">
@@ -342,7 +460,17 @@ async function enterArticle() {
           </div>
           <aside v-if="revealMeaning" class="review-answer-sheet review-answer-inline" aria-live="polite">
             <p class="muted">{{ card.entry.posList.join(' / ') || '释义' }}</p>
-            <ul><li v-for="sense in parseJsonArray(card.entry.sensesJson)" :key="sense">{{ sense }}</li></ul>
+            <ul v-if="displayedDefinitions.length" class="review-definition-list">
+              <li v-for="line in displayedDefinitions" :key="line.senseId">
+                <small v-if="line.pos" class="review-definition-pos">{{ line.pos }}</small>
+                <span>{{ line.primary }}</span>
+                <details v-if="line.secondary" class="review-secondary-definition">
+                  <summary>{{ englishDefinitionFirst ? '查看中文核心义' : '查看英文解释' }}</summary>
+                  <p>{{ line.secondary }}</p>
+                </details>
+              </li>
+            </ul>
+            <ul v-else><li v-for="sense in parseJsonArray(card.entry.sensesJson)" :key="sense">{{ sense }}</li></ul>
             <details v-if="parseJsonArray(card.entry.examplesJson).length" class="review-examples">
               <summary>例句</summary>
               <p v-for="example in parseJsonArray(card.entry.examplesJson)" :key="example" class="example">{{ example }}</p>
@@ -365,6 +493,14 @@ async function enterArticle() {
       </section>
     </article>
 
+    <section v-else-if="deferredPending" class="immersive-empty queue-checkpoint" aria-live="polite">
+      <p class="eyebrow">间隔中</p>
+      <h1>先换一种活动</h1>
+      <p class="muted">{{ waitMessage }}</p>
+      <p class="muted">无需反复点击；到达时间后队列会自动刷新。</p>
+      <button class="btn btn-quiet" type="button" @click="router.push('/review')">暂时结束</button>
+    </section>
+
     <section v-else-if="atQueueCheckpoint" class="immersive-empty queue-checkpoint" aria-live="polite">
       <p class="eyebrow">今日卡片</p>
       <h1>{{ snapshot?.session.status === 'completed' ? '今天还想再学一点？' : '今日卡片已完成' }}</h1>
@@ -377,16 +513,40 @@ async function enterArticle() {
         <button v-if="snapshot?.session.status === 'completed'" class="btn btn-quiet" type="button" @click="router.push('/review')">返回学习首页</button>
       </div>
     </section>
-    <div v-else class="immersive-empty">正在恢复今日进度…</div>
+    <div v-else class="immersive-empty">{{ cardLoading ? '正在读取下一张卡片…' : '正在恢复今日进度…' }}</div>
 
-    <footer v-if="card" :class="['review-grade-dock', revealMeaning ? 'review-grade-dock-three' : 'review-reveal-dock']">
-      <button v-if="!revealMeaning" class="btn btn-primary review-reveal-action" type="button" @click="revealMeaning = true">显示释义</button>
+    <footer v-if="card && currentItem && card.wordId === currentItem.wordId" :class="['review-grade-dock', revealMeaning ? 'review-grade-dock-four' : 'review-reveal-dock']">
+      <button v-if="!revealMeaning" class="btn btn-primary review-reveal-action" :disabled="cardLoading || coachingVisible" type="button" @click="revealMeaning = true">显示释义</button>
       <template v-else>
-        <button class="btn btn-primary review-action-btn" :disabled="grading || aiDefinitionBusy" type="button" @click="onGrade('good')">记得 <small>{{ masteryPreview.good.mastery }}%</small><span class="review-grade-hint">{{ recallHint }}</span></button>
-        <button class="btn review-action-btn review-hard" :disabled="grading || aiDefinitionBusy" type="button" @click="onGrade('hard')">模糊 <small>{{ masteryPreview.hard.mastery }}%</small><span class="review-grade-hint">稍后再出现</span></button>
-        <button class="btn btn-danger review-action-btn" :disabled="grading || aiDefinitionBusy" type="button" @click="onGrade('again')">不知道 <small>{{ masteryPreview.again.mastery }}%</small><span class="review-grade-hint">很快再出现</span></button>
+        <button class="btn btn-danger review-action-btn" :disabled="grading || aiDefinitionBusy || cardLoading || coachingVisible" type="button" aria-label="不知道，按 Again 评分" @click="onGrade('again')">不知道 <small>{{ intervals.again }}</small><span class="review-grade-hint">至少 1 分钟后再测</span></button>
+        <button class="btn review-action-btn review-hard" :disabled="grading || aiDefinitionBusy || cardLoading || coachingVisible" type="button" aria-label="模糊，按 Hard 评分" @click="onGrade('hard')">模糊 <small>{{ intervals.hard }}</small><span class="review-grade-hint">至少 3 分钟后再测</span></button>
+        <button class="btn btn-primary review-action-btn" :disabled="grading || aiDefinitionBusy || cardLoading || coachingVisible" type="button" aria-label="记得，按 Good 评分" @click="onGrade('good')">记得 <small>{{ intervals.good }}</small><span class="review-grade-hint">本轮通过</span></button>
+        <button class="btn review-action-btn review-easy" :disabled="grading || aiDefinitionBusy || cardLoading || coachingVisible" type="button" aria-label="秒懂，按 Easy 评分" @click="onGrade('easy')">秒懂 <small>{{ intervals.easy }}</small><span class="review-grade-hint">本轮通过</span></button>
       </template>
     </footer>
+
+    <div v-if="coachingVisible && coachingCard" class="sheet-backdrop" role="presentation">
+      <section class="bottom-action-sheet review-coaching-sheet" role="dialog" aria-modal="true" aria-label="单词讲解">
+        <div>
+          <p class="eyebrow">先讲解，再微复习</p>
+          <h2>{{ coachingCard.entry.headword }}</h2>
+          <p class="muted">{{ coachingCard.entry.phonetic || '暂无音标' }}</p>
+        </div>
+        <ul class="review-definition-list">
+          <li v-for="line in coachingDefinitions" :key="line.senseId">
+            <small v-if="line.pos" class="review-definition-pos">{{ line.pos }}</small>
+            <span>{{ line.primary }}</span>
+            <p v-if="line.secondary" class="muted">{{ line.secondary }}</p>
+          </li>
+        </ul>
+        <p v-for="example in parseJsonArray(coachingCard.entry.examplesJson).slice(0, 2)" :key="example" class="example">{{ example }}</p>
+        <p class="muted">已经连续两次想不起来。本次不再立刻硬测，系统会在约 15 分钟后安排一次微复习。</p>
+        <div class="actions">
+          <button class="btn" type="button" @click="playEntryPronunciation(coachingCard.entry, { rate: speechRate, ttsEngine })">再听一次</button>
+          <button class="btn btn-primary" type="button" @click="coachingVisible = false; coachingCard = null">我已看懂，继续</button>
+        </div>
+      </section>
+    </div>
 
     <div v-if="showWordMenu" class="sheet-backdrop" role="presentation" @click.self="showWordMenu = false">
       <section class="bottom-action-sheet" role="dialog" aria-modal="true" aria-label="单词操作">

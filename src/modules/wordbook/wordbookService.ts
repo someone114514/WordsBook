@@ -1,7 +1,14 @@
 ﻿import { db } from '../../db/database'
-import type { AddToWordbookResult, WordbookItem, WordbookWithEntry } from '../../types/models'
+import type {
+  AddToWordbookResult,
+  DailyLearningSession,
+  LearningUnit,
+  WordbookItem,
+  WordbookWithEntry,
+} from '../../types/models'
 import { applyAiOverrides } from '../dictionary/entryOverrideMapper'
 import { invalidateStudyPlanCache } from '../review/reviewService'
+import { requestWordRelearning } from '../review/dailyQueueService'
 import { cardToReviewState } from '../review/scheduler'
 import { createEmptyCard } from 'ts-fsrs'
 import { dictionaryEntryFromWordbook, repairVocabularyIntegrity, snapshotDictionaryEntry, unresolvedVocabularyEntry } from './vocabularyIntegrity'
@@ -136,30 +143,63 @@ export async function addToWordbook(entryId: string): Promise<AddToWordbookResul
   return { wordId, alreadyExists: false }
 }
 
+/**
+ * Backwards-compatible name for the safe default action. Review history and
+ * FSRS stability are preserved; the active session is revised immediately.
+ */
 export async function resetWordForRelearning(wordId: string, listId?: string, at = new Date()): Promise<void> {
   const item = await db.wordbook.get(wordId)
   if (!item) throw new Error('单词不存在')
   await ensureSystemStudyLists()
   if (listId) await addWordToStudyList(listId, wordId, 'lookup')
 
-  const [memberships, lists, logs] = await Promise.all([
+  const [memberships, lists] = await Promise.all([
+    db.studyListItems.where('wordId').equals(wordId).toArray(),
+    db.studyLists.toArray(),
+  ])
+  const listMap = new Map(lists.map((list) => [list.listId, list]))
+  const learningMemberships = memberships.filter((membership) => listMap.get(membership.listId)?.systemType !== 'lookup')
+  if (!learningMemberships.length) throw new Error('请先选择一个学习词表')
+  const now = at.toISOString()
+  const refreshedMemberships = learningMemberships.map((membership) => ({
+    ...membership,
+    learningEnabled: 1 as const,
+    autoActivate: 0 as const,
+  }))
+  await db.transaction('rw', [db.wordbook, db.studyListItems, db.syncMeta, db.syncRecords, db.syncTombstones], async () => {
+    const restored = { ...item, archived: 0 as const }
+    await db.wordbook.put(restored)
+    await markPayloadChanged('wordbook', restored, now)
+    await db.studyListItems.bulkPut(refreshedMemberships)
+    for (const membership of refreshedMemberships) await markPayloadChanged('studyListItems', membership, now)
+  })
+  await requestWordRelearning(wordId, at)
+  await markStudyDataChanged()
+  invalidateStudyPlanCache()
+  emitWordbookUpdatedEvent()
+}
+
+/** Destructive escape hatch; callers must obtain a second explicit confirmation. */
+export async function clearWordLearningHistory(wordId: string, listId?: string, at = new Date()): Promise<void> {
+  const item = await db.wordbook.get(wordId)
+  if (!item) throw new Error('单词不存在')
+  await ensureSystemStudyLists()
+  if (listId) await addWordToStudyList(listId, wordId, 'lookup')
+
+  const [memberships, lists, logs, queueItems, queueAttempts, contextAttempts, sessions] = await Promise.all([
     db.studyListItems.where('wordId').equals(wordId).toArray(),
     db.studyLists.toArray(),
     db.reviewLogs.where('wordId').equals(wordId).toArray(),
+    db.dailyQueueItems.where('wordId').equals(wordId).toArray(),
+    db.dailyQueueAttempts.where('wordId').equals(wordId).toArray(),
+    db.contextAttempts.where('wordId').equals(wordId).toArray(),
+    db.dailyLearningSessions.toArray(),
   ])
   const listMap = new Map(lists.map((list) => [list.listId, list]))
   const learningMemberships = memberships.filter((membership) => listMap.get(membership.listId)?.systemType !== 'lookup')
   if (!learningMemberships.length) throw new Error('请先选择一个学习词表')
 
   const now = at.toISOString()
-  const dayKey = `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, '0')}-${String(at.getDate()).padStart(2, '0')}`
-  const dailySession = await db.dailyLearningSessions.where('dayKey').equals(dayKey).first()
-  const oldQueueItems = dailySession
-    ? await db.dailyQueueItems.where('sessionId').equals(dailySession.sessionId).filter((row) => row.wordId === wordId).toArray()
-    : []
-  const oldQueueAttempts = dailySession
-    ? await db.dailyQueueAttempts.where('[sessionId+wordId]').equals([dailySession.sessionId, wordId]).toArray()
-    : []
   const refreshedMemberships = learningMemberships.map((membership) => ({
     ...membership,
     learningEnabled: 1 as const,
@@ -179,89 +219,146 @@ export async function resetWordForRelearning(wordId: string, listId?: string, at
   freshState.lapseCount = 0
   freshState.totalReviews = 0
 
-  let newQueueItem: import('../../types/models').DailyQueueItem | undefined
-  let updatedSession: import('../../types/models').DailyLearningSession | undefined
-  let reorderedPending: import('../../types/models').DailyQueueItem[] = []
-  if (dailySession?.status === 'active' && dailySession.phase === 'cards') {
-    const oldIds = new Set(oldQueueItems.map((row) => row.itemId))
-    const pending = (await db.dailyQueueItems.where('sessionId').equals(dailySession.sessionId).sortBy('position'))
-      .filter((row) => !oldIds.has(row.itemId) && (row.status === 'pending' || row.status === 'active'))
-    newQueueItem = {
-      itemId: `${dailySession.sessionId}:reencounter:${wordId}:${crypto.randomUUID()}`,
-      sessionId: dailySession.sessionId,
-      kind: 'card',
-      wordId,
-      reason: 'reencounter',
-      position: Math.min(2, pending.length),
-      status: 'pending',
-      attemptNo: 1,
-      maxAttempts: 5,
-      retrievability: 0,
-      startingLongTermRetrievability: 0,
-      wasNew: true,
-      todayMastery: 0,
-      recallStreak: 0,
-      weakSeen: false,
-      attemptCount: 0,
-      nextGap: 0,
-      tomorrowPriority: false,
-      createdAt: now,
-      updatedAt: now,
-    }
-    pending.splice(Math.min(2, pending.length), 0, newQueueItem)
-    reorderedPending = pending.map((row, position) => ({ ...row, position, updatedAt: now }))
-    updatedSession = {
-      ...dailySession,
-      status: 'active',
-      phase: 'cards',
-      initialWordIds: [...new Set([...dailySession.initialWordIds, wordId])],
-      cardsCompletedAt: undefined,
-      articleStatus: dailySession.articleStatus === 'ready' || dailySession.articleStatus === 'generating' || dailySession.articleStatus === 'completed'
-        ? 'stale'
-        : dailySession.articleStatus,
-      completedAt: undefined,
-      updatedAt: now,
+  const parseUnits = (raw: string | undefined): LearningUnit[] => {
+    try {
+      const value = JSON.parse(raw ?? '[]')
+      return Array.isArray(value) ? value as LearningUnit[] : []
+    } catch {
+      return []
     }
   }
+  const updatedSessions = sessions
+    .filter((session) => session.initialWordIds.includes(wordId)
+      || parseUnits(session.unitsJson).some((unit) => unit.wordIds.includes(wordId)))
+    .map((session): DailyLearningSession => {
+      const units = parseUnits(session.unitsJson).map((unit) => ({
+        ...unit,
+        wordIds: unit.wordIds.filter((id) => id !== wordId),
+        dueWordIds: unit.dueWordIds.filter((id) => id !== wordId),
+        newWordIds: unit.newWordIds.filter((id) => id !== wordId),
+      }))
+      let roundsJson = session.roundsJson
+      try {
+        const rounds = JSON.parse(session.roundsJson ?? '[]') as Array<{ wordIds?: string[] }>
+        if (Array.isArray(rounds)) {
+          roundsJson = JSON.stringify(rounds.map((round) => ({
+            ...round,
+            wordIds: Array.isArray(round.wordIds) ? round.wordIds.filter((id) => id !== wordId) : [],
+          })))
+        }
+      } catch {
+        // The v2 unit representation remains authoritative for malformed legacy rounds.
+      }
+      return {
+        ...session,
+        initialWordIds: session.initialWordIds.filter((id) => id !== wordId),
+        unitsJson: JSON.stringify(units),
+        roundsJson,
+        sessionRevision: (session.sessionRevision ?? 0) + 1,
+        updatedAt: now,
+      }
+    })
 
-  await db.transaction('rw', [db.wordbook, db.reviewState, db.reviewLogs, db.studyListItems, db.dailyLearningSessions, db.dailyQueueItems, db.dailyQueueAttempts], async () => {
+  await db.transaction('rw', [
+    db.wordbook,
+    db.reviewState,
+    db.reviewLogs,
+    db.studyListItems,
+    db.contextAttempts,
+    db.dailyLearningSessions,
+    db.dailyQueueItems,
+    db.dailyQueueAttempts,
+    db.syncMeta,
+    db.syncRecords,
+    db.syncTombstones,
+  ], async () => {
     await db.wordbook.put(refreshedItem)
     await db.reviewState.put(freshState)
     await db.reviewLogs.where('wordId').equals(wordId).delete()
     await db.studyListItems.bulkPut(refreshedMemberships)
-    if (dailySession) {
-      await db.dailyQueueItems.where('sessionId').equals(dailySession.sessionId).filter((row) => row.wordId === wordId).delete()
-      await db.dailyQueueAttempts.where('[sessionId+wordId]').equals([dailySession.sessionId, wordId]).delete()
-    }
-    if (reorderedPending.length) await db.dailyQueueItems.bulkPut(reorderedPending)
-    if (updatedSession) await db.dailyLearningSessions.put(updatedSession)
+    await db.contextAttempts.where('wordId').equals(wordId).delete()
+    await db.dailyQueueItems.where('wordId').equals(wordId).delete()
+    await db.dailyQueueAttempts.where('wordId').equals(wordId).delete()
+    if (updatedSessions.length) await db.dailyLearningSessions.bulkPut(updatedSessions)
+
+    await markPayloadChanged('wordbook', refreshedItem, now)
+    await markRecordChanged('reviewState', wordId, now)
+    for (const membership of refreshedMemberships) await markPayloadChanged('studyListItems', membership, now)
+    for (const log of logs) await markRecordDeleted('reviewLogs', reviewLogSyncId(log), now)
+    for (const row of queueItems) await markRecordDeleted('dailyQueueItems', row.itemId, now)
+    for (const row of queueAttempts) await markRecordDeleted('dailyQueueAttempts', row.attemptId, now)
+    for (const attempt of contextAttempts) await markRecordDeleted('contextAttempts', attempt.attemptId, now)
+    for (const session of updatedSessions) await markPayloadChanged('dailyLearningSessions', session, now)
   })
 
-  await markPayloadChanged('wordbook', refreshedItem, now)
-  await markRecordChanged('reviewState', wordId, now)
-  for (const membership of refreshedMemberships) await markPayloadChanged('studyListItems', membership, now)
-  for (const log of logs) await markRecordDeleted('reviewLogs', reviewLogSyncId(log), now)
-  for (const row of oldQueueItems) await markRecordDeleted('dailyQueueItems', row.itemId, now)
-  for (const row of oldQueueAttempts) await markRecordDeleted('dailyQueueAttempts', row.attemptId, now)
-  for (const row of reorderedPending) await markPayloadChanged('dailyQueueItems', row, now)
-  if (updatedSession) await markPayloadChanged('dailyLearningSessions', updatedSession, now)
+  await requestWordRelearning(wordId, at, { commitCanonicalAgain: false, treatAsNew: true })
   await markStudyDataChanged()
   invalidateStudyPlanCache()
   emitWordbookUpdatedEvent()
 }
 
 export async function removeWordFromWordbook(wordId: string): Promise<void> {
-  const [memberships, contextAttempts, queueItems, queueAttempts] = await Promise.all([
+  const [memberships, contextAttempts, queueItems, queueAttempts, sessions] = await Promise.all([
     db.studyListItems.where('wordId').equals(wordId).toArray(),
     db.contextAttempts.where('wordId').equals(wordId).toArray(),
     db.dailyQueueItems.where('wordId').equals(wordId).toArray(),
     db.dailyQueueAttempts.where('wordId').equals(wordId).toArray(),
+    db.dailyLearningSessions.toArray(),
   ])
+  const deletedAt = new Date().toISOString()
+  const updatedSessions = sessions.flatMap((session) => {
+    let units: LearningUnit[] = []
+    try {
+      const parsed = JSON.parse(session.unitsJson ?? '[]') as unknown
+      units = Array.isArray(parsed) ? parsed as LearningUnit[] : []
+    } catch {
+      units = []
+    }
+    if (!session.initialWordIds.includes(wordId) && !units.some((unit) => unit.wordIds.includes(wordId))) return []
+    const filteredUnits = units.map((unit) => ({
+      ...unit,
+      wordIds: unit.wordIds.filter((id) => id !== wordId),
+      dueWordIds: unit.dueWordIds.filter((id) => id !== wordId),
+      newWordIds: unit.newWordIds.filter((id) => id !== wordId),
+    }))
+    let roundsJson = session.roundsJson
+    try {
+      const rounds = JSON.parse(session.roundsJson ?? '[]') as Array<{ wordIds?: string[] }>
+      if (Array.isArray(rounds)) {
+        roundsJson = JSON.stringify(rounds.map((round) => ({
+          ...round,
+          wordIds: Array.isArray(round.wordIds) ? round.wordIds.filter((id) => id !== wordId) : [],
+        })))
+      }
+    } catch {
+      // Keep malformed legacy rounds; v2 units remain authoritative.
+    }
+    return [{
+      ...session,
+      initialWordIds: session.initialWordIds.filter((id) => id !== wordId),
+      unitsJson: JSON.stringify(filteredUnits),
+      roundsJson,
+      articleStatus: session.status === 'active' ? 'stale' as const : session.articleStatus,
+      sessionRevision: (session.sessionRevision ?? 0) + 1,
+      updatedAt: deletedAt,
+    }]
+  })
   await db.transaction(
     'rw',
-    [db.wordbook, db.reviewState, db.reviewLogs, db.studyListItems, db.contextAttempts, db.dailyQueueItems, db.dailyQueueAttempts, db.syncMeta, db.syncRecords, db.syncTombstones],
+    [
+      db.wordbook,
+      db.reviewState,
+      db.reviewLogs,
+      db.studyListItems,
+      db.contextAttempts,
+      db.dailyLearningSessions,
+      db.dailyQueueItems,
+      db.dailyQueueAttempts,
+      db.syncMeta,
+      db.syncRecords,
+      db.syncTombstones,
+    ],
     async () => {
-      const deletedAt = new Date().toISOString()
       const logs = await db.reviewLogs.where('wordId').equals(wordId).toArray()
       await db.wordbook.delete(wordId)
       await db.reviewState.delete(wordId)
@@ -270,6 +367,7 @@ export async function removeWordFromWordbook(wordId: string): Promise<void> {
       await db.contextAttempts.where('wordId').equals(wordId).delete()
       await db.dailyQueueItems.where('wordId').equals(wordId).delete()
       await db.dailyQueueAttempts.where('wordId').equals(wordId).delete()
+      if (updatedSessions.length) await db.dailyLearningSessions.bulkPut(updatedSessions)
       await markRecordDeleted('wordbook', wordId, deletedAt)
       await markRecordDeleted('reviewState', wordId, deletedAt)
       for (const log of logs) {
@@ -281,6 +379,7 @@ export async function removeWordFromWordbook(wordId: string): Promise<void> {
       for (const attempt of contextAttempts) await markRecordDeleted('contextAttempts', attempt.attemptId, deletedAt)
       for (const item of queueItems) await markRecordDeleted('dailyQueueItems', item.itemId, deletedAt)
       for (const attempt of queueAttempts) await markRecordDeleted('dailyQueueAttempts', attempt.attemptId, deletedAt)
+      for (const session of updatedSessions) await markPayloadChanged('dailyLearningSessions', session, deletedAt)
     },
   )
   await markStudyDataChanged()

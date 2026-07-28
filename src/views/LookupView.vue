@@ -16,6 +16,7 @@ import { useDictionaryStore } from '../modules/dictionary/dictionaryStore'
 import { useSettingsStore } from '../modules/settings/settingsStore'
 import {
   addToWordbook,
+  clearWordLearningHistory,
   getWordbookEntryStatus,
   removeFromLookupCollection,
   resetWordForRelearning,
@@ -46,6 +47,7 @@ const aiBusyNoResult = ref(false)
 const deletingEntryId = ref<string | null>(null)
 const addingEntryId = ref<string | null>(null)
 const relearningEntryId = ref<string | null>(null)
+const clearingHistoryEntryId = ref<string | null>(null)
 const sectionExpanded = ref<Record<string, boolean>>({})
 
 const MAX_VISIBLE_ENTRIES = 8
@@ -348,7 +350,7 @@ async function onRelearn(entry: DictionaryEntry) {
     manageEntryId.value = entry.entryId
     return
   }
-  if (!window.confirm(`将「${entry.headword}」按全新单词重新学习？原复习进度和复习日志会被清除。`)) return
+  if (!window.confirm(`将「${entry.headword}」加入今日重学？历史记录和长期记忆状态会保留。`)) return
   relearningEntryId.value = entry.entryId
   try {
     await resetWordForRelearning(status.wordId, hasLearningList ? undefined : selectedStudyListId.value)
@@ -359,13 +361,38 @@ async function onRelearn(entry: DictionaryEntry) {
       })
     }
     messageType.value = 'success'
-    message.value = '已重置为新词，将优先重新学习'
+    message.value = '已加入今日重学，当前学习页会自动刷新'
     manageEntryId.value = ''
   } catch (error) {
     messageType.value = 'error'
     message.value = error instanceof Error ? error.message : '重新学习失败，请重试'
   } finally {
     relearningEntryId.value = null
+  }
+}
+
+async function onClearLearningHistory(entry: DictionaryEntry) {
+  const status = entryStatusMap.value.get(entry.entryId)
+  if (!status) return
+  const hasLearningList = status.listIds.some((id) => id !== 'system:lookup')
+  if (!hasLearningList && !selectedStudyListId.value) {
+    messageType.value = 'error'
+    message.value = '请先选择一个学习词表'
+    return
+  }
+  if (!window.confirm(`将彻底清空「${entry.headword}」的 FSRS、复习与语境练习记录。词条和词表归属会保留，确定继续？`)) return
+  if (!window.confirm('此操作不可撤销。再次确认清空，并将这个词作为新词重新学习？')) return
+  clearingHistoryEntryId.value = entry.entryId
+  try {
+    await clearWordLearningHistory(status.wordId, hasLearningList ? undefined : selectedStudyListId.value)
+    messageType.value = 'success'
+    message.value = '学习记录已清空，已作为新词加入今日学习'
+    manageEntryId.value = ''
+  } catch (error) {
+    messageType.value = 'error'
+    message.value = error instanceof Error ? error.message : '清空学习记录失败，请重试'
+  } finally {
+    clearingHistoryEntryId.value = null
   }
 }
 
@@ -612,7 +639,7 @@ function parseLines(raw: string): string[] {
 
                     <div class="actions">
                       <button class="btn" @click="onPlay(entry)">发音</button>
-                      <button v-if="entryStatusMap.has(entry.entryId)" class="btn lookup-relearn-action" type="button" :disabled="relearningEntryId === entry.entryId" @click="onRelearn(entry)">{{ relearningEntryId === entry.entryId ? '重置中…' : '重新学习' }}</button>
+                      <button v-if="entryStatusMap.has(entry.entryId)" class="btn lookup-relearn-action" type="button" :disabled="relearningEntryId === entry.entryId" @click="onRelearn(entry)">{{ relearningEntryId === entry.entryId ? '加入中…' : '重新学习' }}</button>
                       <button
                         :class="['btn', 'btn-primary', 'lookup-study-action', { added: isAdded(entry.entryId) }]"
                         type="button"
@@ -631,6 +658,10 @@ function parseLines(raw: string): string[] {
                       <hr><p class="muted">只想留作参考，不安排复习？</p>
                       <button v-if="!isSaved(entry.entryId)" class="btn" type="button" @click="onAddWord(entry.entryId)">仅保存</button>
                       <button v-else class="btn btn-danger" :disabled="deletingEntryId === entry.entryId" type="button" @click="onRemoveWord(entry)">{{ deletingEntryId === entry.entryId ? '处理中…' : '取消仅保存' }}</button>
+                      <template v-if="entryStatusMap.has(entry.entryId)">
+                        <hr><p class="muted">不可撤销的高级操作</p>
+                        <button class="btn btn-danger" :disabled="clearingHistoryEntryId === entry.entryId" type="button" @click="onClearLearningHistory(entry)">{{ clearingHistoryEntryId === entry.entryId ? '清空中…' : '彻底清空学习记录' }}</button>
+                      </template>
                     </div>
 
                     <details class="ai-details">

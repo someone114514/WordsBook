@@ -393,6 +393,169 @@ class WordsBookDB extends Dexie {
           })))
         }
       })
+
+    this.version(9)
+      .stores({
+        dictionaryMeta: '&id, version, installedAt',
+        dictionaryEntries: '&entryId, headwordLower',
+        dictionaryIndex: '&token',
+        wordbook: '&wordId, &entryId, headwordLower, addedAt, archived, integrityStatus',
+        reviewState: '&wordId, nextReviewAt, cycle, totalReviews, suspendedAt',
+        reviewLogs: '++id, wordId, reviewedAt, rating, source, [wordId+reviewedAt]',
+        settings: '&key',
+        aiOverrides: '&entryId, mode, createdAt',
+        aiOverrideHistory: '++id, entryId, createdAt',
+        syncMeta: '&key',
+        syncRecords: '&key, entity, recordId, updatedAt, deletedAt',
+        syncTombstones: '&key, entity, recordId, deletedAt',
+        studyLists: '&listId, studyEnabled, systemType, updatedAt',
+        studyListItems: '&membershipId, listId, wordId, learningEnabled, [listId+wordId]',
+        readingSessions: '&sessionId, dayKey, status, updatedAt',
+        contextAttempts: '&attemptId, sessionId, wordId, answeredAt',
+        localSecrets: '&key',
+        dailyLearningSessions: '&sessionId, dayKey, status, updatedAt, sessionRevision',
+        dailyQueueItems: '&itemId, sessionId, status, position, wordId, notBeforeAt, eligibleAfterOrdinal, [sessionId+status+position], [sessionId+status+eligibleAfterOrdinal], [sessionId+status+notBeforeAt]',
+        dailyQueueAttempts: '&attemptId, sessionId, wordId, answeredAt, activityOrdinal, [sessionId+wordId]',
+      })
+      .upgrade(async (transaction) => {
+        const sessions = transaction.table<DailyLearningSession, string>('dailyLearningSessions')
+        const queue = transaction.table<DailyQueueItem, string>('dailyQueueItems')
+        const attempts = transaction.table<DailyQueueAttempt, string>('dailyQueueAttempts')
+        const settings = transaction.table<SettingItem, string>('settings')
+        const configuredBatchRounds = await settings.get('articleEveryRounds')
+        const batchRounds = typeof configuredBatchRounds?.value === 'number'
+          ? Math.max(1, Math.floor(configuredBatchRounds.value))
+          : 2
+        const configuredUnitSize = await settings.get('roundWordCount')
+        const recoveryUnitSize = typeof configuredUnitSize?.value === 'number'
+          ? Math.min(12, Math.max(8, Math.floor(configuredUnitSize.value)))
+          : 10
+
+        for (const session of await sessions.toArray()) {
+          const rows = await queue.where('sessionId').equals(session.sessionId).sortBy('position')
+          const sessionAttempts = await attempts.where('sessionId').equals(session.sessionId).sortBy('answeredAt')
+          const initialWordSet = new Set(session.initialWordIds)
+          const firstCanonicalRowByWord = new Map<string, DailyQueueItem>()
+          for (const row of rows) {
+            if (!row.wordId || row.kind !== 'card') continue
+            if (initialWordSet.size && !initialWordSet.has(row.wordId)) continue
+            if (!firstCanonicalRowByWord.has(row.wordId)) firstCanonicalRowByWord.set(row.wordId, row)
+          }
+          const missingInitialRows = session.initialWordIds.filter((wordId) => !firstCanonicalRowByWord.has(wordId))
+          const structureInvalid = session.status === 'active'
+            && session.initialWordIds.length > 0
+            && (firstCanonicalRowByWord.size === 0 || missingInitialRows.length > 0)
+          const recoveryRowByWord = new Map<string, DailyQueueItem>()
+          if (structureInvalid) {
+            for (const row of rows) {
+              if (row.kind !== 'card' || !row.wordId || (row.status !== 'pending' && row.status !== 'active')) continue
+              if (!recoveryRowByWord.has(row.wordId)) recoveryRowByWord.set(row.wordId, row)
+            }
+          }
+          const canonicalRows = structureInvalid ? [...recoveryRowByWord.values()] : [...firstCanonicalRowByWord.values()]
+          const roundWordIds = new Map<number, string[]>()
+          for (const [index, row] of canonicalRows.entries()) {
+            if (!row.wordId) continue
+            const roundIndex = structureInvalid
+              ? Math.floor(index / recoveryUnitSize) + 1
+              : row.roundIndex ?? 1
+            const bucket = roundWordIds.get(roundIndex) ?? []
+            if (!bucket.includes(row.wordId)) bucket.push(row.wordId)
+            roundWordIds.set(roundIndex, bucket)
+          }
+          const unitByRound = new Map<number, number>()
+          const unitByWord = new Map<string, number>()
+          const unitWordIds = new Map<number, string[]>()
+          for (const roundIndex of [...roundWordIds.keys()].sort((a, b) => a - b)) {
+            const unitIndex = structureInvalid
+              ? roundIndex
+              : Math.floor((roundIndex - 1) / batchRounds) + 1
+            unitByRound.set(roundIndex, unitIndex)
+            const bucket = unitWordIds.get(unitIndex) ?? []
+            for (const wordId of roundWordIds.get(roundIndex) ?? []) {
+              if (!bucket.includes(wordId)) bucket.push(wordId)
+              unitByWord.set(wordId, unitIndex)
+            }
+            unitWordIds.set(unitIndex, bucket)
+          }
+          const rowByWord = new Map(canonicalRows.flatMap((row) => row.wordId ? [[row.wordId, row] as const] : []))
+          const activeRound = session.activeRoundIndex ?? 1
+          const activeUnitIndex = structureInvalid
+            ? 0
+            : Math.min(
+                Math.max(0, unitWordIds.size - 1),
+                Math.floor((Math.max(1, activeRound) - 1) / batchRounds),
+              )
+          const units = [...unitWordIds.entries()].map(([unitNumber, wordIds]) => ({
+            unitId: `${session.sessionId}:unit:${unitNumber}`,
+            index: unitNumber - 1,
+            wordIds,
+            dueWordIds: wordIds.filter((wordId) => !rowByWord.get(wordId)?.wasNew),
+            newWordIds: wordIds.filter((wordId) => Boolean(rowByWord.get(wordId)?.wasNew)),
+            status: session.status !== 'active' ? 'completed' as const
+              : unitNumber - 1 < activeUnitIndex ? 'completed' as const
+                : unitNumber - 1 === activeUnitIndex ? 'active' as const : 'pending' as const,
+          }))
+          const recoveryWordIds = canonicalRows.flatMap((row) => row.wordId ? [row.wordId] : [])
+          const hasRecoverableWork = !structureInvalid || recoveryWordIds.length > 0
+          const activityOrdinal = Math.max(
+            session.activityOrdinal ?? 0,
+            ...sessionAttempts.map((attempt, index) => attempt.activityOrdinal ?? index + 1),
+            0,
+          )
+          await sessions.put({
+            ...session,
+            status: structureInvalid && !hasRecoverableWork ? 'rolled-over' : session.status,
+            phase: structureInvalid ? (hasRecoverableWork ? 'cards' : 'summary') : session.phase,
+            engineVersion: 2,
+            sessionRevision: session.sessionRevision ?? 1,
+            activityOrdinal,
+            learningStage: structureInvalid ? 'probe'
+              : session.phase === 'article' ? 'read'
+              : session.phase === 'practice' ? 'transfer'
+                : session.phase === 'summary' ? 'transfer' : 'probe',
+            activeUnitIndex,
+            unitsJson: JSON.stringify(units),
+            initialWordIds: structureInvalid ? recoveryWordIds : session.initialWordIds,
+            recoveryMode: structureInvalid ? true : session.recoveryMode,
+            recoveryBacklogCount: structureInvalid ? recoveryWordIds.length : session.recoveryBacklogCount,
+            activeRoundIndex: structureInvalid && hasRecoverableWork ? 1 : session.activeRoundIndex,
+            roundsJson: structureInvalid
+              ? JSON.stringify(units.map((unit) => ({
+                  index: unit.index + 1,
+                  wordIds: unit.wordIds,
+                  status: unit.status,
+                  startedAt: unit.status === 'active' ? session.updatedAt : '',
+                })))
+              : session.roundsJson,
+          })
+          if (rows.length) {
+            await queue.bulkPut(rows.map((row) => {
+              const unitIndex = row.wordId
+                ? unitByWord.get(row.wordId) ?? unitByRound.get(row.roundIndex ?? 1) ?? activeUnitIndex + 1
+                : activeUnitIndex + 1
+              const canonicalCommitted = sessionAttempts.some((attempt) => attempt.wordId === row.wordId && attempt.committedToFsrs)
+              return {
+                ...row,
+                unitId: row.unitId ?? `${session.sessionId}:unit:${unitIndex}`,
+                stage: row.stage ?? (row.reason === 'initial' && !row.wasNew ? 'probe' : row.reason === 'initial' ? 'learn' : 'retry'),
+                eligibleAfterOrdinal: row.eligibleAfterOrdinal ?? 0,
+                canonicalGradeCommitted: row.canonicalGradeCommitted ?? canonicalCommitted,
+                memoryStatus: row.memoryStatus ?? (row.status === 'completed' ? 'passed' : 'pending'),
+              }
+            }))
+          }
+          if (sessionAttempts.length) {
+            await attempts.bulkPut(sessionAttempts.map((attempt, index) => ({
+              ...attempt,
+              activityOrdinal: attempt.activityOrdinal ?? index + 1,
+              evidenceKind: attempt.evidenceKind ?? 'unprompted-card',
+              skill: attempt.skill ?? 'meaning-recall',
+              hintLevel: attempt.hintLevel ?? 0,
+            })))
+          }
+        }
+      })
   }
 }
 

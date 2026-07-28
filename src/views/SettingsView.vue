@@ -17,6 +17,11 @@ import { SupabaseCloudSyncRemote } from '../modules/sync/supabaseRemote'
 import { deleteDeepseekSecret, syncDeepseekSecret, unloadDeepseekSecret, uploadDeepseekSecret } from '../modules/sync/cloudSecretService'
 import type { CloudSyncMode, SyncPreview, SyncResult } from '../modules/sync/syncTypes'
 import { getWordbookStats } from '../modules/wordbook/wordbookService'
+import {
+  getFsrsPersonalizationStatus,
+  optimizeFsrsParameters,
+  type FsrsPersonalizationStatus,
+} from '../modules/review/fsrsPersonalizationService'
 
 const settingsStore = useSettingsStore()
 const dictionaryStore = useDictionaryStore()
@@ -48,6 +53,11 @@ const cloudMessageTone = ref<'info' | 'success' | 'error'>('info')
 const cloudPreview = ref<SyncPreview | null>(null)
 const cloudLastResult = ref<SyncResult | null>(null)
 const cloudLastSyncAt = ref<string | null>(null)
+const fsrsStatus = ref<FsrsPersonalizationStatus | null>(null)
+const fsrsBusy = ref(false)
+const fsrsProgress = ref('')
+const fsrsMessage = ref('')
+const fsrsMessageTone = ref<'success' | 'info' | 'error'>('info')
 
 const SETTINGS_REFRESH_TTL_MS = 15 * 1000
 let settingsRefreshPromise: Promise<void> | null = null
@@ -81,6 +91,17 @@ const cloudOperationText = computed(() => ({
 const keySyncStatus = computed(() => {
   if (!cloudAuth.value.signedIn) return '登录云同步账号后可以开启'
   return settings.value.syncDeepseekApiKey ? '已开启：Key 将随当前账号同步' : '已关闭：Key 只保存在这台设备'
+})
+
+const fsrsStatusText = computed(() => {
+  const status = fsrsStatus.value
+  if (!status) return '正在读取复习证据…'
+  if (status.active) return `个性化参数已启用 · ${status.effectiveReviewCount} 条有效评分`
+  if (!status.eligible) {
+    return `${status.effectiveReviewCount}/${status.requiredReviewCount} 条有效每日首次评分`
+  }
+  if (!status.runtimeAvailable) return '数据已足够；当前部署环境不支持本地优化器'
+  return '数据已足够，可以在本机训练并验证'
 })
 
 const installProgressText = computed(() => {
@@ -139,6 +160,7 @@ function initializeSettingsView(options: { force?: boolean } = {}): Promise<void
     settingsStore.initialize(),
     dictionaryStore.refreshInstalledMeta(),
     refreshStats(),
+    refreshFsrsStatus(),
     refreshCloudState(),
   ])
     .then(() => undefined)
@@ -159,6 +181,33 @@ onActivated(() => {
 
 async function refreshStats() {
   wordbookStats.value = await getWordbookStats()
+}
+
+async function refreshFsrsStatus() {
+  fsrsStatus.value = await getFsrsPersonalizationStatus()
+}
+
+async function onOptimizeFsrs() {
+  if (fsrsBusy.value) return
+  fsrsBusy.value = true
+  fsrsMessage.value = ''
+  fsrsProgress.value = '正在准备训练集与留出集…'
+  try {
+    const result = await optimizeFsrsParameters((current, total) => {
+      fsrsProgress.value = total > 0 ? `正在训练 ${current}/${total}` : '正在训练个性化参数…'
+    })
+    fsrsMessageTone.value = result.lastOutcome === 'active' ? 'success' : 'info'
+    fsrsMessage.value = result.lastOutcome === 'active'
+      ? '候选参数在留出集的 Log loss 与 RMSE 均优于默认参数，已启用并重算长期状态。'
+      : '候选参数未同时优于默认参数，已安全保留当前调度参数。'
+    await refreshFsrsStatus()
+  } catch (error) {
+    fsrsMessageTone.value = 'error'
+    fsrsMessage.value = error instanceof Error ? error.message : 'FSRS 参数训练失败'
+  } finally {
+    fsrsProgress.value = ''
+    fsrsBusy.value = false
+  }
 }
 
 async function onUpdateBoolean(key: 'autoPronunciation', event: Event) {
@@ -189,6 +238,13 @@ async function onUpdateEngine(event: Event): Promise<void> {
 async function onUpdateArticleLevel(event: Event): Promise<void> {
   const target = event.target as HTMLSelectElement
   await settingsStore.update({ articleLevel: target.value as 'A2' | 'B1' | 'B2' | 'C1' })
+}
+
+async function onUpdateDefinitionLanguage(event: Event): Promise<void> {
+  const target = event.target as HTMLSelectElement
+  await settingsStore.update({
+    definitionLanguage: target.value as 'adaptive' | 'english-first' | 'chinese-first',
+  })
 }
 
 async function onUpdateString(
@@ -509,26 +565,16 @@ async function onRunCloudSync(mode: CloudSyncMode) {
         />
       </label>
       <label class="setting-row">
-        <span>每回合单词数</span>
+        <span>每批目标词（8–12）</span>
         <input
           type="number"
-          min="1"
+          min="8"
           max="12"
           :value="settings.roundWordCount"
           @change="onUpdateNumber('roundWordCount', $event)"
         />
       </label>
 
-      <label class="setting-row">
-        <span>每几回合插入文章</span>
-        <input
-          type="number"
-          min="1"
-          max="12"
-          :value="settings.articleEveryRounds"
-          @change="onUpdateNumber('articleEveryRounds', $event)"
-        />
-      </label>
       <label class="setting-row">
         <span>每日语境练习题数上限</span>
         <input
@@ -539,7 +585,33 @@ async function onRunCloudSync(mode: CloudSyncMode) {
           @change="onUpdateNumber('practiceQuestionLimit', $event)"
         />
       </label>
-      <p class="muted settings-hint">设为 0 可关闭语境练习；算法每轮最多选择 2 题，不会强制用满上限。文章会合并这一段回合的词。</p>
+      <p class="muted settings-hint">每批最多加入 5 个新词。设为 0 可关闭语境练习；文章与卡片按批循环。</p>
+    </article>
+
+    <article class="result-section">
+      <div class="sync-heading">
+        <div><p class="eyebrow">长期记忆模型</p><h2>FSRS 个性化</h2></div>
+        <span :class="['sync-status-badge', { connected: fsrsStatus?.active, loading: fsrsBusy }]">{{ fsrsBusy ? '训练中' : fsrsStatus?.active ? '已启用' : '默认参数' }}</span>
+      </div>
+      <p class="muted">{{ fsrsStatusText }}</p>
+      <div v-if="fsrsStatus" class="study-metrics">
+        <div><span>有效评分</span><strong>{{ fsrsStatus.effectiveReviewCount }}</strong></div>
+        <div><span>可训练样本</span><strong>{{ fsrsStatus.trainableItemCount }}</strong></div>
+        <div><span>目标保持率</span><strong>90%</strong></div>
+      </div>
+      <div v-if="fsrsStatus?.record?.defaultMetrics && fsrsStatus.record.candidateMetrics" class="sync-panel">
+        <strong>最近一次留出集验证</strong>
+        <p class="muted">
+          默认 Log loss {{ fsrsStatus.record.defaultMetrics.logLoss.toFixed(4) }} / RMSE {{ fsrsStatus.record.defaultMetrics.rmseBins.toFixed(4) }}
+          · 候选 Log loss {{ fsrsStatus.record.candidateMetrics.logLoss.toFixed(4) }} / RMSE {{ fsrsStatus.record.candidateMetrics.rmseBins.toFixed(4) }}
+        </p>
+      </div>
+      <div v-if="fsrsBusy" class="sync-progress" role="status" aria-live="polite"><span class="sync-spinner" aria-hidden="true" /><span>{{ fsrsProgress || '正在训练与验证…' }}</span></div>
+      <p v-if="fsrsMessage" :class="['sync-message', `sync-message-${fsrsMessageTone}`]" :role="fsrsMessageTone === 'error' ? 'alert' : 'status'">{{ fsrsMessage }}</p>
+      <button class="btn btn-primary" type="button" :disabled="fsrsBusy || !fsrsStatus?.eligible || !fsrsStatus.runtimeAvailable" @click="onOptimizeFsrs">
+        {{ fsrsStatus?.active ? '重新训练并验证' : '训练个性化参数' }}
+      </button>
+      <p class="muted settings-hint">只使用每词每天第一次有效无提示评分；至少 400 条后才开放。候选参数必须在历史留出集的 Log loss 与 RMSE 均优于默认值才会启用，否则继续使用默认/当前参数。</p>
     </article>
 
     <article class="result-section">
@@ -580,6 +652,14 @@ async function onRunCloudSync(mode: CloudSyncMode) {
         <span>文章默认难度</span>
         <select class="inline-input" :value="settings.articleLevel" @change="onUpdateArticleLevel">
           <option value="A2">A2</option><option value="B1">B1</option><option value="B2">B2</option><option value="C1">C1</option>
+        </select>
+      </label>
+      <label class="setting-row">
+        <span>卡片释义语言</span>
+        <select class="inline-input" :value="settings.definitionLanguage" @change="onUpdateDefinitionLanguage">
+          <option value="adaptive">随水平自适应（推荐）</option>
+          <option value="english-first">英文释义优先</option>
+          <option value="chinese-first">中文核心义优先</option>
         </select>
       </label>
 

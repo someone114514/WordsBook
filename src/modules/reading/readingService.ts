@@ -13,11 +13,12 @@ import { normalizeReviewRating } from '../review/scheduler'
 import { loadSettings } from '../settings/settingsService'
 import { markPayloadChanged, markRecordDeleted } from '../sync/localSyncStore'
 import { parseJsonArray } from '../../utils/json'
-import { enqueueContextRetry } from '../review/dailyQueueService'
+import { recordContextLearningEvidence } from '../review/dailyQueueService'
 import { dictionaryEntryFromWordbook, isUsableVocabularyHeadword, repairVocabularyIntegrity } from '../wordbook/vocabularyIntegrity'
 import { createDeepseekRequest } from '../ai/deepseekRequest'
-import { runWithGenerationLock } from '../ai/generationLock'
+import { runSerializedGeneration } from '../ai/generationClient'
 import { articleLemmaCandidates, canonicalArticleForm, loadArticleInflectionIndex } from './inflectionService'
+import { parseSenseRecords } from '../dictionary/senseRecords'
 
 interface AiReadingResponse {
   title?: string
@@ -163,6 +164,24 @@ function roundReadingBatches(raw: string | undefined, roundsPerArticle: number):
   } catch { return [] }
 }
 
+function unitReadingBatches(raw: string | undefined): string[][] {
+  if (!raw) return []
+  try {
+    const units = JSON.parse(raw) as Array<{ wordIds?: unknown }>
+    if (!Array.isArray(units)) return []
+    return units.flatMap((unit) => {
+      const words = Array.isArray(unit.wordIds)
+        ? [...new Set(unit.wordIds.filter((wordId): wordId is string => typeof wordId === 'string'))]
+        : []
+      const batches: string[][] = []
+      for (let index = 0; index < words.length; index += MAX_READING_BATCH_SIZE) {
+        batches.push(words.slice(index, index + MAX_READING_BATCH_SIZE))
+      }
+      return batches
+    })
+  } catch { return [] }
+}
+
 export async function persistReadingBatches(
   sessionId: string,
   batches: string[][],
@@ -178,8 +197,9 @@ export async function persistReadingBatches(
   const updated = {
     ...session,
     readingBatchesJson: JSON.stringify(normalized),
-    readingBatchRounds: settings.articleEveryRounds,
+    readingBatchRounds: session.engineVersion === 2 ? 1 : settings.articleEveryRounds,
     activeReadingBatchIndex: index,
+    sessionRevision: (session.sessionRevision ?? 0) + 1,
     updatedAt: new Date().toISOString(),
   }
   await db.dailyLearningSessions.put(updated)
@@ -195,8 +215,11 @@ export async function getOrCreateReadingBatches(
   const session = await db.dailyLearningSessions.get(sessionId)
   const settings = await loadSettings()
   const cached = session?.articleStatus !== 'stale' ? parseReadingBatches(session?.readingBatchesJson) : []
-  const roundBatches = roundReadingBatches(session?.roundsJson, settings.articleEveryRounds)
-  const cadenceChanged = session?.readingBatchRounds !== undefined && session.readingBatchRounds !== settings.articleEveryRounds
+  const roundsPerArticle = session?.engineVersion === 2 ? 1 : settings.articleEveryRounds
+  const roundBatches = session?.engineVersion === 2
+    ? unitReadingBatches(session.unitsJson)
+    : roundReadingBatches(session?.roundsJson, roundsPerArticle)
+  const cadenceChanged = session?.readingBatchRounds !== undefined && session.readingBatchRounds !== roundsPerArticle
   if (cadenceChanged && roundBatches.length) return persistReadingBatches(sessionId, roundBatches, session?.activeReadingBatchIndex)
   if (roundBatches.length > cached.length) return persistReadingBatches(sessionId, roundBatches, session?.activeReadingBatchIndex)
   if (cached.length) return cached
@@ -227,12 +250,23 @@ export async function setActiveReadingBatch(sessionId: string, batchIndex: numbe
   if (!session) return
   const batches = parseReadingBatches(session.readingBatchesJson)
   const activeBatchIndex = batches.length ? Math.max(0, Math.min(batchIndex, batches.length - 1)) : 0
-  const updated = { ...session, activeReadingBatchIndex: activeBatchIndex, updatedAt: new Date().toISOString() }
+  const updated = {
+    ...session,
+    activeReadingBatchIndex: activeBatchIndex,
+    sessionRevision: (session.sessionRevision ?? 0) + 1,
+    updatedAt: new Date().toISOString(),
+  }
   await db.dailyLearningSessions.put(updated)
   await markPayloadChanged('dailyLearningSessions', updated, updated.updatedAt)
 }
 
-type ReadingPromptRow = { wordId: string; headword: string; senses: string[]; posList?: string[] }
+type ReadingPromptRow = {
+  wordId: string
+  headword: string
+  senses: string[]
+  examples: string[]
+  posList?: string[]
+}
 
 function validateResponse(response: AiReadingResponse, rows: ReadingPromptRow[]): asserts response is Required<AiReadingResponse> {
   if (!response.title || !response.translation || !Array.isArray(response.segments) || !Array.isArray(response.targets)) {
@@ -344,32 +378,12 @@ export function readingBatchRangeForRound(
 }
 
 function buildFallbackDetails(
-  rows: ReadingPromptRow[],
+  _rows: ReadingPromptRow[],
 ): Pick<Required<AiReadingResponse>, 'title' | 'targets' | 'translation'> {
-  const distractorPool = ['进行计算操作', '表示时间顺序', '一种具体地点', '某种食物名称', '描述声音强弱']
-  const targets = rows.map((row) => {
-    const contextualMeaning = row.senses.find(Boolean) ?? '请结合上下文理解该词'
-    const samePartOfSpeech = rows
-      .filter((candidate) => candidate.wordId !== row.wordId
-        && (!row.posList?.length || !candidate.posList?.length || candidate.posList.some((part) => row.posList!.includes(part))))
-      .flatMap((candidate) => candidate.senses)
-    const distractors = [...samePartOfSpeech, ...distractorPool]
-      .filter((choice) => normalizeChoice(choice) !== normalizeChoice(contextualMeaning) && !meaningsTooSimilar(choice, contextualMeaning))
-      .filter((choice, index, choices) => choices.indexOf(choice) === index)
-      .slice(0, 2)
-    return {
-      wordId: row.wordId,
-      headword: row.headword,
-      sourceSense: contextualMeaning,
-      contextualMeaning,
-      choices: [contextualMeaning, ...distractors],
-      explanation: '题目服务暂时未完成，已使用本地词典释义生成备用题目。',
-    }
-  })
   return {
     title: 'Context Reading',
-    targets,
-    translation: '题目服务暂时不可用，本次保留英文正文和备用测义题。',
+    targets: [],
+    translation: '题目校验未通过；本次保留英文正文并回到释义卡，不生成未经验证的选择题。',
   }
 }
 
@@ -451,7 +465,9 @@ export function sortTargetsByPassageOrder(targets: ReadingTarget[], passage: str
 
 function apiError(status: number): ReadingGenerationError {
   const messages: Record<number, string> = { 401: 'DeepSeek Key 无效，请到设置中更新', 402: 'DeepSeek 余额不足，请充值后重试', 429: '请求过多，请稍后重试' }
-  const code: ReadingErrorCode = status === 401 ? 'auth' : status === 402 ? 'quota' : status === 429 ? 'rate-limit' : status >= 500 ? 'network' : 'unknown'
+  const code: ReadingErrorCode = status === 401 || status === 403
+    ? 'unauthorized'
+    : status === 402 ? 'quota' : status === 429 ? 'rate-limited' : status >= 500 ? 'server' : 'unknown'
   return readingError(messages[status] ?? (status >= 500 ? 'DeepSeek 服务暂时不可用，请稍后重试' : `文章生成失败（HTTP ${status}）`), code)
 }
 
@@ -487,6 +503,41 @@ export function groupReadingSegmentsByParagraph(segments: ReadingSegment[]): Rea
   return paragraphs.filter((paragraph) => paragraph.some((segment) => segment.text.length > 0))
 }
 
+function buildLocalReadingFallback(
+  session: ReadingSession,
+  rows: ReadingPromptRow[],
+  inflections: Record<string, string>,
+  reason: unknown,
+): ReadingSession {
+  const paragraphs = rows.map((row) => {
+    const trustedExample = row.examples.find((example) =>
+      passageIncludesHeadword(example, row.headword, inflections))
+    if (trustedExample) return trustedExample
+    const sense = row.senses.find(Boolean)
+    return sense ? `${row.headword} — ${sense}` : row.headword
+  })
+  const markerTargets: ReadingTarget[] = rows.map((row) => ({
+    wordId: row.wordId,
+    headword: row.headword,
+    contextualMeaning: '',
+    choices: [],
+    explanation: '',
+  }))
+  return {
+    ...session,
+    status: 'ready',
+    title: 'Local context pack',
+    segmentsJson: JSON.stringify(buildSegments(paragraphs, markerTargets, inflections)),
+    targetsJson: '[]',
+    targetWordIds: [],
+    omittedTargetWordIds: [],
+    translation: 'AI 当前不可用；本篇由本地词典例句与核心释义组成，不生成未经验证的选择题。',
+    error: reason instanceof Error ? reason.message : String(reason),
+    errorCode: errorCodeOf(reason),
+    updatedAt: new Date().toISOString(),
+  }
+}
+
 async function requestArticle(
   settings: AppSettings,
   prompt: string,
@@ -502,14 +553,14 @@ async function requestArticle(
   const resetStall = () => {
     window.clearTimeout(stallTimer)
     stallTimer = window.setTimeout(() => {
-      timeoutMessage = receivedFirst ? '文章流已中断 20 秒，请重试' : '20 秒内未收到文章片段，请重试'
+      timeoutMessage = receivedFirst ? '文章流已中断 10 秒，请重试' : '10 秒内未收到文章片段，请重试'
       controller.abort()
-    }, 20_000)
+    }, 10_000)
   }
   const totalTimer = window.setTimeout(() => {
-    timeoutMessage = '文章生成超过 120 秒，已自动停止'
+    timeoutMessage = '文章生成超过 45 秒，已自动停止'
     controller.abort()
-  }, 120_000)
+  }, 45_000)
   resetStall()
   try {
     const response = await fetch(settings.deepseekBaseUrl, {
@@ -631,7 +682,25 @@ async function generateReadingSessionImpl(options: {
       }
     }
     if (!entry || !isUsableHeadword(entry.headword)) continue
-    promptRows.push({ wordId, headword: entry.headword, senses: parseJsonArray(entry.sensesJson).slice(0, 4), posList: entry.posList })
+    const senseRecords = parseSenseRecords(entry)
+    const englishFirst = level === 'B2' || level === 'C1'
+    const senses = senseRecords
+      .map((sense) => englishFirst
+        ? sense.definitionEn ?? sense.glossZh
+        : sense.glossZh ?? sense.definitionEn)
+      .filter((sense): sense is string => Boolean(sense))
+      .slice(0, 4)
+    const examples = [...new Set([
+      ...senseRecords.flatMap((sense) => sense.examples),
+      ...parseJsonArray(entry.examplesJson),
+    ])].slice(0, 6)
+    promptRows.push({
+      wordId,
+      headword: entry.headword,
+      senses,
+      examples,
+      posList: entry.posList,
+    })
   }
   const validWordIds = promptRows.map((row) => row.wordId)
   const now = new Date().toISOString()
@@ -745,8 +814,10 @@ async function generateReadingSessionImpl(options: {
       .map((target) => [target.wordId, target]))
     generated.title = generated.title || fallback.title
     generated.translation = generated.translation || fallback.translation
-    const completedTargets = passageRows.map((row) => validTargets.get(row.wordId)
-      ?? fallback.targets.find((target) => target.wordId === row.wordId)!).filter(Boolean)
+    const completedTargets = passageRows.flatMap((row) => {
+      const target = validTargets.get(row.wordId)
+      return target ? [target] : []
+    })
     const coveredTargets = sortTargetsByPassageOrder(completedTargets, passage, inflections)
     generated.targets = coveredTargets
     const generatedWordIds = generated.targets.map((target) => target.wordId)
@@ -773,13 +844,15 @@ async function generateReadingSessionImpl(options: {
       checkpointTimer = 0
     }
     await persistStreamingCheckpoint()
-    session = {
-      ...session,
-      status: 'failed',
-      error: error instanceof Error ? error.message : String(error),
-      errorCode: errorCodeOf(error),
-      updatedAt: new Date().toISOString(),
-    }
+    session = errorCodeOf(error) === 'cancelled' || !validWordIds.length
+      ? {
+          ...session,
+          status: 'failed',
+          error: error instanceof Error ? error.message : String(error),
+          errorCode: errorCodeOf(error),
+          updatedAt: new Date().toISOString(),
+        }
+      : buildLocalReadingFallback(session, promptRows, inflections, error)
   }
   await db.readingSessions.put(session)
   await markPayloadChanged('readingSessions', session, session.updatedAt)
@@ -832,7 +905,7 @@ export async function generateReadingSession(options: {
     for (const listener of state.listeners) listener(progress)
   }
   const run = () => generateReadingSessionImpl({ ...options, signal: abortController.signal, onProgress })
-  const task = runWithGenerationLock(`wordsbook:generation:${sessionId}`, run).finally(() => {
+  const task = runSerializedGeneration(run).finally(() => {
     options.signal?.removeEventListener('abort', forwardAbort)
     if (activeGenerations.get(sessionId) === state) activeGenerations.delete(sessionId)
   })
@@ -889,6 +962,7 @@ export async function recordContextAttempt(
   target: ReadingTarget,
   selectedMeaning?: string,
   dailySessionId?: string,
+  evidence: { responseMs?: number; hintLevel?: number } = {},
 ): Promise<ContextAttempt> {
   const result: ContextAttempt['result'] = !selectedMeaning
     ? 'uncertain'
@@ -900,14 +974,12 @@ export async function recordContextAttempt(
     wordId: target.wordId,
     selectedMeaning,
     result,
+    responseMs: evidence.responseMs,
+    hintLevel: evidence.hintLevel ?? 0,
+    skill: 'context-sense',
     answeredAt: now.toISOString(),
   }
-  await db.contextAttempts.put(attempt)
-  await markPayloadChanged('contextAttempts', attempt, attempt.answeredAt)
-  if (result !== 'correct') {
-    if (dailySessionId) await enqueueContextRetry(dailySessionId, target.wordId)
-  }
-  return attempt
+  return recordContextLearningEvidence(attempt, dailySessionId)
 }
 
 export async function loadContextAttempts(sessionId: string): Promise<ContextAttempt[]> {

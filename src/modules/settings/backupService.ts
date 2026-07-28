@@ -1,11 +1,20 @@
 import { db } from '../../db/database'
-import type { BackupPayload, DictionaryEntry, ImportReport } from '../../types/models'
+import type {
+  BackupPayload,
+  DailyLearningSession,
+  DailyQueueAttempt,
+  DailyQueueItem,
+  DictionaryEntry,
+  ImportReport,
+  LearningUnit,
+  SettingItem,
+} from '../../types/models'
 import { buildPrefixTokens } from '../dictionary/search'
 import { ensureSystemStudyLists } from '../wordbook/studyListService'
 import { markStudyDataChanged } from '../review/studyDataRevision'
 import { repairVocabularyIntegrity } from '../wordbook/vocabularyIntegrity'
 
-const BACKUP_SCHEMA_VERSION = 5
+const BACKUP_SCHEMA_VERSION = 6
 
 function isBackupPayload(raw: unknown): raw is BackupPayload {
   if (typeof raw !== 'object' || raw === null) {
@@ -15,6 +24,9 @@ function isBackupPayload(raw: unknown): raw is BackupPayload {
   const candidate = raw as Record<string, unknown>
   return (
     typeof candidate.schemaVersion === 'number' &&
+    Number.isInteger(candidate.schemaVersion) &&
+    candidate.schemaVersion >= 1 &&
+    candidate.schemaVersion <= BACKUP_SCHEMA_VERSION &&
     Array.isArray(candidate.wordbook) &&
     Array.isArray(candidate.reviewState) &&
     Array.isArray(candidate.reviewLogs) &&
@@ -24,6 +36,155 @@ function isBackupPayload(raw: unknown): raw is BackupPayload {
 
 function isLocalUserDictionaryEntry(entry: DictionaryEntry): boolean {
   return entry.dictionaryId === 'ai-local' || entry.dictionaryId === 'user-import' || entry.entryId.startsWith('ai:') || entry.entryId.startsWith('import:')
+}
+
+function normalizeImportedLearningEngine(
+  sessions: DailyLearningSession[],
+  items: DailyQueueItem[],
+  attempts: DailyQueueAttempt[],
+  settings: SettingItem[],
+): {
+  sessions: DailyLearningSession[]
+  items: DailyQueueItem[]
+  attempts: DailyQueueAttempt[]
+} {
+  const requestedSize = Number(settings.find((row) => row.key === 'roundWordCount')?.value)
+  const unitSize = Number.isFinite(requestedSize)
+    ? Math.max(8, Math.min(12, Math.floor(requestedSize)))
+    : 10
+  const normalizedItems = new Map(items.map((item) => [item.itemId, item]))
+  const normalizedAttempts = new Map(attempts.map((attempt) => [attempt.attemptId, attempt]))
+
+  const normalizedSessions = sessions.map((session) => {
+    const sessionItems = items
+      .filter((item) => item.sessionId === session.sessionId)
+      .sort((left, right) => left.position - right.position)
+    const sessionAttempts = attempts
+      .filter((attempt) => attempt.sessionId === session.sessionId)
+      .sort((left, right) => left.answeredAt.localeCompare(right.answeredAt))
+    let storedUnits: LearningUnit[] = []
+    try {
+      const parsed = JSON.parse(session.unitsJson ?? '[]') as unknown
+      storedUnits = Array.isArray(parsed) ? parsed as LearningUnit[] : []
+    } catch {
+      storedUnits = []
+    }
+    const storedWordIds = new Set(storedUnits.flatMap((unit) => unit.wordIds))
+    const validV2 = session.engineVersion === 2
+      && storedUnits.length > 0
+      && session.initialWordIds.every((wordId) => storedWordIds.has(wordId))
+    const firstRowByWord = new Map<string, DailyQueueItem>()
+    for (const item of sessionItems) {
+      if (item.kind === 'card' && item.wordId && !firstRowByWord.has(item.wordId)) {
+        firstRowByWord.set(item.wordId, item)
+      }
+    }
+    const structureInvalid = session.status === 'active'
+      && session.initialWordIds.some((wordId) => !firstRowByWord.has(wordId))
+    const recoveryRows = sessionItems.filter((item) =>
+      item.kind === 'card'
+      && item.wordId
+      && (item.status === 'pending' || item.status === 'active'))
+    const sourceWordIds = validV2
+      ? session.initialWordIds
+      : structureInvalid
+        ? [...new Set(recoveryRows.flatMap((item) => item.wordId ? [item.wordId] : []))]
+        : session.initialWordIds.filter((wordId) => firstRowByWord.has(wordId))
+    const generatedUnits = Array.from(
+      { length: Math.ceil(sourceWordIds.length / unitSize) },
+      (_, index) => {
+        const wordIds = sourceWordIds.slice(index * unitSize, index * unitSize + unitSize)
+        const pending = wordIds.some((wordId) => {
+          const row = firstRowByWord.get(wordId)
+          return row?.status === 'pending' || row?.status === 'active'
+        })
+        return {
+          unitId: `${session.sessionId}:unit:${index + 1}`,
+          index,
+          wordIds,
+          dueWordIds: wordIds.filter((wordId) => !firstRowByWord.get(wordId)?.wasNew),
+          newWordIds: wordIds.filter((wordId) => Boolean(firstRowByWord.get(wordId)?.wasNew)),
+          status: pending ? 'active' as const : 'completed' as const,
+        }
+      },
+    )
+    const generatedActiveIndex = generatedUnits.findIndex((unit) => unit.status === 'active')
+    const units: LearningUnit[] = validV2
+      ? storedUnits
+      : generatedUnits.map((unit, index) => ({
+          ...unit,
+          status: generatedActiveIndex < 0 || index < generatedActiveIndex
+            ? 'completed' as const
+            : index === generatedActiveIndex ? 'active' as const : 'pending' as const,
+        }))
+    const firstActiveIndex = Math.max(0, units.findIndex((unit) => unit.status === 'active'))
+    const unitByWord = new Map(units.flatMap((unit) =>
+      unit.wordIds.map((wordId) => [wordId, unit] as const)))
+    const canonicalByWord = new Set(sessionAttempts
+      .filter((attempt) => attempt.committedToFsrs)
+      .map((attempt) => attempt.wordId))
+    for (const item of sessionItems) {
+      const unit = item.wordId ? unitByWord.get(item.wordId) : undefined
+      normalizedItems.set(item.itemId, {
+        ...item,
+        unitId: item.unitId ?? unit?.unitId,
+        stage: item.stage ?? (
+          item.reason !== 'initial'
+            ? 'retry'
+            : item.wasNew ? 'learn' : 'probe'
+        ),
+        eligibleAfterOrdinal: item.eligibleAfterOrdinal ?? 0,
+        canonicalGradeCommitted: item.canonicalGradeCommitted
+          ?? Boolean(item.wordId && canonicalByWord.has(item.wordId)),
+        memoryStatus: item.memoryStatus ?? (item.status === 'completed' ? 'passed' : 'pending'),
+      })
+    }
+    sessionAttempts.forEach((attempt, index) => normalizedAttempts.set(attempt.attemptId, {
+      ...attempt,
+      activityOrdinal: attempt.activityOrdinal ?? index + 1,
+      evidenceKind: attempt.evidenceKind ?? 'unprompted-card',
+      skill: attempt.skill ?? 'meaning-recall',
+      hintLevel: attempt.hintLevel ?? 0,
+    }))
+    const activityOrdinal = Math.max(
+      session.activityOrdinal ?? 0,
+      ...sessionAttempts.map((attempt, index) => attempt.activityOrdinal ?? index + 1),
+      0,
+    )
+    const hasRecoverableWork = sourceWordIds.length > 0
+    return {
+      ...session,
+      status: structureInvalid && !hasRecoverableWork ? 'rolled-over' as const : session.status,
+      phase: structureInvalid ? (hasRecoverableWork ? 'cards' as const : 'summary' as const) : session.phase,
+      engineVersion: 2 as const,
+      sessionRevision: session.sessionRevision ?? 1,
+      activityOrdinal,
+      learningStage: structureInvalid
+        ? 'probe' as const
+        : session.learningStage ?? (
+            session.phase === 'article' ? 'read' as const
+              : session.phase === 'practice' ? 'transfer' as const
+                : session.phase === 'summary' ? 'transfer' as const : 'probe' as const
+          ),
+      activeUnitIndex: validV2 ? session.activeUnitIndex ?? firstActiveIndex : firstActiveIndex,
+      activeRoundIndex: validV2 ? session.activeRoundIndex : (hasRecoverableWork ? firstActiveIndex + 1 : 0),
+      unitsJson: JSON.stringify(units),
+      initialWordIds: sourceWordIds,
+      recoveryMode: structureInvalid ? true : session.recoveryMode,
+      recoveryBacklogCount: structureInvalid ? sourceWordIds.length : session.recoveryBacklogCount,
+      roundsJson: validV2 ? session.roundsJson : JSON.stringify(units.map((unit) => ({
+        index: unit.index + 1,
+        wordIds: unit.wordIds,
+        status: unit.status,
+        startedAt: unit.status === 'active' ? session.updatedAt : '',
+      }))),
+    }
+  })
+  return {
+    sessions: normalizedSessions,
+    items: [...normalizedItems.values()],
+    attempts: [...normalizedAttempts.values()],
+  }
 }
 
 async function listPortableDictionaryEntries(): Promise<DictionaryEntry[]> {
@@ -113,9 +274,18 @@ export async function importUserData(input: Blob): Promise<ImportReport> {
   const studyListItems = Array.isArray(payload.studyListItems) ? payload.studyListItems : []
   const readingSessions = Array.isArray(payload.readingSessions) ? payload.readingSessions : []
   const contextAttempts = Array.isArray(payload.contextAttempts) ? payload.contextAttempts : []
-  const dailyLearningSessions = Array.isArray(payload.dailyLearningSessions) ? payload.dailyLearningSessions : []
-  const dailyQueueItems = Array.isArray(payload.dailyQueueItems) ? payload.dailyQueueItems : []
-  const dailyQueueAttempts = Array.isArray(payload.dailyQueueAttempts) ? payload.dailyQueueAttempts : []
+  const importedDailyLearningSessions = Array.isArray(payload.dailyLearningSessions) ? payload.dailyLearningSessions : []
+  const importedDailyQueueItems = Array.isArray(payload.dailyQueueItems) ? payload.dailyQueueItems : []
+  const importedDailyQueueAttempts = Array.isArray(payload.dailyQueueAttempts) ? payload.dailyQueueAttempts : []
+  const normalizedLearning = normalizeImportedLearningEngine(
+    importedDailyLearningSessions,
+    importedDailyQueueItems,
+    importedDailyQueueAttempts,
+    payload.settings,
+  )
+  const dailyLearningSessions = normalizedLearning.sessions
+  const dailyQueueItems = normalizedLearning.items
+  const dailyQueueAttempts = normalizedLearning.attempts
 
   await db.transaction(
     'rw',

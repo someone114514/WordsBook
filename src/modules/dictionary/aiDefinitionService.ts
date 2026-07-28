@@ -13,6 +13,7 @@ import {
 import { buildPrefixTokens, normalizeWord, toLemmaCandidates } from './search'
 import { snapshotDictionaryEntry } from '../wordbook/vocabularyIntegrity'
 import { createDeepseekRequest } from '../ai/deepseekRequest'
+import { parseSenseRecords } from './senseRecords'
 
 const AI_PROMPT_VERSION = 'v2-context-aware-bilingual'
 const AI_PROVIDER: AiOverrideRecord['provider'] = 'deepseek'
@@ -394,6 +395,7 @@ export async function createOrReplaceAiEntry(options: {
     aiEnhanceMode: 'replace',
     aiUpdatedAt: now,
   }
+  entry.senseRecordsJson = JSON.stringify(parseSenseRecords(entry))
 
   await db.transaction(
     'rw',

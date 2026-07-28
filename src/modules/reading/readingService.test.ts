@@ -60,6 +60,49 @@ describe('reading target selection and context feedback', () => {
     expect((await db.reviewState.get('w1'))?.sameDayRelearnAt).toBeUndefined()
   })
 
+  it('commits a repeated context submission once with one activity increment and one retry', async () => {
+    const now = '2026-07-13T08:00:00.000Z'
+    await db.reviewState.put({
+      wordId: 'w1',
+      cycle: 0,
+      nextReviewAt: now,
+      successCount: 1,
+      lapseCount: 0,
+      totalReviews: 1,
+    })
+    await db.dailyLearningSessions.put({
+      sessionId: 'daily:atomic',
+      dayKey: '2026-07-13',
+      status: 'active',
+      phase: 'article',
+      engineVersion: 2,
+      sessionRevision: 1,
+      activityOrdinal: 0,
+      selectedListIds: [],
+      initialWordIds: ['w1'],
+      unitsJson: '[]',
+      articleStatus: 'ready',
+      createdAt: now,
+      updatedAt: now,
+    })
+    const target: ReadingTarget = {
+      wordId: 'w1',
+      headword: 'word',
+      contextualMeaning: '含义',
+      choices: ['含义', '甲', '乙'],
+      explanation: '上下文',
+    }
+
+    await Promise.all([
+      recordContextAttempt('reading:atomic', target, undefined, 'daily:atomic'),
+      recordContextAttempt('reading:atomic', target, undefined, 'daily:atomic'),
+    ])
+
+    expect(await db.contextAttempts.where('wordId').equals('w1').count()).toBe(1)
+    expect(await db.dailyQueueItems.where('sessionId').equals('daily:atomic').count()).toBe(1)
+    expect((await db.dailyLearningSessions.get('daily:atomic'))?.activityOrdinal).toBe(1)
+  })
+
   it('balances large mandatory sets into model-safe batches of no more than 12', async () => {
     await db.reviewLogs.bulkAdd(Array.from({ length: 60 }, (_, index) => log(`new-${index}`, 'good', true)))
     const batches = await buildReadingTargetBatches('2026-07-13', 0)
@@ -118,7 +161,7 @@ describe('reading target selection and context feedback', () => {
     expect(session.segmentsJson).not.toMatch(/[0-9a-f]{8}-[0-9a-f-]{27,}/i)
   })
 
-  it('keeps a valid streamed article and creates local fallback questions when details fail', async () => {
+  it('keeps a valid streamed article but does not invent fallback distractors when details fail', async () => {
     await db.localSecrets.put({ key: 'deepseekApiKey', value: 'test-key' })
     await db.settings.bulkPut([{ key: 'deepseekBaseUrl', value: 'https://example.test/chat' }, { key: 'deepseekModel', value: 'test-model' }])
     await db.dictionaryEntries.put({ entryId: 'e1', headword: 'resilient', headwordLower: 'resilient', posList: ['adj'], sensesJson: '["有韧性的"]', examplesJson: '[]', usageJson: '[]' })
@@ -136,7 +179,8 @@ describe('reading target selection and context feedback', () => {
     expect(session.successfulGenerationCount).toBe(1)
     expect(session.segmentsJson).toContain('resilient')
     expect(session.title).toBe('Context Reading')
-    expect(JSON.parse(session.targetsJson)).toEqual([expect.objectContaining({ wordId: 'w1', headword: 'resilient' })])
+    expect(JSON.parse(session.targetsJson)).toEqual([])
+    expect(session.omittedTargetWordIds).toEqual(['w1'])
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
@@ -162,9 +206,9 @@ describe('reading target selection and context feedback', () => {
     })))
     const session = await generateReadingSession({ dayKey: '2026-07-13', batchIndex: 3, seed: 0, wordIds: ['w1', 'w2', 'w3', 'w4', 'w5'] })
     expect(session.status).toBe('ready')
-    expect(session.targetWordIds).toEqual(['w1', 'w3', 'w5', 'w4'])
-    expect(session.omittedTargetWordIds).toEqual(['w2'])
-    expect(JSON.parse(session.targetsJson)).toHaveLength(4)
+    expect(session.targetWordIds).toEqual(['w1', 'w5', 'w4'])
+    expect(session.omittedTargetWordIds).toEqual(['w2', 'w3'])
+    expect(JSON.parse(session.targetsJson)).toHaveLength(3)
   })
 
   it('persists the reading batch plan when omitted targets are carried forward', async () => {
@@ -285,14 +329,16 @@ describe('reading target selection and context feedback', () => {
     expect(sortTargetsByPassageOrder(targets, passage, { studies: 'study', ran: 'run', better: 'well|good|better' }).map((target) => target.wordId)).toEqual(['study', 'run', 'good'])
   })
 
-  it('returns a structured error when article generation has no API key', async () => {
+  it('falls back to a local reading pack when article generation has no API key', async () => {
     const now = '2026-07-13T00:00:00.000Z'
     await db.dictionaryEntries.put({ entryId: 'e1', headword: 'resilient', headwordLower: 'resilient', posList: ['adj'], sensesJson: '["有韧性的"]', examplesJson: '[]', usageJson: '[]' })
     await db.wordbook.put({ wordId: 'w1', entryId: 'e1', addedAt: now, note: '', tags: [], archived: 0 })
     const session = await generateReadingSession({ dayKey: '2026-07-13', batchIndex: 0, seed: 0, wordIds: ['w1'], level: 'B2' })
 
-    expect(session.status).toBe('failed')
+    expect(session.status).toBe('ready')
     expect(session.errorCode).toBe('missing-key')
+    expect(session.title).toBe('Local context pack')
+    expect(JSON.parse(session.targetsJson)).toEqual([])
   })
 
   it('persists reader progress and clears old answers before regeneration', async () => {
