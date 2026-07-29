@@ -3,7 +3,7 @@
 import type { Page } from '@playwright/test'
 
 async function finishLocalReading(page: Page): Promise<void> {
-  await expect(page.getByText('AI 暂不可用，已自动切换到本地词典阅读包；核心学习可继续完成。')).toBeVisible()
+  await expect(page.getByText('AI 暂不可用；以下是离线词汇预习，不是生成文章。核心学习仍可继续。')).toBeVisible()
   await page.getByRole('button', { name: '我已读完，继续学习' }).click()
   await page.getByRole('button', { name: '继续学习', exact: true }).click()
 }
@@ -75,31 +75,50 @@ test('installs the core dictionary and completes lookup to daily review', async 
   await expect(page.getByRole('heading', { level: 3, name: 'zyzzyva', exact: true })).toBeVisible({ timeout: 10_000 })
   await expect(page.getByText('象鼻虫', { exact: true })).toBeVisible()
 
-  await search.fill('habit')
+  await search.fill('exquisite')
   await search.press('Enter')
 
-  const habitCard = page.locator('.entry-card').filter({ has: page.getByRole('heading', { level: 3, name: 'habit', exact: true }) }).first()
-  await expect(habitCard).toBeVisible()
-  await habitCard.getByRole('button', { name: '加入学习', exact: true }).click()
+  const wordCard = page.locator('.entry-card').filter({ has: page.getByRole('heading', { level: 3, name: 'exquisite', exact: true }) }).first()
+  await expect(wordCard).toBeVisible()
+  await wordCard.getByRole('button', { name: '加入学习', exact: true }).click()
   await expect(page.getByText(/已加入「我的单词」· 将进入每日队列/)).toBeVisible()
-  await expect(habitCard.getByText('学习中', { exact: true })).toBeVisible()
-  await expect(habitCard.getByRole('button', { name: '已加入学习', exact: true })).toHaveClass(/added/)
-  await expect(habitCard.getByRole('button', { name: '已加入学习', exact: true })).toHaveCSS('background-color', 'rgb(241, 245, 249)')
-  await expect(habitCard.getByRole('button', { name: '加入其他词表', exact: true })).toBeVisible()
+  await expect(wordCard.getByText('学习中', { exact: true })).toBeVisible()
+  await expect(wordCard.getByRole('button', { name: '已加入学习', exact: true })).toHaveClass(/added/)
+  await expect(wordCard.getByRole('button', { name: '已加入学习', exact: true })).toHaveCSS('background-color', 'rgb(241, 245, 249)')
+  await expect(wordCard.getByRole('button', { name: '加入其他词表', exact: true })).toBeVisible()
 
   await page.reload()
   await expect(search).toBeEnabled()
-  await search.fill('habit')
+  await search.fill('exquisite')
   await search.press('Enter')
-  const restoredHabitCard = page.locator('.entry-card').filter({ has: page.getByRole('heading', { level: 3, name: 'habit', exact: true }) }).first()
-  await expect(restoredHabitCard.getByText('学习中', { exact: true })).toBeVisible()
+  const restoredWordCard = page.locator('.entry-card').filter({ has: page.getByRole('heading', { level: 3, name: 'exquisite', exact: true }) }).first()
+  await expect(restoredWordCard.getByText('学习中', { exact: true })).toBeVisible()
 
   await page.getByRole('link', { name: '学习' }).click()
   await expect(page.locator('.study-total strong')).toHaveText('1')
   await page.getByRole('button', { name: '开始今日学习' }).click()
   await finishLocalReading(page)
-  await expect(page.getByRole('heading', { level: 1, name: 'habit' })).toBeVisible()
+  await expect(page.getByRole('heading', { level: 1, name: 'exquisite' })).toBeVisible()
   await page.getByRole('button', { name: '显示释义' }).click()
+  const mobileLayout = await page.evaluate(() => {
+    const word = document.querySelector<HTMLElement>('.review-word')!.getBoundingClientRect()
+    const answer = document.querySelector<HTMLElement>('.review-answer-inline')!.getBoundingClientRect()
+    const content = document.querySelector<HTMLElement>('.review-card-content-revealed')!.getBoundingClientRect()
+    const summaries = [...document.querySelectorAll<HTMLElement>('.review-secondary-definition summary')]
+      .map((summary) => summary.getBoundingClientRect())
+    return {
+      noOverlap: word.bottom <= answer.top,
+      noHorizontalOverflow: document.documentElement.scrollWidth <= window.innerWidth + 1,
+      answerInsideCard: answer.left >= content.left && answer.right <= content.right + 1,
+      summariesReadable: summaries.every((summary) => summary.width >= 100 && summary.height <= 64),
+    }
+  })
+  expect(mobileLayout).toEqual({
+    noOverlap: true,
+    noHorizontalOverflow: true,
+    answerInsideCard: true,
+    summariesReadable: true,
+  })
   await page.getByRole('button', { name: '记得，按 Good 评分' }).click()
   if (await page.locator('.context-choice-list').isVisible({ timeout: 5_000 }).catch(() => false)) {
     await finishLocalPractice(page)

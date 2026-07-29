@@ -50,4 +50,19 @@ describe('generation client', () => {
     await vi.advanceTimersByTimeAsync(11)
     await assertion
   })
+
+  it('does not send a request when the caller signal is already aborted', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(requestJsonCompletion({
+      url: 'https://example.test',
+      apiKey: 'key',
+      body: {},
+      signal: controller.signal,
+    })).rejects.toMatchObject({ code: 'cancelled' })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
 })

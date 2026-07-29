@@ -13,14 +13,11 @@ import {
 import { buildPrefixTokens, normalizeWord, toLemmaCandidates } from './search'
 import { snapshotDictionaryEntry } from '../wordbook/vocabularyIntegrity'
 import { createDeepseekRequest } from '../ai/deepseekRequest'
+import { GenerationRequestError, requestJsonCompletion, runSerializedGeneration } from '../ai/generationClient'
 import { parseSenseRecords } from './senseRecords'
 
 const AI_PROMPT_VERSION = 'v2-context-aware-bilingual'
 const AI_PROVIDER: AiOverrideRecord['provider'] = 'deepseek'
-
-interface DeepseekResponse {
-  choices?: Array<{ message?: { content?: string } }>
-}
 
 interface AiStructuredResponse {
   headword: string
@@ -72,21 +69,6 @@ Detailed constraints:
 `
 }
 
-function tryParseStructured(content: string): AiStructuredResponse {
-  const trimmed = content.trim()
-
-  try {
-    return JSON.parse(trimmed) as AiStructuredResponse
-  } catch {
-    const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i)
-    if (fenced?.[1]) {
-      return JSON.parse(fenced[1]) as AiStructuredResponse
-    }
-
-    throw new Error('AI response is not valid JSON')
-  }
-}
-
 function normalizeList(input: unknown, fallback: string[] = []): string[] {
   if (!Array.isArray(input)) {
     return fallback
@@ -98,21 +80,21 @@ function normalizeList(input: unknown, fallback: string[] = []): string[] {
     .slice(0, 10)
 }
 
-function normalizeAiDraft(raw: AiStructuredResponse, fallbackWord: string): AiDictionaryEntryDraft {
-  const headword = (raw.headword || fallbackWord).trim() || fallbackWord
-  const posList = normalizeList(raw.posList, ['noun'])
-  const senses = normalizeList(raw.senses)
-  const examples = normalizeList(raw.examples)
-  const usage = normalizeList(raw.usage)
-  const notes = normalizeList(raw.notes)
+function normalizeAiDraft(raw: unknown, fallbackWord: string): AiDictionaryEntryDraft {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new GenerationRequestError('AI 返回结构无效', 'contract-invalid')
+  }
+  const response = raw as AiStructuredResponse
+  const headword = (response.headword || fallbackWord).trim() || fallbackWord
+  const posList = normalizeList(response.posList, ['noun'])
+  const senses = normalizeList(response.senses)
+  const examples = normalizeList(response.examples)
+  const usage = normalizeList(response.usage)
+  const notes = normalizeList(response.notes)
 
   if (senses.length === 0) {
     throw new Error('AI response missing senses')
   }
-  if (examples.length < 2) {
-    throw new Error('AI response missing examples')
-  }
-
   const refusalPattern = /(?:no such (?:word|term)|not (?:a |an )?(?:valid|recognized|real) (?:word|term)|does not exist|cannot (?:define|find)|没有(?:这个|该)?(?:单词|词语|词条)|不存在(?:这个|该)?(?:单词|词语|词条)|无法(?:识别|定义))/i
   if ([headword, ...senses, ...notes].some((value) => refusalPattern.test(value))) {
     throw new Error('AI incorrectly rejected an existing vocabulary item')
@@ -120,7 +102,7 @@ function normalizeAiDraft(raw: AiStructuredResponse, fallbackWord: string): AiDi
 
   return {
     headword,
-    phonetic: raw.phonetic?.trim() || undefined,
+    phonetic: response.phonetic?.trim() || undefined,
     posList,
     senses,
     examples,
@@ -137,13 +119,10 @@ async function callDeepseek(
   context?: AiDictionaryContext,
   retry = false,
 ): Promise<AiDictionaryEntryDraft> {
-  const response = await fetch(baseUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(createDeepseekRequest({
+  const payload = await requestJsonCompletion({
+    url: baseUrl,
+    apiKey,
+    body: createDeepseekRequest({
       model,
       responseFormat: true,
       maxTokens: 3000,
@@ -157,21 +136,11 @@ async function callDeepseek(
           content: buildDictionaryPrompt(word, context, retry),
         },
       ],
-    })),
+    }),
+    connectTimeoutMs: 10_000,
+    totalTimeoutMs: 45_000,
   })
-
-  if (!response.ok) {
-    const errorText = await response.text()
-    throw new Error(`Deepseek request failed (${response.status}): ${errorText.slice(0, 180)}`)
-  }
-
-  const payload = (await response.json()) as DeepseekResponse
-  const content = payload.choices?.[0]?.message?.content
-  if (!content) {
-    throw new Error('Deepseek returned empty content')
-  }
-
-  const draft = normalizeAiDraft(tryParseStructured(content), word)
+  const draft = normalizeAiDraft(payload, word)
   const requested = normalizeWord(word)
   const returned = normalizeWord(draft.headword)
   const related = requested === returned
@@ -245,14 +214,19 @@ export async function fetchAiDictionaryDraft(options: {
     throw new Error('请先在设置页填写 Deepseek API Key')
   }
 
-  try {
-    return await callDeepseek(lexicalItem, options.apiKey.trim(), options.baseUrl.trim(), options.model.trim(), options.context)
-  } catch (error) {
-    const retryable = error instanceof SyntaxError
-      || (error instanceof Error && /AI response|rejected|different headword|missing senses|missing examples/i.test(error.message))
-    if (!retryable) throw error
-    return callDeepseek(lexicalItem, options.apiKey.trim(), options.baseUrl.trim(), options.model.trim(), options.context, true)
-  }
+  return runSerializedGeneration(async () => {
+    try {
+      return await callDeepseek(lexicalItem, options.apiKey.trim(), options.baseUrl.trim(), options.model.trim(), options.context)
+    } catch (error) {
+      const retryableCode = error instanceof GenerationRequestError
+        && ['network', 'timeout', 'rate-limited', 'server', 'invalid-json', 'contract-invalid'].includes(error.code)
+      const retryableContract = error instanceof SyntaxError
+        || (error instanceof Error && /AI response|rejected|different headword|missing senses/i.test(error.message))
+      if (!retryableCode && !retryableContract) throw error
+      if (retryableCode) await new Promise((resolve) => globalThis.setTimeout(resolve, 800))
+      return callDeepseek(lexicalItem, options.apiKey.trim(), options.baseUrl.trim(), options.model.trim(), options.context, true)
+    }
+  })
 }
 
 export async function enhanceOrCreateVocabularyEntry(options: {

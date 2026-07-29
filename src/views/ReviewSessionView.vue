@@ -452,7 +452,7 @@ async function enterArticle() {
           <span class="review-memory-confidence">{{ memoryStateLabel }}</span>
           <button class="review-delete-mini" :disabled="actionBusy" type="button" aria-haspopup="dialog" @click="showWordMenu = true">移除</button>
         </div>
-        <div class="review-card-content review-card-content-center">
+        <div :class="['review-card-content', 'review-card-content-center', { 'review-card-content-revealed': revealMeaning }]">
           <div class="review-word-stack">
             <h1 class="review-word">{{ card.entry.headword }}</h1>
             <p class="review-phonetic muted">{{ card.entry.phonetic || '暂无音标' }}</p>
@@ -462,8 +462,10 @@ async function enterArticle() {
             <p class="muted">{{ card.entry.posList.join(' / ') || '释义' }}</p>
             <ul v-if="displayedDefinitions.length" class="review-definition-list">
               <li v-for="line in displayedDefinitions" :key="line.senseId">
-                <small v-if="line.pos" class="review-definition-pos">{{ line.pos }}</small>
-                <span>{{ line.primary }}</span>
+                <div class="review-definition-primary">
+                  <small v-if="line.pos" class="review-definition-pos">{{ line.pos }}</small>
+                  <span>{{ line.primary }}</span>
+                </div>
                 <details v-if="line.secondary" class="review-secondary-definition">
                   <summary>{{ englishDefinitionFirst ? '查看中文核心义' : '查看英文解释' }}</summary>
                   <p>{{ line.secondary }}</p>
@@ -534,9 +536,11 @@ async function enterArticle() {
         </div>
         <ul class="review-definition-list">
           <li v-for="line in coachingDefinitions" :key="line.senseId">
-            <small v-if="line.pos" class="review-definition-pos">{{ line.pos }}</small>
-            <span>{{ line.primary }}</span>
-            <p v-if="line.secondary" class="muted">{{ line.secondary }}</p>
+            <div class="review-definition-primary">
+              <small v-if="line.pos" class="review-definition-pos">{{ line.pos }}</small>
+              <span>{{ line.primary }}</span>
+            </div>
+            <p v-if="line.secondary" class="review-secondary-definition muted">{{ line.secondary }}</p>
           </li>
         </ul>
         <p v-for="example in parseJsonArray(coachingCard.entry.examplesJson).slice(0, 2)" :key="example" class="example">{{ example }}</p>

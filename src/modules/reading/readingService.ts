@@ -16,7 +16,7 @@ import { parseJsonArray } from '../../utils/json'
 import { recordContextLearningEvidence } from '../review/dailyQueueService'
 import { dictionaryEntryFromWordbook, isUsableVocabularyHeadword, repairVocabularyIntegrity } from '../wordbook/vocabularyIntegrity'
 import { createDeepseekRequest } from '../ai/deepseekRequest'
-import { runSerializedGeneration } from '../ai/generationClient'
+import { GenerationRequestError, requestJsonCompletion, runSerializedGeneration } from '../ai/generationClient'
 import { articleLemmaCandidates, canonicalArticleForm, loadArticleInflectionIndex } from './inflectionService'
 import { parseSenseRecords } from '../dictionary/senseRecords'
 
@@ -53,6 +53,7 @@ function readingError(message: string, code: ReadingErrorCode): ReadingGeneratio
 
 function errorCodeOf(error: unknown, fallback: ReadingErrorCode = 'unknown'): ReadingErrorCode {
   if (error instanceof ReadingGenerationError) return error.code
+  if (error instanceof GenerationRequestError) return error.code
   return fallback
 }
 
@@ -74,7 +75,7 @@ function cachedSessionHasValidTargets(session: ReadingSession, expectedWordIds?:
     const expectedMatches = !expectedWordIds
       || (cachedSource.length === expectedWordIds.length && expectedWordIds.every((wordId) => cachedSource.includes(wordId)))
     return !/[0-9a-f]{8}-[0-9a-f-]{27,}/i.test(visible)
-      && targets.length > 0
+      && segments.length > 0
       && targets.every((target) => isUsableHeadword(target.headword) && target.headword !== target.wordId)
       && session.targetWordIds.every((wordId) => coveredWordIds.has(wordId))
       && expectedMatches
@@ -293,41 +294,20 @@ function normalizeChoice(value: string): string {
   return value.toLowerCase().replace(/[\s，。；、,.!?！？：:（）()“”"']/g, '')
 }
 
-function meaningsTooSimilar(left: string, right: string): boolean {
-  if (!left || !right) return true
-  const shorter = left.length <= right.length ? left : right
-  const longer = left.length > right.length ? left : right
-  if (shorter.length >= 2 && shorter.slice(0, 2) === longer.slice(0, 2)) return true
-  if (shorter.length >= 2 && longer.includes(shorter) && shorter.length / longer.length >= 0.65) return true
-  const leftChars = new Set(left)
-  const rightChars = new Set(right)
-  const overlap = [...leftChars].filter((char) => rightChars.has(char)).length
-  const union = new Set([...leftChars, ...rightChars]).size
-  return union > 0 && overlap / union >= 0.72
-}
-
 function targetUsesAllowedSense(target: ReadingTarget, row: ReadingPromptRow): boolean {
   if (!row.senses.length) return true
   const selected = normalizeChoice(target.sourceSense ?? '')
-  const contextual = normalizeChoice(target.contextualMeaning)
-  return row.senses.some((sense) => {
-    const normalized = normalizeChoice(sense)
-    return selected === normalized || (!selected && (normalized === contextual || normalized.includes(contextual)))
-  })
+  if (!selected) return false
+  return row.senses.some((sense) => selected === normalizeChoice(sense))
 }
 
-type ChoiceValidationFailure = 'structure' | 'duplicate' | 'too-similar' | undefined
+type ChoiceValidationFailure = 'structure' | 'duplicate' | undefined
 
 function choiceValidationFailure(target: ReadingTarget): ChoiceValidationFailure {
   if (!Array.isArray(target.choices) || target.choices.length !== 3) return 'structure'
   const normalizedChoices = target.choices.map(normalizeChoice)
   const correct = normalizeChoice(target.contextualMeaning)
   if (new Set(normalizedChoices).size !== 3 || !normalizedChoices.includes(correct)) return 'duplicate'
-  for (let left = 0; left < normalizedChoices.length; left += 1) {
-    for (let right = left + 1; right < normalizedChoices.length; right += 1) {
-      if (meaningsTooSimilar(normalizedChoices[left]!, normalizedChoices[right]!)) return 'too-similar'
-    }
-  }
   return undefined
 }
 
@@ -335,19 +315,38 @@ function hasDistinctChoices(target: ReadingTarget): boolean {
   return choiceValidationFailure(target) === undefined
 }
 
+function targetUsesAnswerLanguage(target: ReadingTarget, english: boolean): boolean {
+  const values = [target.contextualMeaning, ...(target.choices ?? [])]
+  return english
+    ? values.every((value) => /[A-Za-z]/.test(value) && !/[\u3400-\u9fff]/.test(value))
+    : values.every((value) => /[\u3400-\u9fff]/.test(value))
+}
+
+function usesEnglishDefinitions(
+  level: AppSettings['articleLevel'],
+  definitionLanguage: AppSettings['definitionLanguage'],
+): boolean {
+  return definitionLanguage === 'english-first'
+    || (definitionLanguage === 'adaptive' && (level === 'B2' || level === 'C1'))
+}
+
 function buildArticlePrompt(
   rows: ReadingPromptRow[],
   level: AppSettings['articleLevel'],
   topic: string,
+  definitionLanguage: AppSettings['definitionLanguage'],
 ): string {
+  const englishAnswers = usesEnglishDefinitions(level, definitionLanguage)
+  const answerLanguage = englishAnswers ? 'concise English definitions' : 'concise Simplified Chinese meanings'
   return `Create one coherent English reading passage at CEFR ${level}${topic ? ` about ${topic}` : ''} and all of its vocabulary questions in one streamed response.
-Use every target naturally when possible. A common inflected form is allowed when grammar requires it, but never replace a target with a derivationally different word.
-For each target that actually appears, select exactly one sourceSense from its allowedSenses and create one Chinese meaning question.
+The passage MUST naturally contain every target headword exactly once or in a common grammatical inflection. Never silently omit a target and never replace it with a derivationally different word.
+Keep the passage readable in 45-90 seconds. If all targets do not fit one scene, use a short second scene in the same passage.
+For each target that actually appears, select exactly one sourceSense from its allowedSenses and create one meaning question. All contextualMeaning and choices must use ${answerLanguage}.
 TARGETS: ${JSON.stringify(rows.map((row) => ({ wordId: row.wordId, headword: row.headword, allowedSenses: row.senses })))}
 Output newline-delimited JSON only, one complete object per line, in this order:
 {"type":"meta","title":"concise English title"}
 {"type":"paragraph","text":"one complete English paragraph"} (2-5 lines)
-{"type":"target","wordId":"exact target id","headword":"exact target headword","sourceSense":"exactly one allowed sense used in the passage","contextualMeaning":"concise Simplified Chinese meaning","choices":["exactly three distinct Simplified Chinese choices including contextualMeaning"],"explanation":"concise explanation tied to the passage"} (one line for every target that appears)
+{"type":"target","wordId":"exact target id","headword":"exact target headword","sourceSense":"exactly one allowed sense used in the passage","contextualMeaning":"meaning in the required answer language","choices":["exactly three distinct choices in the same required language, including contextualMeaning"],"explanation":"concise explanation tied to the passage"} (one line for every target that appears)
 {"type":"translation","text":"complete Simplified Chinese translation"}
 {"type":"done"}
 Do not output markdown. Never expose target IDs in visible prose. Distractors must share the same part of speech but be clearly wrong from context; avoid near-synonyms, trick distinctions, specialist knowledge, and current-event claims.`
@@ -432,6 +431,27 @@ function findTargetMatches(passage: string, targets: ReadingTarget[], inflection
   }
   if (!Object.keys(inflections).length) return matches
   const occupied = new Set(matches.map((match) => `${match.position}:${match.length}`))
+  for (const target of targets) {
+    const phraseParts = normalizedMatchText(target.headword).trim().split(/\s+/)
+    if (phraseParts.length < 2) continue
+    const phraseLemma = canonicalArticleForm(phraseParts[0]!, inflections)
+    const suffixPattern = phraseParts.slice(1).map(escapePattern).join('\\s+')
+    const phraseRegex = new RegExp(`(^|[^A-Za-z])([A-Za-z]+(?:['-][A-Za-z]+)*\\s+${suffixPattern})(?=$|[^A-Za-z])`, 'gi')
+    for (const match of normalizedPassage.matchAll(phraseRegex)) {
+      const phraseText = match[2] ?? ''
+      const firstToken = phraseText.match(/^[A-Za-z]+(?:['-][A-Za-z]+)*/)?.[0] ?? ''
+      if (!articleLemmaCandidates(firstToken, inflections).includes(phraseLemma)) continue
+      const position = (match.index ?? 0) + (match[1]?.length ?? 0)
+      if (occupied.has(`${position}:${phraseText.length}`)) continue
+      occupied.add(`${position}:${phraseText.length}`)
+      matches.push({
+        position,
+        length: phraseText.length,
+        text: passage.slice(position, position + phraseText.length),
+        target,
+      })
+    }
+  }
   const targetByLemma = new Map(targets.map((target) => [canonicalArticleForm(target.headword, inflections), target]))
   for (const match of passage.matchAll(/[A-Za-z]+(?:['-][A-Za-z]+)*/g)) {
     const text = match[0]
@@ -441,7 +461,31 @@ function findTargetMatches(passage: string, targets: ReadingTarget[], inflection
     matches.push({ position, length: text.length, text, target })
   }
   matches.sort((left, right) => left.position - right.position || right.length - left.length)
-  return matches
+  const nonOverlapping: TargetTextMatch[] = []
+  for (const match of matches) {
+    const overlaps = nonOverlapping.some((accepted) =>
+      match.position < accepted.position + accepted.length
+      && accepted.position < match.position + match.length)
+    if (!overlaps) nonOverlapping.push(match)
+  }
+  return nonOverlapping
+}
+
+function coveredPromptRows(
+  passage: string,
+  rows: ReadingPromptRow[],
+  inflections: Record<string, string>,
+): ReadingPromptRow[] {
+  const markerTargets: ReadingTarget[] = rows.map((row) => ({
+    wordId: row.wordId,
+    headword: row.headword,
+    contextualMeaning: '',
+    choices: [],
+    explanation: '',
+  }))
+  const matchedWordIds = new Set(findTargetMatches(passage, markerTargets, inflections)
+    .map((match) => match.target.wordId))
+  return rows.filter((row) => matchedWordIds.has(row.wordId))
 }
 
 export function sortTargetsByPassageOrder(targets: ReadingTarget[], passage: string, inflections: Record<string, string> = {}): ReadingTarget[] {
@@ -477,6 +521,7 @@ function buildSegments(paragraphs: string[], targets: ReadingTarget[], inflectio
     const segments: ReadingSegment[] = []
     let cursor = 0
     for (const match of findTargetMatches(paragraph, targets, inflections)) {
+      if (match.position < cursor) continue
       if (match.position > cursor) segments.push({ text: paragraph.slice(cursor, match.position) })
       segments.push({ text: paragraph.slice(match.position, match.position + match.length), wordId: match.target.wordId })
       cursor = match.position + match.length
@@ -526,16 +571,50 @@ function buildLocalReadingFallback(
   return {
     ...session,
     status: 'ready',
-    title: 'Local context pack',
+    title: '离线词汇预习',
     segmentsJson: JSON.stringify(buildSegments(paragraphs, markerTargets, inflections)),
     targetsJson: '[]',
     targetWordIds: [],
     omittedTargetWordIds: [],
-    translation: 'AI 当前不可用；本篇由本地词典例句与核心释义组成，不生成未经验证的选择题。',
+    translation: 'AI 当前不可用；此内容是本地词典例句与核心释义预习，不是生成文章，也不生成未经验证的选择题。',
     error: reason instanceof Error ? reason.message : String(reason),
     errorCode: errorCodeOf(reason),
     updatedAt: new Date().toISOString(),
   }
+}
+
+function drainJsonObjects(input: string): { objects: string[]; rest: string } {
+  const objects: string[] = []
+  let start = -1
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let index = 0; index < input.length; index += 1) {
+    const character = input[index]!
+    if (start < 0) {
+      if (character === '{') {
+        start = index
+        depth = 1
+      }
+      continue
+    }
+    if (inString) {
+      if (escaped) escaped = false
+      else if (character === '\\') escaped = true
+      else if (character === '"') inString = false
+      continue
+    }
+    if (character === '"') inString = true
+    else if (character === '{') depth += 1
+    else if (character === '}') {
+      depth -= 1
+      if (depth === 0) {
+        objects.push(input.slice(start, index + 1))
+        start = -1
+      }
+    }
+  }
+  return { objects, rest: start >= 0 ? input.slice(start) : '' }
 }
 
 async function requestArticle(
@@ -545,22 +624,24 @@ async function requestArticle(
   externalSignal?: AbortSignal,
 ): Promise<{ title: string; passage: string; targets: ReadingTarget[]; translation: string }> {
   if (!settings.deepseekApiKey.trim()) throw readingError('请先在设置页填写 DeepSeek API Key', 'missing-key')
+  if (externalSignal?.aborted) throw readingError('已取消文章生成', 'cancelled')
   const controller = new AbortController()
-  externalSignal?.addEventListener('abort', () => controller.abort(), { once: true })
+  const abortFromExternal = () => controller.abort()
+  externalSignal?.addEventListener('abort', abortFromExternal, { once: true })
   let timeoutMessage = ''
   let receivedFirst = false
   let stallTimer = 0
   const resetStall = () => {
     window.clearTimeout(stallTimer)
     stallTimer = window.setTimeout(() => {
-      timeoutMessage = receivedFirst ? '文章流已中断 10 秒，请重试' : '10 秒内未收到文章片段，请重试'
+      timeoutMessage = receivedFirst ? '文章流已中断 20 秒，请重试' : '20 秒内未收到文章片段，请重试'
       controller.abort()
-    }, 10_000)
+    }, 20_000)
   }
   const totalTimer = window.setTimeout(() => {
-    timeoutMessage = '文章生成超过 45 秒，已自动停止'
+    timeoutMessage = '文章生成超过 75 秒，已自动停止'
     controller.abort()
-  }, 45_000)
+  }, 75_000)
   resetStall()
   try {
     const response = await fetch(settings.deepseekBaseUrl, {
@@ -584,6 +665,7 @@ async function requestArticle(
     const paragraphs: string[] = []
     const targets: ReadingTarget[] = []
     let translation = ''
+    let rawResponse = ''
     const consumeLine = (line: string) => {
       const trimmed = line.trim().replace(/^```(?:json)?/i, '').replace(/```$/i, '')
       if (!trimmed) return
@@ -595,12 +677,20 @@ async function requestArticle(
       const passage = paragraphs.join('\n\n')
       onProgress?.({ phase: targets.length ? 'details' : 'article', rawText: passage, paragraphs: [...paragraphs], targetCount: targets.length })
     }
+    const consumeContent = (content: string) => {
+      ndjsonBuffer += content
+      const drained = drainJsonObjects(ndjsonBuffer)
+      ndjsonBuffer = drained.rest
+      for (const objectText of drained.objects) consumeLine(objectText)
+    }
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
       receivedFirst = true
       resetStall()
-      sseBuffer += decoder.decode(value, { stream: true })
+      const decoded = decoder.decode(value, { stream: true })
+      rawResponse += decoded
+      sseBuffer += decoded
       const sseLines = sseBuffer.split(/\r?\n/)
       sseBuffer = sseLines.pop() ?? ''
       for (const line of sseLines) {
@@ -608,17 +698,30 @@ async function requestArticle(
         const data = line.slice(5).trim()
         if (!data || data === '[DONE]') continue
         const payload = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> }
-        ndjsonBuffer += payload.choices?.[0]?.delta?.content ?? ''
-        const eventLines = ndjsonBuffer.split(/\r?\n/)
-        ndjsonBuffer = eventLines.pop() ?? ''
-        for (const eventLine of eventLines) consumeLine(eventLine)
+        consumeContent(payload.choices?.[0]?.delta?.content ?? '')
       }
     }
-    if (ndjsonBuffer.trim()) consumeLine(ndjsonBuffer)
+    if (sseBuffer.trim().startsWith('data:')) {
+      const data = sseBuffer.trim().slice(5).trim()
+      if (data && data !== '[DONE]') {
+        const payload = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> }
+        consumeContent(payload.choices?.[0]?.delta?.content ?? '')
+      }
+    }
+    if (!paragraphs.length && rawResponse.trim().startsWith('{')) {
+      const payload = JSON.parse(rawResponse) as { choices?: Array<{ message?: { content?: string } }> }
+      consumeContent(payload.choices?.[0]?.message?.content ?? '')
+    }
+    const finalObjects = drainJsonObjects(ndjsonBuffer)
+    for (const objectText of finalObjects.objects) consumeLine(objectText)
     const passage = paragraphs.map((paragraph) => paragraph.trim()).filter(Boolean).join('\n\n')
     if (!passage) throw readingError('AI 没有返回文章正文', 'passage-invalid')
-    if (!title || !translation) throw readingError('AI 返回的文章结构不完整', 'details-invalid')
-    return { title, passage, targets, translation }
+    return {
+      title: title || 'Context Reading',
+      passage,
+      targets,
+      translation: translation || '译文生成未完成；英文正文已保留，可继续阅读。',
+    }
   } catch (error) {
     if (timeoutMessage) throw readingError(timeoutMessage, 'timeout')
     if (externalSignal?.aborted) throw readingError('已取消文章生成', 'cancelled')
@@ -629,7 +732,120 @@ async function requestArticle(
   } finally {
     window.clearTimeout(stallTimer)
     window.clearTimeout(totalTimer)
+    externalSignal?.removeEventListener('abort', abortFromExternal)
   }
+}
+
+type CoverageSupplement = {
+  wordId: string
+  headword: string
+  sentence: string
+  translation: string
+}
+
+async function requestCoverageSupplements(
+  settings: AppSettings,
+  rows: ReadingPromptRow[],
+  level: AppSettings['articleLevel'],
+  topic: string,
+  inflections: Record<string, string>,
+  signal?: AbortSignal,
+): Promise<CoverageSupplement[]> {
+  if (!rows.length) return []
+  const payload = await requestJsonCompletion({
+    url: settings.deepseekBaseUrl,
+    apiKey: settings.deepseekApiKey,
+    body: createDeepseekRequest({
+      model: settings.deepseekModel,
+      responseFormat: true,
+      maxTokens: 1800,
+      messages: [{
+        role: 'user',
+        content: `Repair vocabulary coverage for a CEFR ${level} reading passage${topic ? ` about ${topic}` : ''}.
+Return one natural, self-contained English sentence for every supplied target. Each sentence MUST contain its exact headword or a common grammatical inflection and use one allowed sense.
+Return JSON only in this shape:
+{"supplements":[{"wordId":"exact id","headword":"exact headword","sentence":"English sentence","translation":"Simplified Chinese translation"}]}
+TARGETS: ${JSON.stringify(rows.map((row) => ({ wordId: row.wordId, headword: row.headword, allowedSenses: row.senses })))}
+Never expose word IDs inside sentence or translation. Do not omit a target.`,
+      }],
+    }),
+    signal,
+    connectTimeoutMs: 10_000,
+    totalTimeoutMs: 35_000,
+  }) as { supplements?: unknown }
+  if (!Array.isArray(payload.supplements)) throw readingError('补充段落结构无效', 'contract-invalid')
+  const expected = new Map(rows.map((row) => [row.wordId, row]))
+  const seen = new Set<string>()
+  return payload.supplements.flatMap((raw) => {
+    if (!raw || typeof raw !== 'object') return []
+    const item = raw as Partial<CoverageSupplement>
+    const row = item.wordId ? expected.get(item.wordId) : undefined
+    const sentence = item.sentence?.trim() ?? ''
+    if (!row || seen.has(row.wordId) || !sentence || !passageIncludesHeadword(sentence, row.headword, inflections)) return []
+    if (/[0-9a-f]{8}-[0-9a-f-]{27,}/i.test(`${sentence} ${item.translation ?? ''}`)) return []
+    seen.add(row.wordId)
+    return [{
+      wordId: row.wordId,
+      headword: row.headword,
+      sentence,
+      translation: item.translation?.trim() ?? '',
+    }]
+  })
+}
+
+async function requestQuestionRepairs(
+  settings: AppSettings,
+  rows: ReadingPromptRow[],
+  passage: string,
+  level: AppSettings['articleLevel'],
+  repairAttempt = 0,
+  signal?: AbortSignal,
+): Promise<ReadingTarget[]> {
+  if (!rows.length) return []
+  const answerLanguage = usesEnglishDefinitions(level, settings.definitionLanguage)
+    ? 'concise English definitions'
+    : 'concise Simplified Chinese meanings'
+  const englishAnswers = usesEnglishDefinitions(level, settings.definitionLanguage)
+  const payload = await requestJsonCompletion({
+    url: settings.deepseekBaseUrl,
+    apiKey: settings.deepseekApiKey,
+    body: createDeepseekRequest({
+      model: settings.deepseekModel,
+      responseFormat: true,
+      maxTokens: 3000,
+      messages: [{
+        role: 'user',
+        content: `Repair vocabulary questions for the supplied reading passage.
+${repairAttempt > 0 ? 'The previous repair response failed the output contract. Rebuild every requested target from scratch and check every field before returning it.' : ''}
+Return exactly one question for every target. Copy sourceSense VERBATIM from that target's allowedSenses; do not paraphrase it.
+All contextualMeaning and choices must use ${answerLanguage}. Each choices array must contain exactly three distinct strings and include contextualMeaning exactly once.
+When sourceSense is Chinese but English answers are required, keep sourceSense unchanged and translate that selected sense into a concise English contextualMeaning. Do not copy Chinese into contextualMeaning or choices.
+Return JSON only:
+{"targets":[{"wordId":"exact id","headword":"exact headword","sourceSense":"verbatim allowed sense","contextualMeaning":"answer","choices":["answer","distractor","distractor"],"explanation":"brief context evidence"}]}
+PASSAGE: ${JSON.stringify(passage)}
+TARGETS: ${JSON.stringify(rows.map((row) => ({ wordId: row.wordId, headword: row.headword, allowedSenses: row.senses, posList: row.posList })))}
+Never expose word IDs in user-visible fields. Do not omit a target.`,
+      }],
+    }),
+    signal,
+    connectTimeoutMs: 10_000,
+    totalTimeoutMs: 45_000,
+  }) as { targets?: unknown }
+  if (!Array.isArray(payload.targets)) throw readingError('修复题目结构无效', 'contract-invalid')
+  const expected = new Map(rows.map((row) => [row.wordId, row]))
+  const seen = new Set<string>()
+  return payload.targets.flatMap((raw) => {
+    if (!raw || typeof raw !== 'object') return []
+    const target = raw as ReadingTarget
+    const row = expected.get(target.wordId)
+    if (!row || seen.has(target.wordId)) return []
+    const normalized = { ...target, headword: row.headword }
+    if (!targetUsesAllowedSense(normalized, row)
+      || !hasDistinctChoices(normalized)
+      || !targetUsesAnswerLanguage(normalized, englishAnswers)) return []
+    seen.add(target.wordId)
+    return [normalized]
+  })
 }
 
 async function generateReadingSessionImpl(options: {
@@ -683,7 +899,7 @@ async function generateReadingSessionImpl(options: {
     }
     if (!entry || !isUsableHeadword(entry.headword)) continue
     const senseRecords = parseSenseRecords(entry)
-    const englishFirst = level === 'B2' || level === 'C1'
+    const englishFirst = usesEnglishDefinitions(level, settings.definitionLanguage)
     const senses = senseRecords
       .map((sense) => englishFirst
         ? sense.definitionEn ?? sense.glossZh
@@ -717,7 +933,7 @@ async function generateReadingSessionImpl(options: {
     contentKind: 'article',
     sourceWordIds: [...options.wordIds],
     sourceWordSetHash: String(hash(JSON.stringify(options.wordIds))),
-    promptVersion: 'article-single-stream-v1',
+    promptVersion: 'article-stream-coverage-repair-v2',
     targetWordIds: validWordIds,
     omittedTargetWordIds: [],
     generationAttemptCount: (existing?.generationAttemptCount ?? 0) + 1,
@@ -766,18 +982,48 @@ async function generateReadingSessionImpl(options: {
     let articleError: unknown
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        article = await requestArticle(settings, buildArticlePrompt(promptRows, level, session.topic), onPassageProgress, options.signal)
+        const candidate = await requestArticle(
+          settings,
+          buildArticlePrompt(promptRows, level, session.topic, settings.definitionLanguage),
+          onPassageProgress,
+          options.signal,
+        )
+        if (!promptRows.some((row) => passageIncludesHeadword(candidate.passage, row.headword, inflections))) {
+          throw readingError('正文没有覆盖任何目标词', 'passage-invalid')
+        }
+        article = candidate
         break
       } catch (error) {
         articleError = error
-        if (options.signal?.aborted || errorCodeOf(error) === 'missing-key' || errorCodeOf(error) === 'cancelled') break
+        const code = errorCodeOf(error)
+        if (options.signal?.aborted || ['missing-key', 'cancelled', 'unauthorized', 'quota'].includes(code)) break
         if (attempt === 0) await new Promise((resolve) => window.setTimeout(resolve, 2_000))
       }
     }
     if (!article) throw articleError
-    const passage = article.passage
-    const passageRows = promptRows.filter((row) => passageIncludesHeadword(passage, row.headword, inflections))
-    if (!passageRows.length) throw readingError('正文没有覆盖任何目标词', 'passage-invalid')
+    let passage = article.passage
+    let translation = article.translation
+    let passageRows = coveredPromptRows(passage, promptRows, inflections)
+    const missingRows = promptRows.filter((row) => !passageRows.includes(row))
+    if (missingRows.length && !options.signal?.aborted) {
+      try {
+        const supplements = await requestCoverageSupplements(settings, missingRows, level, session.topic, inflections, options.signal)
+        if (supplements.length) {
+          passage = `${passage}\n\n${supplements.map((item) => item.sentence).join(' ')}`.trim()
+          const supplementTranslation = supplements.map((item) => item.translation).filter(Boolean).join(' ')
+          if (supplementTranslation) translation = `${translation}\n\n${supplementTranslation}`.trim()
+          passageRows = coveredPromptRows(passage, promptRows, inflections)
+          onPassageProgress({
+            phase: 'details',
+            rawText: passage,
+            paragraphs: splitPassage(passage),
+            targetCount: article.targets.length,
+          })
+        }
+      } catch {
+        // Keep the valid article. Missing targets are carried into the next batch below.
+      }
+    }
     if (checkpointTimer) {
       window.clearTimeout(checkpointTimer)
       checkpointTimer = 0
@@ -793,9 +1039,9 @@ async function generateReadingSessionImpl(options: {
     })
     const generated: AiReadingResponse = {
       title: article.title,
-      translation: article.translation,
+      translation,
       targets: usableTargets,
-      segments: buildSegments(splitPassage(passage), usableTargets, inflections),
+      segments: [],
     }
     generated.targets = generated.targets?.map((target) => {
       const headword = expectedHeadwords.get(target.wordId) ?? target.headword
@@ -809,9 +1055,46 @@ async function generateReadingSessionImpl(options: {
     })
     const fallback = buildFallbackDetails(passageRows)
     const rowByWordId = new Map(passageRows.map((row) => [row.wordId, row]))
+    const englishAnswers = usesEnglishDefinitions(level, settings.definitionLanguage)
     const validTargets = new Map((generated.targets ?? [])
-      .filter((target) => hasDistinctChoices(target) && Boolean(rowByWordId.get(target.wordId) && targetUsesAllowedSense(target, rowByWordId.get(target.wordId)!)))
+      .filter((target) => hasDistinctChoices(target)
+        && targetUsesAnswerLanguage(target, englishAnswers)
+        && Boolean(rowByWordId.get(target.wordId) && targetUsesAllowedSense(target, rowByWordId.get(target.wordId)!)))
       .map((target) => [target.wordId, target]))
+    for (let repairAttempt = 0; repairAttempt < 2 && !options.signal?.aborted; repairAttempt += 1) {
+      const missingQuestionRows = passageRows.filter((row) => !validTargets.has(row.wordId))
+      if (!missingQuestionRows.length) break
+      try {
+        const repairedTargets = await requestQuestionRepairs(
+          settings,
+          missingQuestionRows,
+          passage,
+          level,
+          repairAttempt,
+          options.signal,
+        )
+        for (const target of repairedTargets) {
+          const surfaceForm = findTargetMatches(passage, [target], inflections)[0]?.text
+          validTargets.set(target.wordId, {
+            ...target,
+            surfaceForm: surfaceForm && normalizedMatchText(surfaceForm) !== normalizedMatchText(target.headword)
+              ? surfaceForm
+              : undefined,
+            choices: [...target.choices].sort((left, right) =>
+              hash(`${sessionId}:${target.wordId}:${left}`) - hash(`${sessionId}:${target.wordId}:${right}`)),
+          })
+        }
+        onPassageProgress({
+          phase: 'details',
+          rawText: passage,
+          paragraphs: splitPassage(passage),
+          targetCount: validTargets.size,
+        })
+      } catch {
+        // Keep the passage and retry the remaining targets once. A second failure
+        // must not erase a valid article.
+      }
+    }
     generated.title = generated.title || fallback.title
     generated.translation = generated.translation || fallback.translation
     const completedTargets = passageRows.flatMap((row) => {
@@ -821,14 +1104,23 @@ async function generateReadingSessionImpl(options: {
     const coveredTargets = sortTargetsByPassageOrder(completedTargets, passage, inflections)
     generated.targets = coveredTargets
     const generatedWordIds = generated.targets.map((target) => target.wordId)
-    generated.segments = buildSegments(splitPassage(passage), coveredTargets, inflections)
+    const markerTargets: ReadingTarget[] = passageRows.map((row) => ({
+      wordId: row.wordId,
+      headword: row.headword,
+      contextualMeaning: '',
+      choices: [],
+      explanation: '',
+    }))
+    generated.segments = buildSegments(splitPassage(passage), markerTargets, inflections)
     validateResponse(generated, passageRows.filter((row) => generatedWordIds.includes(row.wordId)))
-    const coveredSet = new Set(coveredTargets.map((target) => target.wordId))
+    const passageCoveredSet = new Set(passageRows.map((row) => row.wordId))
+    const quizzedSet = new Set(coveredTargets.map((target) => target.wordId))
     session = {
       ...session,
       status: 'ready',
       targetWordIds: generatedWordIds,
-      omittedTargetWordIds: validWordIds.filter((wordId) => !coveredSet.has(wordId)),
+      omittedTargetWordIds: validWordIds.filter((wordId) => !passageCoveredSet.has(wordId)),
+      unquizzedTargetWordIds: validWordIds.filter((wordId) => passageCoveredSet.has(wordId) && !quizzedSet.has(wordId)),
       successfulGenerationCount: (session.successfulGenerationCount ?? 0) + 1,
       title: generated.title,
       segmentsJson: JSON.stringify(generated.segments),

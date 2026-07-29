@@ -72,6 +72,7 @@ const currentTarget = computed(() => parsed.value.targets[quizCursor.value])
 const currentResultTarget = computed(() => parsed.value.targets[resultCursor.value])
 const currentTargetResult = computed(() => currentTarget.value ? results.value[currentTarget.value.wordId] : undefined)
 const hasRetainedPassage = computed(() => paragraphs.value.length > 0 || Boolean(session.value && session.value.segmentsJson !== '[]'))
+const isLocalFallback = computed(() => Boolean(session.value?.errorCode))
 const errorTitle = computed(() => {
   if (generationErrorCode.value === 'missing-key' || error.value.includes('Key')) return '需要配置 DeepSeek Key'
   if (generationErrorCode.value === 'details-invalid') return '正文已生成，题目还没准备好'
@@ -485,12 +486,13 @@ onBeforeUnmount(() => {
 
     <article v-else class="reading-card reading-card-stable" :aria-busy="loading">
       <p v-if="usingPreviousArticle" class="reading-coverage-note">原文章未包含后来加入的单词</p>
-      <p v-else-if="session?.status === 'ready' && session?.errorCode" class="reading-coverage-note">AI 暂不可用，已自动切换到本地词典阅读包；核心学习可继续完成。</p>
-      <p v-else-if="session?.omittedTargetWordIds?.length" class="reading-coverage-note">本篇已保留可用内容；{{ session.omittedTargetWordIds.length }} 个未自然覆盖的词将顺延到下一篇。</p>
+      <p v-else-if="session?.status === 'ready' && session?.errorCode" class="reading-coverage-note">AI 暂不可用；以下是离线词汇预习，不是生成文章。核心学习仍可继续。</p>
+      <p v-if="session?.omittedTargetWordIds?.length" class="reading-coverage-note">本篇已保留可用内容；{{ session.omittedTargetWordIds.length }} 个未自然覆盖的词将顺延到下一篇。</p>
+      <p v-if="session?.unquizzedTargetWordIds?.length" class="reading-coverage-note">另有 {{ session.unquizzedTargetWordIds.length }} 个词已在正文出现，但题目未通过校验；正文仍可正常阅读。</p>
       <div class="reading-title-row">
         <div>
-          <p class="eyebrow">{{ generationPhase === 'article' ? '语境阅读' : '题目准备' }} · {{ level }}</p>
-          <h1>{{ session?.title || '今日语境文章' }}</h1>
+          <p class="eyebrow">{{ isLocalFallback ? '离线词汇预习' : generationPhase === 'article' ? '语境阅读' : '题目准备' }} · {{ level }}</p>
+          <h1>{{ isLocalFallback ? '离线词汇预习' : session?.title || '今日语境文章' }}</h1>
         </div>
         <button v-if="loading" class="btn btn-quiet" type="button" @click="cancel">取消生成</button>
         <button v-else-if="session" class="btn btn-quiet" type="button" @click="regenerate">重新准备</button>
@@ -498,7 +500,7 @@ onBeforeUnmount(() => {
       <p class="reading-generation-status" aria-live="polite">
         <template v-if="loading">{{ generationPhase === 'article' ? '正文流式生成中，完成后会在下方准备题目' : `正在准备测义题与翻译${generatedTargets ? ` · 已完成 ${generatedTargets} 题` : ''}` }}</template>
         <template v-else-if="error">{{ errorTitle }}</template>
-        <template v-else-if="session">{{ parsed.targets.length ? '读完正文后开始测义' : '本地阅读包不生成未经验证的选择题' }}</template>
+        <template v-else-if="session">{{ parsed.targets.length ? '读完正文后开始测义' : isLocalFallback ? '本地预习不生成未经验证的选择题' : '正文已保留；本批没有通过校验的题目' }}</template>
         <template v-else>正在恢复文章进度…</template>
       </p>
 
@@ -538,7 +540,7 @@ onBeforeUnmount(() => {
           <article :key="currentTarget.wordId" class="entry-card context-question-card">
             <h2>{{ currentTarget.headword }}<small v-if="currentTarget.surfaceForm">（文中：{{ currentTarget.surfaceForm }}）</small></h2>
             <div v-if="!currentTargetResult" class="context-choice-list">
-              <button v-for="choice in currentTarget.choices" :key="choice" class="btn" type="button" @click="answer(currentTarget, choice)">{{ choice }}</button>
+              <button v-for="choice in currentTarget.choices" :key="choice" class="btn context-meaning-choice" type="button" @click="answer(currentTarget, choice)">{{ choice }}</button>
               <button class="btn btn-quiet" type="button" @click="answer(currentTarget)">不确定</button>
             </div>
             <template v-else>

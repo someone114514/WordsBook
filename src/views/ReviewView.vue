@@ -30,6 +30,10 @@ const replanMessage = ref('')
 const readingHistory = ref<ReadingSession[]>([])
 const latestReading = computed(() => readingHistory.value[0] ?? null)
 const canResumeLatestReading = computed(() => latestReading.value?.dayKey === dayjs().format('YYYY-MM-DD'))
+const latestReadingWordCount = computed(() => latestReading.value?.targetWordIds.length
+  || latestReading.value?.sourceWordIds?.length
+  || 0)
+const latestReadingCountLabel = computed(() => latestReading.value?.errorCode ? '预习词' : '目标词')
 
 const total = computed(() => snapshot.value
   ? snapshot.value.totalCards
@@ -207,7 +211,7 @@ onBeforeUnmount(() => window.removeEventListener(STUDY_PLAN_REFRESHED_EVENT, onP
       <button v-else-if="dismissedQueueChanges" class="btn btn-quiet queue-change-restore" type="button" @click="queueChanges = queueChanges ? { ...queueChanges, dismissed: false } : null">查看词表变化</button>
 
       <section v-if="latestReading" class="panel reading-resume-panel">
-        <div><p class="eyebrow">语境阅读</p><h2>{{ latestReading.title || '已生成的文章' }}</h2><p class="muted">{{ latestReading.dayKey }} · {{ latestReading.targetWordIds.length }} 个目标词</p></div>
+        <div><p class="eyebrow">{{ latestReading.errorCode ? '离线词汇预习' : '语境阅读' }}</p><h2>{{ latestReading.errorCode ? '离线词汇预习' : latestReading.title || '已生成的文章' }}</h2><p class="muted">{{ latestReading.dayKey }} · {{ latestReadingWordCount }} 个{{ latestReadingCountLabel }}</p></div>
         <div class="actions"><RouterLink v-if="canResumeLatestReading" class="btn btn-primary" :to="{ path: '/review/reading', query: { session: `daily:${latestReading.dayKey}`, batch: latestReading.batchIndex } }">继续阅读</RouterLink><RouterLink class="btn" to="/review/reading/history">文章记录</RouterLink></div>
       </section>
 

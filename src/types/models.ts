@@ -386,6 +386,8 @@ export interface ReadingSession {
   targetWordIds: string[]
   /** Words requested for this batch but omitted by the generated passage/details. */
   omittedTargetWordIds?: string[]
+  /** Words present in the passage whose generated quiz failed semantic validation. */
+  unquizzedTargetWordIds?: string[]
   /** Persisted counters make retries and successful generations reportable after sync. */
   generationAttemptCount?: number
   successfulGenerationCount?: number

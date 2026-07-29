@@ -30,15 +30,18 @@ function statusError(status: number): GenerationRequestError {
   return new GenerationRequestError(`AI 请求失败（HTTP ${status}）`, 'network')
 }
 
-export async function requestJsonCompletion(options: {
+type CompletionRequestOptions = {
   url: string
   apiKey: string
   body: Record<string, unknown>
   signal?: AbortSignal
   connectTimeoutMs?: number
   totalTimeoutMs?: number
-}): Promise<unknown> {
+}
+
+export async function requestTextCompletion(options: CompletionRequestOptions): Promise<string> {
   if (!options.apiKey.trim()) throw new GenerationRequestError('未配置 API Key', 'missing-key')
+  if (options.signal?.aborted) throw new GenerationRequestError('请求已取消', 'cancelled')
   const controller = new AbortController()
   let timeoutCode: ReadingErrorCode | undefined
   const abortFromCaller = () => controller.abort()
@@ -71,11 +74,7 @@ export async function requestJsonCompletion(options: {
     }
     const content = payload.choices?.[0]?.message?.content?.trim()
     if (!content) throw new GenerationRequestError('AI 返回内容为空', 'contract-invalid')
-    try {
-      return JSON.parse(content.replace(/^```json\s*/i, '').replace(/```\s*$/i, ''))
-    } catch {
-      throw new GenerationRequestError('AI 内容不是有效 JSON', 'invalid-json')
-    }
+    return content
   } catch (error) {
     if (timeoutCode) throw new GenerationRequestError('AI 请求超时', timeoutCode)
     if (options.signal?.aborted) throw new GenerationRequestError('请求已取消', 'cancelled')
@@ -86,5 +85,14 @@ export async function requestJsonCompletion(options: {
     globalThis.clearTimeout(connectTimer)
     globalThis.clearTimeout(totalTimer)
     options.signal?.removeEventListener('abort', abortFromCaller)
+  }
+}
+
+export async function requestJsonCompletion(options: CompletionRequestOptions): Promise<unknown> {
+  const content = await requestTextCompletion(options)
+  try {
+    return JSON.parse(content.replace(/^```json\s*/i, '').replace(/```\s*$/i, ''))
+  } catch {
+    throw new GenerationRequestError('AI 内容不是有效 JSON', 'invalid-json')
   }
 }

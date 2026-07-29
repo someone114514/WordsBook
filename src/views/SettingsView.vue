@@ -28,7 +28,7 @@ const dictionaryStore = useDictionaryStore()
 const appVersion = __APP_VERSION__
 const appUpdatedAt = __APP_UPDATED_AT__
 
-const { settings } = storeToRefs(settingsStore)
+const { settings, loaded: settingsLoaded } = storeToRefs(settingsStore)
 const { installedMeta, installing, progress, lastError, fullCacheProgress } = storeToRefs(dictionaryStore)
 const fullCachePaused = ref(false)
 
@@ -58,6 +58,11 @@ const fsrsBusy = ref(false)
 const fsrsProgress = ref('')
 const fsrsMessage = ref('')
 const fsrsMessageTone = ref<'success' | 'info' | 'error'>('info')
+const aiKeyInput = ref<HTMLInputElement | null>(null)
+const aiBaseUrlInput = ref<HTMLInputElement | null>(null)
+const aiModelInput = ref<HTMLInputElement | null>(null)
+const aiSettingsMessage = ref('')
+const aiSettingsBusy = ref(false)
 
 const SETTINGS_REFRESH_TTL_MS = 15 * 1000
 let settingsRefreshPromise: Promise<void> | null = null
@@ -268,6 +273,29 @@ async function onUpdateString(
       cloudBusy.value = false
       cloudOperation.value = 'idle'
     }
+  }
+}
+
+async function saveAiSettings(): Promise<void> {
+  aiSettingsBusy.value = true
+  aiSettingsMessage.value = ''
+  try {
+    if (!settingsLoaded.value) await settingsStore.initialize()
+    const deepseekApiKey = aiKeyInput.value?.value.trim() ?? settings.value.deepseekApiKey
+    const deepseekBaseUrl = aiBaseUrlInput.value?.value.trim() ?? settings.value.deepseekBaseUrl
+    const deepseekModel = aiModelInput.value?.value.trim() ?? settings.value.deepseekModel
+    await settingsStore.update({ deepseekApiKey, deepseekBaseUrl, deepseekModel })
+    if (settings.value.syncDeepseekApiKey && cloudAuth.value.signedIn) {
+      if (deepseekApiKey) await uploadDeepseekSecret(deepseekApiKey)
+      else await deleteDeepseekSecret()
+    }
+    aiSettingsMessage.value = deepseekApiKey
+      ? 'AI 设置已保存到当前设备'
+      : 'AI 设置已保存；当前未配置 API Key'
+  } catch (error) {
+    aiSettingsMessage.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    aiSettingsBusy.value = false
   }
 }
 
@@ -619,10 +647,11 @@ async function onRunCloudSync(mode: CloudSyncMode) {
       <label class="setting-stack">
         <span><strong>API Key</strong><small>默认仅保存在当前设备</small></span>
         <input
+          ref="aiKeyInput"
           type="password"
           class="inline-input"
           :value="settings.deepseekApiKey"
-          :disabled="cloudOperation === 'key-sync'"
+          :disabled="!settingsLoaded || cloudOperation === 'key-sync'"
           placeholder="sk-..."
           @change="onUpdateString('deepseekApiKey', $event)"
         />
@@ -631,8 +660,10 @@ async function onRunCloudSync(mode: CloudSyncMode) {
       <label class="setting-stack">
         <span>Base URL</span>
         <input
+          ref="aiBaseUrlInput"
           type="text"
           class="inline-input"
+          :disabled="!settingsLoaded"
           :value="settings.deepseekBaseUrl"
           @change="onUpdateString('deepseekBaseUrl', $event)"
         />
@@ -641,8 +672,10 @@ async function onRunCloudSync(mode: CloudSyncMode) {
       <label class="setting-stack">
         <span>Model</span>
         <input
+          ref="aiModelInput"
           type="text"
           class="inline-input"
+          :disabled="!settingsLoaded"
           :value="settings.deepseekModel"
           @change="onUpdateString('deepseekModel', $event)"
         />
@@ -654,6 +687,12 @@ async function onRunCloudSync(mode: CloudSyncMode) {
           <option value="A2">A2</option><option value="B1">B1</option><option value="B2">B2</option><option value="C1">C1</option>
         </select>
       </label>
+      <div class="action-row">
+        <button class="btn btn-primary" type="button" :disabled="aiSettingsBusy || !settingsLoaded" @click="saveAiSettings">
+          {{ aiSettingsBusy ? '正在保存…' : '保存 AI 设置' }}
+        </button>
+        <p v-if="aiSettingsMessage" class="muted" role="status">{{ aiSettingsMessage }}</p>
+      </div>
       <label class="setting-row">
         <span>卡片释义语言</span>
         <select class="inline-input" :value="settings.definitionLanguage" @change="onUpdateDefinitionLanguage">

@@ -47,4 +47,47 @@ describe('AI dictionary enhancement', () => {
     expect(fetch).toHaveBeenCalledTimes(2)
     expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toMatchObject({ thinking: { type: 'enabled' }, reasoning_effort: 'high' })
   })
+
+  it('keeps useful senses when the optional example list is empty', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({
+        headword: 'resilient',
+        posList: ['adj'],
+        senses: ['adj: 有韧性的'],
+        examples: [],
+        usage: [],
+        notes: [],
+      }) } }],
+    }))))
+
+    const draft = await fetchAiDictionaryDraft({
+      word: 'resilient', apiKey: 'key', baseUrl: 'https://example.test', model: 'test',
+    })
+    expect(draft.senses).toEqual(['adj: 有韧性的'])
+    expect(draft.examples).toEqual([])
+  })
+
+  it('retries a valid JSON null payload as an invalid contract', async () => {
+    const response = (content: unknown) => new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify(content) } }],
+    }))
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response(null))
+      .mockResolvedValueOnce(response({
+        headword: 'resilient',
+        posList: ['adj'],
+        senses: ['adj: 有韧性的'],
+        examples: [],
+        usage: [],
+        notes: [],
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const draft = await fetchAiDictionaryDraft({
+      word: 'resilient', apiKey: 'key', baseUrl: 'https://example.test', model: 'test',
+    })
+
+    expect(draft.senses).toEqual(['adj: 有韧性的'])
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
 })

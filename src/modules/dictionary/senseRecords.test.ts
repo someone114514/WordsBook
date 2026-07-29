@@ -31,4 +31,17 @@ describe('structured bilingual senses', () => {
       secondary: '有韧性的',
     })
   })
+
+  it('turns escaped dictionary line breaks into separate definitions', () => {
+    const escapedEntry: DictionaryEntry = {
+      ...entry,
+      usageJson: JSON.stringify(['sharp\\ns. lavishly elegant']),
+      sensesJson: '[]',
+    }
+
+    expect(parseSenseRecords(escapedEntry).map((record) => record.definitionEn)).toEqual([
+      'sharp',
+      's. lavishly elegant',
+    ])
+  })
 })

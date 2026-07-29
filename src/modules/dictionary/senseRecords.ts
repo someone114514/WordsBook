@@ -11,13 +11,22 @@ function parseArray(raw: string | undefined): unknown[] {
 }
 
 function textOf(value: unknown): string {
-  if (typeof value === 'string') return value.trim()
+  if (typeof value === 'string') return value.replace(/\\r\\n|\\n|\\r/g, '\n').trim()
   if (!value || typeof value !== 'object') return ''
   const row = value as Record<string, unknown>
   for (const key of ['definition', 'meaning', 'gloss', 'text', 'translation', 'example']) {
-    if (typeof row[key] === 'string' && row[key].trim()) return row[key].trim()
+    if (typeof row[key] === 'string' && row[key].trim()) {
+      return row[key].replace(/\\r\\n|\\n|\\r/g, '\n').trim()
+    }
   }
   return ''
+}
+
+function textLinesOf(value: unknown): string[] {
+  return textOf(value)
+    .split(/\r\n|\n|\r/)
+    .map((line) => line.trim())
+    .filter(Boolean)
 }
 
 function looksEnglish(value: string): boolean {
@@ -34,8 +43,12 @@ function parseStoredRecords(raw: string | undefined): SenseRecord[] {
   return parseArray(raw).flatMap((value, index) => {
     if (!value || typeof value !== 'object') return []
     const row = value as Partial<SenseRecord>
-    const definitionEn = typeof row.definitionEn === 'string' ? row.definitionEn.trim() : ''
-    const glossZh = typeof row.glossZh === 'string' ? row.glossZh.trim() : ''
+    const definitionEn = typeof row.definitionEn === 'string'
+      ? row.definitionEn.replace(/\\r\\n|\\n|\\r/g, '\n').trim()
+      : ''
+    const glossZh = typeof row.glossZh === 'string'
+      ? row.glossZh.replace(/\\r\\n|\\n|\\r/g, '\n').trim()
+      : ''
     if (!definitionEn && !glossZh) return []
     return [{
       senseId: typeof row.senseId === 'string' && row.senseId ? row.senseId : `sense-${index + 1}`,
@@ -57,9 +70,9 @@ export function parseSenseRecords(entry: DictionaryEntry): SenseRecord[] {
   const stored = parseStoredRecords(entry.senseRecordsJson)
   if (stored.length) return stored
 
-  const senses = parseArray(entry.sensesJson).map(textOf).filter(Boolean)
-  const usage = parseArray(entry.usageJson).map(textOf).filter(Boolean)
-  const examples = parseArray(entry.examplesJson).map(textOf).filter(Boolean)
+  const senses = parseArray(entry.sensesJson).flatMap(textLinesOf)
+  const usage = parseArray(entry.usageJson).flatMap(textLinesOf)
+  const examples = parseArray(entry.examplesJson).flatMap(textLinesOf)
   const english = usage.filter(looksEnglish)
   const splitSenses = senses.map((sense) => {
     const parts = sense.split(/[；;]/).map((part) => part.trim()).filter(Boolean)

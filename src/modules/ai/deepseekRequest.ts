@@ -16,13 +16,15 @@ export function createDeepseekRequest(options: {
   stream?: boolean
   responseFormat?: boolean
   maxTokens?: number
+  thinking?: boolean
 }): Record<string, unknown> {
+  const thinking = options.thinking ?? true
   return {
     model: options.model,
     messages: options.messages,
     stream: options.stream ?? false,
     ...(options.responseFormat ? { response_format: { type: 'json_object' } } : {}),
     ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
-    ...DEEPSEEK_THINKING,
+    ...(thinking ? DEEPSEEK_THINKING : { thinking: { type: 'disabled' as const } }),
   }
 }
