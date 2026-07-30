@@ -342,6 +342,8 @@ export interface PracticeQuestion {
   evidence: string[]
   explanation: string
   distractorExplanations: string[]
+  /** True only when all four explanations were verified to share option indexes before shuffling. */
+  rationalesAligned?: boolean
 }
 
 export type ReadingErrorCode =

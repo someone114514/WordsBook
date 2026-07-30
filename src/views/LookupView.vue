@@ -100,9 +100,13 @@ const dictionarySummary = computed(() => {
   return `词库 ${installedMeta.value.entryCount.toLocaleString()} 条`
 })
 const dictionaryProgress = computed(() => Math.round((progress.value?.ratio ?? 0) * 100))
-const readingReturnTo = computed(() => typeof route.query.returnTo === 'string' && route.query.returnTo.startsWith('/review/reading')
-  ? route.query.returnTo
-  : '')
+const selectionReturnTo = computed(() => {
+  const value = typeof route.query.returnTo === 'string' ? route.query.returnTo : ''
+  return value.startsWith('/') && !value.startsWith('//') && !value.startsWith('/lookup') ? value : ''
+})
+const selectionReturnLabel = computed(() => selectionReturnTo.value.startsWith('/review/reading')
+  ? '返回文章'
+  : selectionReturnTo.value.startsWith('/review') ? '返回学习' : '返回原页面')
 
 async function retryDictionaryInstall() {
   await dictionaryStore.installDefaultDictionary()
@@ -549,9 +553,9 @@ function parseLines(raw: string): string[] {
 
 <template>
   <section class="panel lookup-panel">
-    <aside v-if="readingReturnTo" class="reading-return-banner">
-      <span>查词不会清除文章进度</span>
-      <button class="btn" type="button" @click="$router.push(readingReturnTo)">返回文章</button>
+    <aside v-if="selectionReturnTo" class="reading-return-banner">
+      <span>查词前的页面与学习进度已保留</span>
+      <button class="btn" type="button" @click="$router.push(selectionReturnTo)">{{ selectionReturnLabel }}</button>
     </aside>
     <section v-if="!installedMeta" class="dictionary-setup" aria-live="polite">
       <template v-if="installing">

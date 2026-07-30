@@ -8,6 +8,7 @@ import {
   generateRoundPractice,
   loadPracticeQuestions,
   recordPracticeAnswer,
+  retryRoundPractice,
 } from '../modules/reading/practiceService'
 import { resumeDailyCardsAfterPractice } from '../modules/review/dailyQueueService'
 
@@ -20,8 +21,11 @@ const attempts = ref<Record<string, ContextAttempt>>({})
 const cursor = ref(0)
 const busy = ref(false)
 const error = ref('')
+const selfRecallRevealed = ref(false)
 let pollTimer = 0
 let questionShownAt = Date.now()
+let generationInFlight = false
+let disposed = false
 
 const current = computed(() => questions.value[cursor.value])
 const currentAttempt = computed(() => current.value ? attempts.value[current.value.questionId] : undefined)
@@ -32,9 +36,26 @@ const statusText = computed(() => content.value?.status === 'failed'
 const questionKindLabel = computed(() => current.value?.type === 'meaning-in-context'
   ? '英文释义辨析'
   : current.value?.type === 'usage-discrimination' ? '四语境辨用法' : '本地主动回忆')
+const failureKind = computed(() => {
+  switch (content.value?.errorCode) {
+    case 'contract-invalid': return '题目结构或词义绑定未通过校验'
+    case 'invalid-json': return 'AI 返回内容不是有效 JSON'
+    case 'timeout': return 'AI 请求超过总等待时间'
+    case 'network': return '当前设备无法连接 AI 服务'
+    case 'unauthorized':
+    case 'auth': return 'API Key 无效或无权访问当前模型'
+    case 'quota': return 'API 账户余额不足'
+    case 'rate-limited':
+    case 'rate-limit': return 'AI 服务请求频率受限'
+    case 'server': return 'AI 服务端暂时异常'
+    case 'missing-key': return '当前设备未配置 API Key'
+    default: return 'AI 生成未成功'
+  }
+})
 
 watch(() => current.value?.questionId, () => {
   questionShownAt = Date.now()
+  selfRecallRevealed.value = false
 })
 
 async function refresh() {
@@ -56,7 +77,19 @@ async function refresh() {
     return
   }
   if (content.value.status === 'pending' || content.value.status === 'streaming') {
-    void generateRoundPractice(content.value.sessionId)
+    if (!generationInFlight) {
+      generationInFlight = true
+      void generateRoundPractice(content.value.sessionId)
+        .then(() => {
+          if (!disposed) return refresh()
+        })
+        .catch((reason) => {
+          if (disposed) return
+          error.value = reason instanceof Error ? reason.message : String(reason)
+          window.clearInterval(pollTimer)
+        })
+        .finally(() => { generationInFlight = false })
+    }
     return
   }
   if (content.value.status === 'ready' || content.value.status === 'completed') {
@@ -93,6 +126,23 @@ async function next() {
   await finish(false)
 }
 
+async function retryAiPractice() {
+  if (!content.value || busy.value) return
+  busy.value = true
+  error.value = ''
+  try {
+    content.value = await retryRoundPractice(content.value.sessionId)
+    questions.value = await loadPracticeQuestions(content.value.sessionId)
+    const unanswered = questions.value.findIndex((question) => !attempts.value[question.questionId])
+    cursor.value = unanswered >= 0 ? unanswered : 0
+    selfRecallRevealed.value = false
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : String(reason)
+  } finally {
+    busy.value = false
+  }
+}
+
 async function finish(skipped: boolean) {
   if (busy.value) return
   busy.value = true
@@ -113,7 +163,10 @@ onMounted(async () => {
     if (content.value?.status === 'pending' || content.value?.status === 'streaming') void refresh()
   }, 800)
 })
-onBeforeUnmount(() => window.clearInterval(pollTimer))
+onBeforeUnmount(() => {
+  disposed = true
+  window.clearInterval(pollTimer)
+})
 </script>
 
 <template>
@@ -133,11 +186,29 @@ onBeforeUnmount(() => window.clearInterval(pollTimer))
 
     <section v-else-if="current" class="immersive-card practice-question-card">
       <p class="eyebrow">{{ questionKindLabel }}</p>
-      <p v-if="content?.errorCode" class="muted">AI 增强当前不可用，已使用无需联网的本地练习。</p>
+      <div v-if="content?.errorCode" class="practice-fallback-notice">
+        <div>
+          <p class="muted">AI 增强当前未成功，已保留可完成的本地练习。</p>
+          <small>{{ failureKind }}</small>
+          <details v-if="content.error"><summary>查看技术原因</summary><p>{{ content.error }}</p></details>
+        </div>
+        <button class="btn btn-quiet" type="button" :disabled="busy" @click="retryAiPractice">重新生成 AI 练习</button>
+      </div>
       <h1>{{ current.headword }}</h1>
       <p v-if="current.passage" class="practice-passage">{{ current.passage }}</p>
       <h2>{{ current.stem }}</h2>
-      <div class="context-choice-list">
+      <div v-if="current.type === 'self-recall' && !selfRecallRevealed && !currentAttempt" class="context-choice-list">
+        <button class="btn btn-primary" type="button" @click="selfRecallRevealed = true">查看答案并自评</button>
+      </div>
+      <div v-else-if="current.type === 'self-recall' && !currentAttempt" class="local-recall-answer">
+        <div class="context-answer"><strong>核心义</strong><p>{{ current.sourceSense }}</p><ul><li v-for="clue in current.evidence.slice(1)" :key="clue">{{ clue }}</li></ul></div>
+        <div class="context-choice-list">
+          <button class="btn btn-primary" type="button" :disabled="busy" @click="answer(0)">想起来了</button>
+          <button class="btn" type="button" :disabled="busy" @click="answer(1)">还没想起来</button>
+          <button class="btn btn-quiet" type="button" :disabled="busy" @click="answer()">不确定</button>
+        </div>
+      </div>
+      <div v-else-if="current.type !== 'self-recall'" class="context-choice-list">
         <button v-for="(option, index) in current.options" :key="option" class="btn" type="button" :disabled="busy || Boolean(currentAttempt)" @click="answer(index)">{{ String.fromCharCode(65 + index) }}. {{ option }}</button>
         <button v-if="!currentAttempt" class="btn btn-quiet" type="button" :disabled="busy" @click="answer()">不确定</button>
       </div>
@@ -146,7 +217,7 @@ onBeforeUnmount(() => window.clearInterval(pollTimer))
         <p v-if="current.type !== 'self-recall'">答案：{{ current.options[current.correctIndex] }}</p>
         <p>{{ current.explanation }}</p>
         <ul><li v-for="clue in current.evidence" :key="clue">{{ clue }}</li></ul>
-        <details><summary>查看选项辨析</summary><p v-for="(reason, index) in current.distractorExplanations" :key="index">{{ String.fromCharCode(65 + index) }}. {{ reason }}</p></details>
+        <details v-if="current.rationalesAligned && current.distractorExplanations.some(Boolean)"><summary>查看选项辨析</summary><p v-for="(reason, index) in current.distractorExplanations" v-show="reason" :key="index">{{ String.fromCharCode(65 + index) }}. {{ reason }}</p></details>
       </div>
       <button v-if="currentAttempt" class="btn btn-primary" type="button" @click="next">{{ cursor + 1 < questions.length ? '下一题' : '继续学习' }}</button>
     </section>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import dayjs from 'dayjs'
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { ReadingSession, ReadingTarget } from '../types/models'
 import {
@@ -21,10 +21,6 @@ import {
 } from '../modules/reading/readingService'
 import { resumeDailyCardsAfterArticle, setArticleStatus } from '../modules/review/dailyQueueService'
 import { loadSettings } from '../modules/settings/settingsService'
-import { lookupWord } from '../modules/dictionary/dictionaryService'
-import { addEntryToStudyList, listStudyLists, LOOKUP_LIST_ID } from '../modules/wordbook/studyListService'
-import type { DictionaryEntry, StudyList } from '../types/models'
-import { parseJsonArray } from '../utils/json'
 import { db } from '../db/database'
 
 const route = useRoute()
@@ -54,16 +50,7 @@ const quizCursor = ref(0)
 const resultCursor = ref(0)
 const hadRetry = ref(false)
 const generationErrorCode = ref<ReadingSession['errorCode']>()
-const readingCopy = ref<HTMLElement | null>(null)
-const selectedWord = ref('')
-const selectedEntry = ref<DictionaryEntry | null>(null)
-const selectionLoading = ref(false)
-const selectionMessage = ref('')
-const studyLists = ref<StudyList[]>([])
-const selectedListId = ref('')
-const choosingList = ref(false)
 let controller: AbortController | null = null
-let selectionToken = 0
 let questionShownAt = Date.now()
 
 const parsed = computed(() => session.value ? parseReadingSession(session.value) : { segments: [], targets: [] })
@@ -394,79 +381,8 @@ async function cancel() {
   loading.value = false
 }
 
-function clearWordSelection() {
-  selectedWord.value = ''
-  selectedEntry.value = null
-  selectionMessage.value = ''
-  choosingList.value = false
-}
-
-async function updateSelectedWord() {
-  const selection = window.getSelection()
-  const text = selection?.toString().trim() ?? ''
-  if (!selection || selection.rangeCount !== 1 || !/^[A-Za-z][A-Za-z'-]{0,79}$/.test(text)) {
-    return
-  }
-  const range = selection.getRangeAt(0)
-  const node = range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
-    ? range.commonAncestorContainer as Element
-    : range.commonAncestorContainer.parentElement
-  if (!node || !readingCopy.value?.contains(node)) return
-  const token = ++selectionToken
-  selectedWord.value = text
-  selectedEntry.value = null
-  selectionMessage.value = ''
-  selectionLoading.value = true
-  try {
-    const result = await lookupWord(text)
-    if (token !== selectionToken) return
-    selectedEntry.value = result.exactMatches[0] ?? result.lemmaMatches[0] ?? null
-  } finally {
-    if (token === selectionToken) selectionLoading.value = false
-  }
-}
-
-async function openSelectedLookup() {
-  if (!selectedWord.value) return
-  await persistProgress()
-  await router.push({ path: '/lookup', query: { q: selectedWord.value, from: 'reading', returnTo: route.fullPath } })
-}
-
-async function addSelectedWord(listId = selectedListId.value) {
-  if (!selectedEntry.value) {
-    selectionMessage.value = '本地词典暂未找到，打开完整查词后可补全并加入。'
-    return
-  }
-  if (!listId) {
-    choosingList.value = true
-    return
-  }
-  await addEntryToStudyList(listId, selectedEntry.value, 'article')
-  window.localStorage.setItem('wordsbook:last-study-list', listId)
-  const listName = studyLists.value.find((list) => list.listId === listId)?.name ?? '词表'
-  selectionMessage.value = `已加入「${listName}」`
-}
-
-async function saveSelectedWord() {
-  if (!selectedEntry.value) return openSelectedLookup()
-  await addEntryToStudyList(LOOKUP_LIST_ID, selectedEntry.value, 'article')
-  selectionMessage.value = '已仅保存，不进入每日学习'
-}
-
 onMounted(() => {
   void initialize()
-  void listStudyLists().then((lists) => {
-    studyLists.value = lists.filter((list) => list.systemType !== 'lookup')
-    const last = window.localStorage.getItem('wordsbook:last-study-list')
-    selectedListId.value = studyLists.value.find((list) => list.listId === last)?.listId
-      ?? studyLists.value.find((list) => list.studyEnabled)?.listId
-      ?? studyLists.value[0]?.listId
-      ?? ''
-  })
-  document.addEventListener('selectionchange', updateSelectedWord)
-})
-onBeforeUnmount(() => {
-  document.removeEventListener('selectionchange', updateSelectedWord)
 })
 </script>
 
@@ -504,7 +420,7 @@ onBeforeUnmount(() => {
         <template v-else>正在恢复文章进度…</template>
       </p>
 
-      <div ref="readingCopy" class="reading-copy reading-copy-selectable reading-copy-stable">
+      <div class="reading-copy reading-copy-selectable reading-copy-stable">
         <template v-if="loading || error">
           <p v-for="(paragraph, index) in paragraphs" :key="index">{{ paragraph }}</p>
           <div v-if="!paragraphs.length" class="skeleton-lines" aria-hidden="true"><span/><span/><span/></div>
@@ -565,24 +481,5 @@ onBeforeUnmount(() => {
       </template>
     </article>
 
-    <aside v-if="selectedWord" class="reading-selection-bar" aria-live="polite">
-      <div class="selection-word-summary">
-        <strong>{{ selectedWord }}</strong>
-        <span v-if="selectionLoading" class="muted">正在查词…</span>
-        <span v-else class="muted">{{ selectedEntry ? (parseJsonArray(selectedEntry.sensesJson)[0] || '已有本地词条') : '本地暂无释义' }}</span>
-        <button class="selection-close" type="button" aria-label="关闭选词操作" @click="clearWordSelection">×</button>
-      </div>
-      <div v-if="choosingList" class="selection-list-picker">
-        <select v-model="selectedListId" aria-label="选择学习词表"><option v-for="list in studyLists" :key="list.listId" :value="list.listId">{{ list.name }}</option></select>
-        <button class="btn btn-primary" type="button" @click="addSelectedWord()">确认加入</button>
-      </div>
-      <div class="selection-actions">
-        <button class="btn" type="button" @click="openSelectedLookup">查词</button>
-        <button class="btn btn-primary" type="button" @click="addSelectedWord()">加入学习</button>
-        <button class="btn" type="button" @click="choosingList = !choosingList">选择词表</button>
-        <button class="btn btn-quiet" type="button" @click="saveSelectedWord">仅保存</button>
-      </div>
-      <p v-if="selectionMessage" class="success selection-message">{{ selectionMessage }}</p>
-    </aside>
   </section>
 </template>

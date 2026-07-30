@@ -32,7 +32,7 @@ describe('generation client', () => {
     })).rejects.toMatchObject({ code: 'invalid-json' })
   })
 
-  it('aborts a permanently hanging request at the configured timeout', async () => {
+  it('uses the end-to-end deadline instead of treating model thinking as a connection failure', async () => {
     vi.useFakeTimers()
     vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
       init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
@@ -47,7 +47,7 @@ describe('generation client', () => {
     const assertion = expect(task).rejects.toEqual(
       expect.objectContaining<Partial<GenerationRequestError>>({ code: 'timeout' }),
     )
-    await vi.advanceTimersByTimeAsync(11)
+    await vi.advanceTimersByTimeAsync(21)
     await assertion
   })
 

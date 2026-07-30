@@ -349,7 +349,8 @@ Output newline-delimited JSON only, one complete object per line, in this order:
 {"type":"target","wordId":"exact target id","headword":"exact target headword","sourceSense":"exactly one allowed sense used in the passage","contextualMeaning":"meaning in the required answer language","choices":["exactly three distinct choices in the same required language, including contextualMeaning"],"explanation":"concise explanation tied to the passage"} (one line for every target that appears)
 {"type":"translation","text":"complete Simplified Chinese translation"}
 {"type":"done"}
-Do not output markdown. Never expose target IDs in visible prose. Distractors must share the same part of speech but be clearly wrong from context; avoid near-synonyms, trick distinctions, specialist knowledge, and current-event claims.`
+Do not output markdown. Never expose target IDs in visible prose. Distractors must share the same part of speech but be clearly wrong from context; avoid near-synonyms, trick distinctions, specialist knowledge, and current-event claims.
+For each question, keep all choices close in length and at the same level of detail whenever natural, so the answer is not revealed by option length. This is a writing preference only; never omit, pad awkwardly, or distort a choice to force equal length.`
 }
 
 export function readingBatchRangeForRound(
@@ -820,6 +821,7 @@ ${repairAttempt > 0 ? 'The previous repair response failed the output contract. 
 Return exactly one question for every target. Copy sourceSense VERBATIM from that target's allowedSenses; do not paraphrase it.
 All contextualMeaning and choices must use ${answerLanguage}. Each choices array must contain exactly three distinct strings and include contextualMeaning exactly once.
 When sourceSense is Chinese but English answers are required, keep sourceSense unchanged and translate that selected sense into a concise English contextualMeaning. Do not copy Chinese into contextualMeaning or choices.
+Keep the three choices for each target close in length and at the same level of detail whenever natural. Do not make the correct answer conspicuously longer or shorter; never distort meaning merely to equalize length.
 Return JSON only:
 {"targets":[{"wordId":"exact id","headword":"exact headword","sourceSense":"verbatim allowed sense","contextualMeaning":"answer","choices":["answer","distractor","distractor"],"explanation":"brief context evidence"}]}
 PASSAGE: ${JSON.stringify(passage)}

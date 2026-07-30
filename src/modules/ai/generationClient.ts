@@ -46,10 +46,11 @@ export async function requestTextCompletion(options: CompletionRequestOptions): 
   let timeoutCode: ReadingErrorCode | undefined
   const abortFromCaller = () => controller.abort()
   options.signal?.addEventListener('abort', abortFromCaller, { once: true })
-  const connectTimer = globalThis.setTimeout(() => {
-    timeoutCode = 'timeout'
-    controller.abort()
-  }, options.connectTimeoutMs ?? 10_000)
+  // Browser fetch does not expose a distinct "TCP connected" event. A timer
+  // around `await fetch()` would therefore be a first-byte timeout and would
+  // incorrectly abort healthy non-streaming model requests while they think.
+  // Keep connectTimeoutMs in the public options for compatibility, but use the
+  // real end-to-end deadline as the enforceable browser timeout.
   const totalTimer = globalThis.setTimeout(() => {
     timeoutCode = 'timeout'
     controller.abort()
@@ -64,7 +65,6 @@ export async function requestTextCompletion(options: CompletionRequestOptions): 
       body: JSON.stringify(options.body),
       signal: controller.signal,
     })
-    globalThis.clearTimeout(connectTimer)
     if (!response.ok) throw statusError(response.status)
     let payload: { choices?: Array<{ message?: { content?: string } }> }
     try {
@@ -82,7 +82,6 @@ export async function requestTextCompletion(options: CompletionRequestOptions): 
     if (error instanceof TypeError) throw new GenerationRequestError('无法连接 AI 服务', 'network')
     throw error
   } finally {
-    globalThis.clearTimeout(connectTimer)
     globalThis.clearTimeout(totalTimer)
     options.signal?.removeEventListener('abort', abortFromCaller)
   }

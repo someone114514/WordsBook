@@ -3,8 +3,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { db } from '../../db/database'
 import type { PracticeQuestion } from '../../types/models'
 import {
+  completeRoundPractice,
   generateRoundPractice,
   recordPracticeAnswer,
+  retryRoundPractice,
   scheduleRoundPractice,
   scorePracticeCandidate,
 } from './practiceService'
@@ -98,7 +100,7 @@ describe('round practice planning and generation', () => {
     })).toBe(0)
   })
 
-  it('honors the configurable daily cap and sends one grouped thinking request', async () => {
+  it('honors the configurable daily cap and sends one grouped structured request', async () => {
     await seedRound(1)
     const fetchMock = vi.fn((_url: string, request: RequestInit) => Promise.resolve(validPracticeResponse(request)))
     vi.stubGlobal('fetch', fetchMock)
@@ -111,8 +113,171 @@ describe('round practice planning and generation', () => {
     expect(JSON.parse(ready.questionsJson ?? '[]')).toHaveLength(1)
     expect(fetchMock).toHaveBeenCalledTimes(1)
     const request = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))
-    expect(request).toMatchObject({ thinking: { type: 'enabled' }, reasoning_effort: 'high' })
+    expect(request).toMatchObject({ thinking: { type: 'disabled' } })
+    expect(request.reasoning_effort).toBeUndefined()
     expect(request.temperature).toBeUndefined()
+    expect(request.messages[0].content).toContain('keep the four options close in length')
+    expect(request.messages[0].content).toContain('never use them, their close paraphrases')
+  })
+
+  it('anchors model-authored presentation to the scheduled dictionary evidence', async () => {
+    await seedRound(1)
+    const fetchMock = vi.fn((_url: string, request: RequestInit) => {
+      const response = validPracticeResponse(request)
+      return response.json().then((payload: any) => {
+        const content = JSON.parse(payload.choices[0].message.content)
+        content.questions[0].questionId = 'invented-id'
+        content.questions[0].focusWordId = 'invented-word'
+        content.questions[0].headword = 'invented'
+        content.questions[0].sourceSense = 'invented sense'
+        content.questions[0].options[0] = 'a paraphrase the model preferred'
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: JSON.stringify(content) } }],
+        }))
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const planned = await scheduleRoundPractice('daily:2026-07-13', 1)
+    const ready = await generateRoundPractice(planned!.sessionId)
+    const [question] = JSON.parse(ready.questionsJson ?? '[]') as PracticeQuestion[]
+
+    expect(ready.errorCode).toBeUndefined()
+    expect(question).toMatchObject({
+      questionId: 'round-1-w1',
+      focusWordId: 'w1',
+      headword: 'resilient',
+      sourceSense: '有韧性的',
+    })
+    expect(question?.options).toContain('有韧性的')
+  })
+
+  it('keeps a valid anchored question when optional per-option explanations are incomplete', async () => {
+    await seedRound(1)
+    vi.stubGlobal('fetch', vi.fn((_url: string, request: RequestInit) =>
+      validPracticeResponse(request).json().then((payload: any) => {
+        const content = JSON.parse(payload.choices[0].message.content)
+        content.questions[0].distractorExplanations = ['符合目标义项。']
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: JSON.stringify(content) } }],
+        }))
+      })))
+
+    const planned = await scheduleRoundPractice('daily:2026-07-13', 1)
+    const ready = await generateRoundPractice(planned!.sessionId)
+    const [question] = JSON.parse(ready.questionsJson ?? '[]') as PracticeQuestion[]
+
+    expect(ready.errorCode).toBeUndefined()
+    expect(question?.distractorExplanations).toHaveLength(4)
+    expect(question?.distractorExplanations.every((reason) => reason === '')).toBe(true)
+    expect(question?.rationalesAligned).toBe(false)
+  })
+
+  it('does not treat a malformed explanation array as index-aligned after filtering', async () => {
+    await seedRound(1)
+    vi.stubGlobal('fetch', vi.fn((_url: string, request: RequestInit) =>
+      validPracticeResponse(request).json().then((payload: any) => {
+        const content = JSON.parse(payload.choices[0].message.content)
+        content.questions[0].distractorExplanations = [
+          '说明 A',
+          null,
+          '说明 B',
+          '说明 C',
+          '说明 D',
+        ]
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: JSON.stringify(content) } }],
+        }))
+      })))
+
+    const planned = await scheduleRoundPractice('daily:2026-07-13', 1)
+    const ready = await generateRoundPractice(planned!.sessionId)
+    const [question] = JSON.parse(ready.questionsJson ?? '[]') as PracticeQuestion[]
+
+    expect(question?.distractorExplanations).toEqual(['', '', '', ''])
+    expect(question?.rationalesAligned).toBe(false)
+  })
+
+  it('rejects conflicting anchors instead of binding one word context to another', async () => {
+    await seedRound(2)
+    const fetchMock = vi.fn((_url: string, request: RequestInit) =>
+      validPracticeResponse(request).json().then((payload: any) => {
+        const content = JSON.parse(payload.choices[0].message.content)
+        const firstId = content.questions[0].questionId
+        content.questions[0].questionId = content.questions[1].questionId
+        content.questions[1].questionId = firstId
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: JSON.stringify(content) } }],
+        }))
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const planned = await scheduleRoundPractice('daily:2026-07-13', 1)
+    const ready = await generateRoundPractice(planned!.sessionId)
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(ready).toMatchObject({ status: 'ready', errorCode: 'contract-invalid' })
+    expect((JSON.parse(ready.questionsJson ?? '[]') as PracticeQuestion[])
+      .every((question) => question.type === 'self-recall')).toBe(true)
+  })
+
+  it('marks a damaged practice specification failed instead of retrying forever', async () => {
+    await seedRound(1)
+    vi.stubGlobal('fetch', vi.fn((_url: string, request: RequestInit) =>
+      Promise.resolve(validPracticeResponse(request))))
+    const planned = await scheduleRoundPractice('daily:2026-07-13', 1)
+    await generateRoundPractice(planned!.sessionId)
+    await db.readingSessions.update(planned!.sessionId, {
+      status: 'pending',
+      practiceSpecJson: '{invalid',
+    })
+
+    const failed = await retryRoundPractice(planned!.sessionId)
+
+    expect(failed).toMatchObject({ status: 'failed', errorCode: 'contract-invalid' })
+  })
+
+  it('does not overwrite a skipped practice when generation finishes late', async () => {
+    await seedRound(1)
+    let resolveFetch!: (response: Response) => void
+    let capturedRequest!: RequestInit
+    const fetchMock = vi.fn((_url: string, request: RequestInit) => {
+      capturedRequest = request
+      return new Promise<Response>((resolve) => { resolveFetch = resolve })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const planned = await scheduleRoundPractice('daily:2026-07-13', 1)
+    const generation = generateRoundPractice(planned!.sessionId)
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    await completeRoundPractice(planned!.sessionId, true)
+    resolveFetch(validPracticeResponse(capturedRequest))
+    const finished = await generation
+
+    expect(finished.status).toBe('skipped')
+    expect(await db.readingSessions.get(planned!.sessionId)).toMatchObject({ status: 'skipped' })
+  })
+
+  it('masks only the complete target word in a trusted local example', async () => {
+    await seedRound(1)
+    await db.localSecrets.delete('deepseekApiKey')
+    await db.dictionaryEntries.update('e1', {
+      headword: 'art',
+      headwordLower: 'art',
+      senseRecordsJson: JSON.stringify([{
+        senseId: 'art:1',
+        definitionEn: 'creative expression',
+        glossZh: '艺术',
+        examples: ['The article examines art in public spaces.'],
+      }]),
+    })
+    await db.dailyQueueItems.delete('daily:2026-07-13:w2:1')
+
+    const planned = await scheduleRoundPractice('daily:2026-07-13', 1)
+    const ready = await generateRoundPractice(planned!.sessionId)
+    const [question] = JSON.parse(ready.questionsJson ?? '[]') as PracticeQuestion[]
+
+    expect(question?.passage).toBe('The article examines ____ in public spaces.')
   })
 
   it('uses a local self-recall exercise when no AI key is configured', async () => {

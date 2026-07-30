@@ -20,8 +20,22 @@ import { recordContextLearningEvidence } from '../review/dailyQueueService'
 import { parseJsonArray } from '../../utils/json'
 import { parseSenseRecords } from '../dictionary/senseRecords'
 
-const PRACTICE_PROMPT_VERSION = 'v1-guided-context'
+const PRACTICE_PROMPT_VERSION = 'v6-indexed-rationales'
 const activePracticeGenerations = new Map<string, Promise<ReadingSession>>()
+
+async function commitGeneratedPractice(candidate: ReadingSession): Promise<ReadingSession> {
+  return db.transaction(
+    'rw',
+    [db.readingSessions, db.syncMeta, db.syncRecords, db.syncTombstones],
+    async () => {
+      const latest = await db.readingSessions.get(candidate.sessionId)
+      if (latest && (latest.status === 'skipped' || latest.status === 'completed')) return latest
+      await db.readingSessions.put(candidate)
+      await markPayloadChanged('readingSessions', candidate, candidate.updatedAt)
+      return candidate
+    },
+  )
+}
 
 interface PracticeSpec {
   questionId: string
@@ -90,6 +104,74 @@ function containsWholeHeadword(value: string, headword: string): boolean {
   return new RegExp(`(^|[^A-Za-z])${escaped}([^A-Za-z]|$)`, 'i').test(value)
 }
 
+function anchorGeneratedQuestions(value: unknown, specs: PracticeSpec[]): unknown {
+  if (!value || typeof value !== 'object') return value
+  const rows = (value as { questions?: unknown }).questions
+  if (!Array.isArray(rows) || rows.length !== specs.length) return value
+  const specByQuestionId = new Map(specs.map((spec) => [spec.questionId, spec]))
+  const specByWordId = new Map(specs.map((spec) => [spec.focusWordId, spec]))
+  const specByHeadword = new Map(specs.map((spec) => [spec.headword.toLowerCase(), spec]))
+  const usedRows = new Set<unknown>()
+  return {
+    questions: specs.map((spec, index) => {
+      const source = rows.find((row) => {
+        if (!row || typeof row !== 'object' || usedRows.has(row)) return false
+        const draft = row as Partial<PracticeQuestion>
+        const anchors = [
+          typeof draft.questionId === 'string' ? specByQuestionId.get(draft.questionId) : undefined,
+          typeof draft.focusWordId === 'string' ? specByWordId.get(draft.focusWordId) : undefined,
+          typeof draft.headword === 'string' ? specByHeadword.get(draft.headword.toLowerCase()) : undefined,
+        ].filter((candidate): candidate is PracticeSpec => Boolean(candidate))
+        if (new Set(anchors.map((candidate) => candidate.focusWordId)).size > 1) return false
+        return anchors.some((candidate) => candidate.focusWordId === spec.focusWordId)
+          || (specs.length === 1 && anchors.length === 0 && row === rows[index])
+      })
+      if (!source || typeof source !== 'object') return source
+      usedRows.add(source)
+      const draft = source as Partial<PracticeQuestion>
+      const options = Array.isArray(draft.options)
+        ? draft.options.filter((option): option is string => typeof option === 'string')
+        : []
+      const exactAnswerIndex = options.findIndex((option) =>
+        normalizeAnswer(option) === normalizeAnswer(spec.correctAnswer))
+      const declaredIndex = Number.isInteger(draft.correctIndex)
+        && draft.correctIndex! >= 0
+        && draft.correctIndex! < options.length
+        ? draft.correctIndex!
+        : 0
+      const correctIndex = exactAnswerIndex >= 0 ? exactAnswerIndex : declaredIndex
+      const hasAlignedExplanations = Array.isArray(draft.distractorExplanations)
+        && draft.distractorExplanations.length === 4
+        && draft.distractorExplanations.every((item) => typeof item === 'string')
+      const rawExplanations = hasAlignedExplanations
+        ? [...(draft.distractorExplanations as string[])]
+        : []
+      // Fewer than four explanations are ambiguous: some models omit the
+      // correct option's rationale, so their indexes no longer match options.
+      // Hide the optional block instead of guessing semantic correspondence.
+      const explanations = hasAlignedExplanations
+        ? rawExplanations
+        : ['', '', '', '']
+      if (options.length === 4 && exactAnswerIndex < 0) {
+        options[correctIndex] = spec.correctAnswer
+        if (hasAlignedExplanations) explanations[correctIndex] = '该选项与词典绑定的目标义项一致。'
+      }
+      return {
+        ...draft,
+        questionId: spec.questionId,
+        type: spec.type,
+        focusWordId: spec.focusWordId,
+        headword: spec.headword,
+        sourceSense: spec.sourceSense,
+        options,
+        correctIndex,
+        distractorExplanations: explanations,
+        rationalesAligned: hasAlignedExplanations,
+      }
+    }),
+  }
+}
+
 function validateQuestions(value: unknown, specs: PracticeSpec[]): PracticeQuestion[] {
   if (!value || typeof value !== 'object') throw new Error('语意练习结构不完整')
   const rows = (value as { questions?: unknown }).questions
@@ -115,7 +197,7 @@ function validateQuestions(value: unknown, specs: PracticeSpec[]): PracticeQuest
       throw new Error('语意练习正确答案未绑定到词典证据')
     }
     if (!Array.isArray(question.evidence) || question.evidence.length < 2 || !question.explanation) throw new Error('语意练习解析不完整')
-    if (!Array.isArray(question.distractorExplanations) || question.distractorExplanations.length !== 4) throw new Error('语意练习选项解析不完整')
+    if (!Array.isArray(question.distractorExplanations) || question.distractorExplanations.length !== 4) throw new Error('语意练习选项解析结构无效')
     if (question.type === 'meaning-in-context' && (
       !question.passage
       || question.passage.split(/\s+/).length < 20
@@ -148,13 +230,15 @@ function shuffleQuestionOptions(question: PracticeQuestion, seed: string): Pract
   }
 }
 
+function maskWholeHeadword(example: string, headword: string): string {
+  const escaped = headword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')
+  return example.replace(new RegExp(`(^|[^A-Za-z])${escaped}(?=[^A-Za-z]|$)`, 'i'), '$1____')
+}
+
 function buildLocalRecallQuestions(specs: PracticeSpec[]): PracticeQuestion[] {
   return specs.map((spec) => {
     const passage = spec.trustedExample
-      ? spec.trustedExample.replace(
-          new RegExp(spec.headword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'),
-          '____',
-        )
+      ? maskWholeHeadword(spec.trustedExample, spec.headword)
       : undefined
     return {
       questionId: `${spec.questionId}:local`,
@@ -186,8 +270,11 @@ function buildPracticePrompt(specs: PracticeSpec[]): string {
   return `Create exactly ${specs.length} English vocabulary practice question(s). The local app has already selected every target and question type; do not change them.
 SPECS: ${JSON.stringify(specs)}
 Return one JSON object only: {"questions":[{"questionId":"exact id","type":"meaning-in-context|usage-discrimination","focusWordId":"exact id","headword":"exact headword","sourceSense":"copy the exact sourceSense from the spec","passage":"required only for meaning-in-context","stem":"clear English instruction","options":["exactly four options"],"correctIndex":0,"evidence":["at least two clear context clues"],"explanation":"concise Simplified Chinese explanation","distractorExplanations":["one concise Simplified Chinese explanation for each option"]}]}.
+Return exactly four distractorExplanations in the exact same index order as options, including an explanation for the correct option. If you cannot do that reliably, return an empty array rather than three misaligned explanations.
 For meaning-in-context, write a 35-80 word passage that contains the headword naturally and asks for its precise meaning. Copy correctAnswer verbatim as one option and point correctIndex to it; use the same language for all distractors.
+The passage must contain clues that distinguish sourceSense from every other item in allowedSenses. Other allowed senses are valid meanings of the same word: never use them, their close paraphrases, or another broadly compatible definition as distractors.
 For usage-discrimination, use correctAnswer verbatim as the one correct sentence. Make the other three options complete English sentences containing the same headword and point correctIndex to the trusted sentence.
+Within each question, keep the four options close in length and at the same level of detail whenever natural. Do not make the correct answer conspicuously longer or shorter. This is a writing preference, not a reason to omit or distort an option.
 Use only an allowed sense. Guided difficulty must use common syntax and obvious but nontrivial clues at no higher than CEFR B2. Standard difficulty may be harder but must not require specialist facts.
 Every question needs at least two independent clues. Do not use obscure senses, double negatives, grammar traps, near-synonym hair-splitting, or misleading ambiguity. Distractors should be plausible at first glance but clearly wrong for an explainable semantic or collocational reason.`
 }
@@ -196,6 +283,7 @@ async function candidateRows(
   dailySession: DailyLearningSession,
   wordIds: string[],
   roundIndex: number,
+  language: { level: 'A2' | 'B1' | 'B2' | 'C1'; definitionLanguage: 'adaptive' | 'english-first' | 'chinese-first' },
   provisional?: { wordId: string; rating: ReviewRating },
   requireCurrentRound = true,
 ) {
@@ -207,7 +295,10 @@ async function candidateRows(
     db.readingSessions.where('dayKey').equals(dailySession.dayKey).toArray(),
   ])
   const entries = await db.dictionaryEntries.bulkGet(words.map((word) => word?.entryId ?? ''))
-  const contextByWord = new Map(wordIds.map((wordId) => [wordId, contextAttempts.filter((attempt) => attempt.wordId === wordId)]))
+  const contextByWord = new Map(wordIds.map((wordId) => [
+    wordId,
+    contextAttempts.filter((attempt) => attempt.wordId === wordId && attempt.questionType !== 'self-recall'),
+  ]))
   const testedRecently = new Set(recentBundles
     .filter((bundle) => bundle.contentKind === 'round-practice' && bundle.batchIndex >= roundIndex - 2)
     .flatMap((bundle) => parseQuestions(bundle).map((question) => question.focusWordId)))
@@ -218,9 +309,13 @@ async function candidateRows(
       && (!requireCurrentRound || (row.roundIndex ?? roundIndex) === roundIndex))
     const headword = entry?.headword ?? word?.headword
     const senseRecords = entry ? parseSenseRecords(entry) : []
+    const englishFirst = language.definitionLanguage === 'english-first'
+      || (language.definitionLanguage === 'adaptive' && (language.level === 'B2' || language.level === 'C1'))
     const senses = senseRecords.length
       ? senseRecords
-          .map((sense) => sense.definitionEn ?? sense.glossZh ?? '')
+          .map((sense) => englishFirst
+            ? sense.definitionEn ?? sense.glossZh ?? ''
+            : sense.glossZh ?? sense.definitionEn ?? '')
           .filter(Boolean)
           .slice(0, 4)
       : []
@@ -267,7 +362,10 @@ export async function scheduleRoundPractice(
     || dailySession.lastPracticeRoundIndex === roundIndex) return undefined
   if (dailySession.pendingPracticeRoundIndex === roundIndex && dailySession.pendingPracticeSessionId) {
     const existing = await db.readingSessions.get(dailySession.pendingPracticeSessionId)
-    if (existing) return existing
+    const reusable = existing
+      && existing.promptVersion === PRACTICE_PROMPT_VERSION
+      && (!existing.errorCode || !settings.deepseekApiKey.trim())
+    if (reusable) return existing
   }
   const round = (() => {
     try { return (JSON.parse(dailySession.roundsJson ?? '[]') as Array<{ index: number; wordIds: string[] }>).find((row) => row.index === roundIndex) }
@@ -277,8 +375,14 @@ export async function scheduleRoundPractice(
   const allItems = await db.dailyQueueItems.where('sessionId').equals(dailySessionId).toArray()
   const allWordIds = [...new Set(allItems.filter((item) => item.kind === 'card' && item.wordId).map((item) => item.wordId!))]
   const [currentCandidates, globalCandidates, bundles] = await Promise.all([
-    candidateRows(dailySession, round.wordIds, roundIndex, provisional),
-    candidateRows(dailySession, allWordIds, roundIndex, provisional, false),
+    candidateRows(dailySession, round.wordIds, roundIndex, {
+      level: settings.articleLevel,
+      definitionLanguage: settings.definitionLanguage,
+    }, provisional),
+    candidateRows(dailySession, allWordIds, roundIndex, {
+      level: settings.articleLevel,
+      definitionLanguage: settings.definitionLanguage,
+    }, provisional, false),
     db.readingSessions.where('dayKey').equals(dailySession.dayKey).toArray(),
   ])
   const eligible = globalCandidates.filter((candidate) => candidate.score >= 30)
@@ -287,7 +391,10 @@ export async function scheduleRoundPractice(
     ? Math.ceil(eligible.length / 8) + Math.min(2, Math.floor(urgent.length / 2))
     : 0
   const dailyBudget = Math.min(settings.practiceQuestionLimit, algorithmBudget)
-  const used = bundles.filter((bundle) => bundle.contentKind === 'round-practice' && !bundle.skippedAt)
+  const used = bundles.filter((bundle) =>
+    bundle.contentKind === 'round-practice'
+    && bundle.promptVersion === PRACTICE_PROMPT_VERSION
+    && !bundle.skippedAt)
     .reduce((sum, bundle) => sum + (bundle.plannedQuestionCount ?? parseQuestions(bundle).length), 0)
   const remaining = Math.max(0, dailyBudget - used)
   const top = currentCandidates.filter((candidate) => candidate.score >= 30)
@@ -337,7 +444,10 @@ export async function scheduleRoundPractice(
   const sourceHash = stableHash(round.wordIds)
   const sessionId = `practice:${dailySession.dayKey}:round:${roundIndex}:${sourceHash}`
   const existing = await db.readingSessions.get(sessionId)
-  if (existing && ['pending', 'streaming', 'ready', 'completed', 'failed'].includes(existing.status)) return existing
+  if (existing
+    && existing.promptVersion === PRACTICE_PROMPT_VERSION
+    && (!existing.errorCode || !settings.deepseekApiKey.trim())
+    && ['pending', 'streaming', 'ready', 'completed', 'failed'].includes(existing.status)) return existing
   const now = new Date().toISOString()
   const record: ReadingSession = {
     sessionId,
@@ -385,8 +495,23 @@ async function generateRoundPracticeImpl(sessionId: string): Promise<ReadingSess
   const session = await db.readingSessions.get(sessionId)
   if (!session) throw new Error('语意练习任务不存在')
   if (session.status === 'ready' || session.status === 'completed') return session
-  const settings = await loadSettings()
-  const specs = JSON.parse(session.practiceSpecJson ?? '[]') as PracticeSpec[]
+  let settings: Awaited<ReturnType<typeof loadSettings>>
+  let specs: PracticeSpec[]
+  try {
+    settings = await loadSettings()
+    const parsed = JSON.parse(session.practiceSpecJson ?? '[]') as unknown
+    if (!Array.isArray(parsed) || !parsed.length) throw new Error('语境练习规格为空')
+    specs = parsed as PracticeSpec[]
+  } catch (error) {
+    const failed: ReadingSession = {
+      ...session,
+      status: 'failed',
+      error: error instanceof Error ? error.message : '语境练习规格损坏',
+      errorCode: 'contract-invalid',
+      updatedAt: new Date().toISOString(),
+    }
+    return commitGeneratedPractice(failed)
+  }
   if (!settings.deepseekApiKey.trim()) {
     const ready = {
       ...session,
@@ -396,13 +521,21 @@ async function generateRoundPracticeImpl(sessionId: string): Promise<ReadingSess
       errorCode: 'missing-key' as const,
       updatedAt: new Date().toISOString(),
     }
-    await db.readingSessions.put(ready)
-    await markPayloadChanged('readingSessions', ready, ready.updatedAt)
-    return ready
+    return commitGeneratedPractice(ready)
   }
-  const generating = { ...session, status: 'streaming' as const, generationAttemptCount: (session.generationAttemptCount ?? 0) + 1, error: undefined, errorCode: undefined, updatedAt: new Date().toISOString() }
-  await db.readingSessions.put(generating)
-  await markPayloadChanged('readingSessions', generating, generating.updatedAt)
+  const generating = {
+    ...session,
+    promptVersion: PRACTICE_PROMPT_VERSION,
+    status: 'streaming' as const,
+    generationAttemptCount: (session.generationAttemptCount ?? 0) + 1,
+    error: undefined,
+    errorCode: undefined,
+    updatedAt: new Date().toISOString(),
+  }
+  const committedGenerating = await commitGeneratedPractice(generating)
+  if (committedGenerating.status === 'skipped' || committedGenerating.status === 'completed') {
+    return committedGenerating
+  }
   let lastError: unknown
   const basePrompt = buildPracticePrompt(specs)
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -419,11 +552,15 @@ async function generateRoundPracticeImpl(sessionId: string): Promise<ReadingSess
           stream: false,
           responseFormat: true,
           maxTokens: 3600,
+          // This is a tightly specified single-question JSON task. Non-thinking
+          // mode returns the structured answer directly instead of spending the
+          // output budget on hidden reasoning and truncating the JSON payload.
+          thinking: false,
         }),
       })
       let questions: PracticeQuestion[]
       try {
-        questions = validateQuestions(payload, specs)
+        questions = validateQuestions(anchorGeneratedQuestions(payload, specs), specs)
           .map((question) => shuffleQuestionOptions(question, `${sessionId}:${question.questionId}`))
       } catch (error) {
         throw new GenerationRequestError(
@@ -440,9 +577,7 @@ async function generateRoundPracticeImpl(sessionId: string): Promise<ReadingSess
         errorCode: undefined,
         updatedAt: new Date().toISOString(),
       }
-      await db.readingSessions.put(ready)
-      await markPayloadChanged('readingSessions', ready, ready.updatedAt)
-      return ready
+      return commitGeneratedPractice(ready)
     } catch (error) {
       lastError = error
       if (attempt === 0) await new Promise((resolve) => globalThis.setTimeout(resolve, 800))
@@ -456,9 +591,7 @@ async function generateRoundPracticeImpl(sessionId: string): Promise<ReadingSess
     errorCode: lastError instanceof GenerationRequestError ? lastError.code : 'contract-invalid',
     updatedAt: new Date().toISOString(),
   }
-  await db.readingSessions.put(localFallback)
-  await markPayloadChanged('readingSessions', localFallback, localFallback.updatedAt)
-  return localFallback
+  return commitGeneratedPractice(localFallback)
 }
 
 export function generateRoundPractice(sessionId: string): Promise<ReadingSession> {
@@ -514,7 +647,9 @@ export async function recordPracticeAnswer(
     result,
     responseMs: evidence.responseMs,
     hintLevel: evidence.hintLevel ?? question.hintLevel ?? 0,
-    skill: question.type === 'usage-discrimination' ? 'production' : 'context-sense',
+    skill: question.type === 'usage-discrimination'
+      ? 'production'
+      : question.type === 'self-recall' ? 'meaning-recall' : 'context-sense',
     answeredAt: new Date().toISOString(),
   }
   return recordContextLearningEvidence(attempt, dailySessionId)

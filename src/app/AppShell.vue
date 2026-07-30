@@ -1,6 +1,7 @@
 ﻿<script setup lang="ts">
 import { computed } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
+import GlobalSelectionLookup from '../components/GlobalSelectionLookup.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -25,7 +26,7 @@ function navigateTab(path: string, event: MouseEvent): void {
 </script>
 
 <template>
-  <div class="app-shell" :class="{ 'app-shell-immersive': immersiveMode }">
+  <div class="app-shell selection-lookup-scope" :class="{ 'app-shell-immersive': immersiveMode }">
     <a v-if="!immersiveMode" class="skip-link" href="#main-content">跳转到主内容</a>
 
     <header v-if="!immersiveMode" class="topbar">
@@ -55,5 +56,6 @@ function navigateTab(path: string, event: MouseEvent): void {
         </a>
       </RouterLink>
     </nav>
+    <GlobalSelectionLookup />
   </div>
 </template>
