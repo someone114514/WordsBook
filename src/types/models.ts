@@ -237,6 +237,8 @@ export interface DailyLearningSession {
   readingBatchesJson?: string
   /** Settings value used to build the persisted reading batches. */
   readingBatchRounds?: number
+  /** Invalidates persisted article grouping when the reading-capacity plan changes. */
+  readingBatchPlanVersion?: number
   activeReadingBatchIndex?: number
   /** The latest round already handed off to its scheduled article. */
   lastArticleRoundIndex?: number

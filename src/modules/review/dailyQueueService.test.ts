@@ -357,6 +357,218 @@ describe('daily learning queue', () => {
       .toEqual([unitId, unitId])
   })
 
+  it('lets one ten-word article introduce two five-word new-card units without repeating it', async () => {
+    const now = '2026-07-13T08:00:00.000Z'
+    const wordIds = Array.from({ length: 10 }, (_, index) => `new-${index + 1}`)
+    const units = [0, 1].map((index) => ({
+      unitId: `u${index + 1}`,
+      index,
+      wordIds: wordIds.slice(index * 5, index * 5 + 5),
+      dueWordIds: [],
+      newWordIds: wordIds.slice(index * 5, index * 5 + 5),
+      status: index === 0 ? 'active' as const : 'pending' as const,
+    }))
+    for (const wordId of wordIds) {
+      await db.dictionaryEntries.put({
+        entryId: `e-${wordId}`,
+        headword: wordId,
+        headwordLower: wordId,
+        posList: [],
+        sensesJson: '["词义"]',
+        examplesJson: '[]',
+        usageJson: '[]',
+      })
+      await db.wordbook.put({
+        wordId,
+        entryId: `e-${wordId}`,
+        headword: wordId,
+        headwordLower: wordId,
+        addedAt: now,
+        note: '',
+        tags: [],
+        archived: 0,
+      })
+    }
+    await db.dailyLearningSessions.put({
+      sessionId: 'daily:2026-07-13',
+      dayKey: '2026-07-13',
+      status: 'active',
+      phase: 'article',
+      engineVersion: 2,
+      sessionRevision: 1,
+      activityOrdinal: 0,
+      learningStage: 'read',
+      activeUnitIndex: 0,
+      activeRoundIndex: 1,
+      activeReadingBatchIndex: 0,
+      unitsJson: JSON.stringify(units),
+      readingBatchesJson: JSON.stringify([wordIds]),
+      readingBatchPlanVersion: 2,
+      selectedListIds: [],
+      initialWordIds: wordIds,
+      articleStatus: 'completed',
+      createdAt: now,
+      updatedAt: now,
+    })
+    await db.readingSessions.put({
+      sessionId: 'reading:2026-07-13:0:0',
+      dayKey: '2026-07-13',
+      batchIndex: 0,
+      selectionSeed: 0,
+      level: 'B2',
+      topic: '',
+      targetWordIds: [],
+      status: 'completed',
+      title: 'Ten words',
+      segmentsJson: JSON.stringify(wordIds.map((wordId) => ({ text: wordId, wordId }))),
+      targetsJson: '[]',
+      translation: '',
+      createdAt: now,
+      updatedAt: now,
+    })
+    await db.dailyQueueItems.bulkPut(units[1]!.wordIds.map((wordId, index) => ({
+      itemId: `i-${wordId}`,
+      sessionId: 'daily:2026-07-13',
+      kind: 'card' as const,
+      wordId,
+      reason: 'initial' as const,
+      unitId: 'u2',
+      stage: 'learn' as const,
+      eligibleAfterOrdinal: 0,
+      position: index,
+      status: 'pending' as const,
+      attemptNo: 1,
+      maxAttempts: 3,
+      retrievability: 0,
+      createdAt: now,
+      updatedAt: now,
+    })))
+
+    await resumeDailyCardsAfterArticle('daily:2026-07-13', new Date(now))
+    const snapshot = await getOrCreateDailySession(undefined, new Date(now))
+    const restoredUnits = JSON.parse(snapshot.session.unitsJson ?? '[]') as Array<{ articleCompletedAt?: string }>
+
+    expect(restoredUnits.every((unit) => unit.articleCompletedAt === now)).toBe(true)
+    expect(snapshot.session).toMatchObject({
+      phase: 'cards',
+      learningStage: 'learn',
+      activeUnitIndex: 1,
+      activeReadingBatchIndex: 0,
+    })
+    expect(snapshot.current?.unitId).toBe('u2')
+  })
+
+  it('combines prior passage coverage when a missing-word recovery article is skipped', async () => {
+    const now = '2026-07-13T08:00:00.000Z'
+    await db.dailyLearningSessions.put({
+      sessionId: 'daily:2026-07-13',
+      dayKey: '2026-07-13',
+      status: 'active',
+      phase: 'article',
+      engineVersion: 2,
+      sessionRevision: 1,
+      learningStage: 'read',
+      activeUnitIndex: 0,
+      activeReadingBatchIndex: 1,
+      unitsJson: JSON.stringify([{
+        unitId: 'u1', index: 0, wordIds: ['w1', 'w2'],
+        dueWordIds: [], newWordIds: ['w1', 'w2'], status: 'active',
+      }]),
+      readingBatchesJson: JSON.stringify([['w1', 'w2'], ['w2']]),
+      readingBatchPlanVersion: 2,
+      selectedListIds: [],
+      initialWordIds: ['w1', 'w2'],
+      articleStatus: 'skipped',
+      createdAt: now,
+      updatedAt: now,
+    })
+    await db.readingSessions.put({
+      sessionId: 'reading:2026-07-13:0:0',
+      dayKey: '2026-07-13',
+      batchIndex: 0,
+      selectionSeed: 0,
+      level: 'B2',
+      topic: '',
+      targetWordIds: ['w1'],
+      status: 'completed',
+      title: 'Partial',
+      segmentsJson: '[]',
+      targetsJson: '[]',
+      translation: '',
+      createdAt: now,
+      updatedAt: now,
+    })
+    await db.dailyQueueItems.put({
+      itemId: 'i-w1',
+      sessionId: 'daily:2026-07-13',
+      kind: 'card',
+      wordId: 'w1',
+      reason: 'initial',
+      unitId: 'u1',
+      stage: 'learn',
+      position: 0,
+      status: 'pending',
+      attemptNo: 1,
+      maxAttempts: 3,
+      retrievability: 0,
+      createdAt: now,
+      updatedAt: now,
+    })
+
+    const snapshot = await resumeDailyCardsAfterArticle('daily:2026-07-13', new Date(now))
+    expect(JSON.parse(snapshot.session.unitsJson ?? '[]')[0]?.articleCompletedAt).toBe(now)
+  })
+
+  it('opens a missing-word recovery before completing the final learning unit', async () => {
+    const now = '2026-07-13T08:00:00.000Z'
+    await db.dailyLearningSessions.put({
+      sessionId: 'daily:2026-07-13',
+      dayKey: '2026-07-13',
+      status: 'active',
+      phase: 'article',
+      engineVersion: 2,
+      sessionRevision: 1,
+      learningStage: 'read',
+      activeUnitIndex: 0,
+      activeReadingBatchIndex: 0,
+      unitsJson: JSON.stringify([{
+        unitId: 'u1', index: 0, wordIds: ['w1', 'w2'],
+        dueWordIds: [], newWordIds: ['w1', 'w2'], status: 'active',
+      }]),
+      readingBatchesJson: JSON.stringify([['w1', 'w2'], ['w2']]),
+      readingBatchPlanVersion: 2,
+      selectedListIds: [],
+      initialWordIds: ['w1', 'w2'],
+      articleStatus: 'completed',
+      createdAt: now,
+      updatedAt: now,
+    })
+    await db.readingSessions.put({
+      sessionId: 'reading:2026-07-13:0:0',
+      dayKey: '2026-07-13',
+      batchIndex: 0,
+      selectionSeed: 0,
+      level: 'B2',
+      topic: '',
+      targetWordIds: ['w1'],
+      status: 'completed',
+      title: 'Partial',
+      segmentsJson: '[]',
+      targetsJson: '[]',
+      translation: '',
+      createdAt: now,
+      updatedAt: now,
+    })
+
+    const snapshot = await resumeDailyCardsAfterArticle('daily:2026-07-13', new Date(now))
+    expect(snapshot.session).toMatchObject({
+      status: 'active',
+      phase: 'article',
+      learningStage: 'read',
+      activeReadingBatchIndex: 1,
+    })
+  })
+
   it('opens an interleaved article at the configured round boundary and resumes cards afterward', async () => {
     await seed()
     await db.settings.bulkPut([{ key: 'articleEveryRounds', value: 2 }, { key: 'roundWordCount', value: 10 }])

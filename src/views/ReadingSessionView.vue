@@ -13,6 +13,7 @@ import {
   loadContextAttempts,
   parseReadingSession,
   readingBatchRangeForRound,
+  readingSessionMatchesBatch,
   recordContextAttempt,
   resetReadingSessionAttempts,
   saveReadingProgress,
@@ -225,7 +226,10 @@ async function initialize() {
     await setBatchIndex(requestedOrStoredBatch)
   }
   const cached = await db.readingSessions.get(readingSessionId())
-  if (cached && (cached.status === 'ready' || cached.status === 'completed')) {
+  const expectedWordIds = batches.value[batchIndex.value]
+  if (cached
+    && (cached.status === 'ready' || cached.status === 'completed')
+    && readingSessionMatchesBatch(cached, expectedWordIds)) {
     if (route.query.restart === '1') {
       await resetReadingSessionAttempts(cached.sessionId)
       await saveReadingProgress(cached.sessionId, 0, false, 0, 0)

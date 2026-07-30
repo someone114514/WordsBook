@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { db } from '../../db/database'
 import type { ReadingTarget, ReviewLog } from '../../types/models'
-import { appendOmittedReadingTargets, buildReadingTargetBatches, generateReadingSession, getOrCreateReadingBatches, groupReadingSegmentsByParagraph, listReadingHistory, readingBatchRangeForRound, recordContextAttempt, resetReadingSessionAttempts, saveReadingProgress, sortTargetsByPassageOrder } from './readingService'
+import { appendOmittedReadingTargets, buildReadingTargetBatches, generateReadingSession, getOrCreateReadingBatches, groupReadingSegmentsByParagraph, listReadingHistory, readingBatchRangeForRound, readingSessionMatchesBatch, recordContextAttempt, resetReadingSessionAttempts, saveReadingProgress, sortTargetsByPassageOrder } from './readingService'
 
 function log(wordId: string, rating: ReviewLog['rating'], wasNew = false): ReviewLog {
   return {
@@ -147,6 +147,8 @@ describe('reading target selection and context feedback', () => {
     expect(streamed.some((text) => text.includes('resilient'))).toBe(true)
     expect(String(fetchMock.mock.calls[0]?.[1]?.body)).toContain('allowedSenses')
     expect(String(fetchMock.mock.calls[0]?.[1]?.body)).toContain('有韧性的')
+    expect(String(fetchMock.mock.calls[0]?.[1]?.body)).toContain('For this 1-target batch')
+    expect(String(fetchMock.mock.calls[0]?.[1]?.body)).toContain('one or two paragraph objects')
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).response_format).toBeUndefined()
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({ thinking: { type: 'enabled' }, reasoning_effort: 'high' })
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).temperature).toBeUndefined()
@@ -377,6 +379,25 @@ describe('reading target selection and context feedback', () => {
     expect((await db.dailyLearningSessions.get('daily:2026-07-13'))?.activeReadingBatchIndex).toBe(0)
   })
 
+  it('keeps v2 omissions in an idempotent recovery batch instead of inflating the next ten-word article', async () => {
+    const now = '2026-07-13T08:00:00.000Z'
+    const first = Array.from({ length: 10 }, (_, index) => `a${index}`)
+    const second = Array.from({ length: 10 }, (_, index) => `b${index}`)
+    await db.dailyLearningSessions.put({
+      sessionId: 'daily:2026-07-13', dayKey: '2026-07-13', status: 'active', phase: 'article',
+      engineVersion: 2, readingBatchPlanVersion: 2,
+      selectedListIds: [], initialWordIds: [...first, ...second], articleStatus: 'ready',
+      readingBatchesJson: JSON.stringify([first, second]), activeReadingBatchIndex: 0,
+      createdAt: now, updatedAt: now,
+    })
+
+    await appendOmittedReadingTargets('daily:2026-07-13', 0, ['a2'])
+    await appendOmittedReadingTargets('daily:2026-07-13', 0, ['a2'])
+
+    expect(await getOrCreateReadingBatches('daily:2026-07-13', '2026-07-13'))
+      .toEqual([first, ['a2'], second])
+  })
+
   it('groups persisted rounds using the configured article interval', async () => {
     const now = '2026-07-13T08:00:00.000Z'
     await db.settings.put({ key: 'articleEveryRounds', value: 3 })
@@ -409,6 +430,86 @@ describe('reading target selection and context feedback', () => {
     const batches = await getOrCreateReadingBatches('daily:2026-07-13', '2026-07-13')
     expect(batches.map((batch) => batch.length)).toEqual([12, 3])
     expect(batches.flat()).toEqual(wordIds)
+  })
+
+  it('upgrades five-word v2 article batches into stable ten-word reading batches', async () => {
+    const now = '2026-07-13T08:00:00.000Z'
+    const wordIds = Array.from({ length: 20 }, (_, index) => `w${index + 1}`)
+    const units = Array.from({ length: 4 }, (_, index) => ({
+      unitId: `u${index + 1}`,
+      index,
+      wordIds: wordIds.slice(index * 5, index * 5 + 5),
+      dueWordIds: [],
+      newWordIds: wordIds.slice(index * 5, index * 5 + 5),
+      status: index === 0 ? 'completed' : index === 1 ? 'active' : 'pending',
+    }))
+    await db.dailyLearningSessions.put({
+      sessionId: 'daily:2026-07-13', dayKey: '2026-07-13', status: 'active', phase: 'article',
+      engineVersion: 2, activeUnitIndex: 1, activeReadingBatchIndex: 1,
+      selectedListIds: [], initialWordIds: wordIds, articleStatus: 'waiting',
+      unitsJson: JSON.stringify(units),
+      readingBatchesJson: JSON.stringify(units.map((unit) => unit.wordIds)),
+      readingBatchRounds: 1,
+      createdAt: now, updatedAt: now,
+    })
+
+    const batches = await getOrCreateReadingBatches('daily:2026-07-13', '2026-07-13')
+    expect(batches.map((batch) => batch.length)).toEqual([10, 10])
+    expect(batches.flat()).toEqual(wordIds)
+    expect(await db.dailyLearningSessions.get('daily:2026-07-13')).toMatchObject({
+      readingBatchPlanVersion: 2,
+      activeReadingBatchIndex: 0,
+    })
+  })
+
+  it('refreshes a v2 plan when new unit words keep the same batch count', async () => {
+    const now = '2026-07-13T08:00:00.000Z'
+    const original = Array.from({ length: 15 }, (_, index) => `w${index + 1}`)
+    const added = Array.from({ length: 5 }, (_, index) => `w${index + 16}`)
+    const allWords = [...original, ...added]
+    const units = [
+      { unitId: 'u1', index: 0, wordIds: original.slice(0, 10), dueWordIds: original.slice(0, 10), newWordIds: [], status: 'completed' },
+      { unitId: 'u2', index: 1, wordIds: original.slice(10), dueWordIds: [], newWordIds: original.slice(10), status: 'active' },
+      { unitId: 'u3', index: 2, wordIds: added, dueWordIds: [], newWordIds: added, status: 'pending' },
+    ]
+    await db.dailyLearningSessions.put({
+      sessionId: 'daily:2026-07-13', dayKey: '2026-07-13', status: 'active', phase: 'article',
+      engineVersion: 2, activeUnitIndex: 1, activeReadingBatchIndex: 1,
+      selectedListIds: [], initialWordIds: allWords, articleStatus: 'waiting',
+      unitsJson: JSON.stringify(units),
+      readingBatchesJson: JSON.stringify([original.slice(0, 10), ['w2'], original.slice(10)]),
+      readingBatchRounds: 1, readingBatchPlanVersion: 2,
+      createdAt: now, updatedAt: now,
+    })
+
+    const batches = await getOrCreateReadingBatches('daily:2026-07-13', '2026-07-13')
+    expect(batches).toEqual([allWords.slice(0, 10), ['w2'], allWords.slice(10)])
+    expect((await db.dailyLearningSessions.get('daily:2026-07-13'))?.activeReadingBatchIndex).toBe(1)
+  })
+
+  it('rejects an old five-word article cache after its batch grows to ten words', () => {
+    const now = '2026-07-13T08:00:00.000Z'
+    const oldWords = Array.from({ length: 5 }, (_, index) => `w${index + 1}`)
+    const cached = {
+      sessionId: 'reading:2026-07-13:0:0',
+      dayKey: '2026-07-13',
+      batchIndex: 0,
+      selectionSeed: 0,
+      level: 'B2' as const,
+      topic: '',
+      targetWordIds: oldWords,
+      sourceWordIds: oldWords,
+      status: 'completed' as const,
+      title: 'Old article',
+      segmentsJson: JSON.stringify(oldWords.map((wordId) => ({ text: wordId, wordId }))),
+      targetsJson: '[]',
+      translation: '',
+      createdAt: now,
+      updatedAt: now,
+    }
+
+    expect(readingSessionMatchesBatch(cached, [...oldWords, 'w6', 'w7', 'w8', 'w9', 'w10']))
+      .toBe(false)
   })
 
   it('maps later round groups past every split batch from earlier groups', () => {

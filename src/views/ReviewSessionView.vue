@@ -251,8 +251,8 @@ async function prewarmRoundContent() {
   const currentRound = snapshot.value?.session.activeRoundIndex ?? 1
   const range = snapshot.value?.session.engineVersion === 2
     ? {
-        start: snapshot.value?.session.activeUnitIndex ?? 0,
-        end: snapshot.value?.session.activeUnitIndex ?? 0,
+        start: snapshot.value?.session.activeReadingBatchIndex ?? 0,
+        end: snapshot.value?.session.activeReadingBatchIndex ?? 0,
       }
     : readingBatchRangeForRound(
         snapshot.value?.session.roundsJson,

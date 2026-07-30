@@ -25,6 +25,7 @@ import { getReviewRetrievability } from './scheduler'
 import { getStudyQueueRevision } from './studyDataRevision'
 import { repairVocabularyIntegrity } from '../wordbook/vocabularyIntegrity'
 import { loadSettings } from '../settings/settingsService'
+import { findReadingBatchForUnit, parseReadingBatchesJson } from '../reading/readingBatchPlan'
 
 const MAX_DAILY_ATTEMPTS = 3
 const AGAIN_MIN_ACTIVITY_GAP = 3
@@ -1412,6 +1413,21 @@ async function advanceToPlannedRound(sessionId: string, at: Date): Promise<boole
   return true
 }
 
+function nextCarryReadingBatchIndex(
+  session: DailyLearningSession,
+  units: LearningUnit[],
+  activeIndex: number,
+): number {
+  const incompleteIntroducedWords = new Set(units
+    .slice(0, activeIndex + 1)
+    .filter((unit) => !unit.articleCompletedAt)
+    .flatMap((unit) => unit.wordIds))
+  if (!incompleteIntroducedWords.size) return -1
+  return parseReadingBatchesJson(session.readingBatchesJson).findIndex((batch, index) =>
+    index > (session.activeReadingBatchIndex ?? -1)
+    && batch.some((wordId) => incompleteIntroducedWords.has(wordId)))
+}
+
 async function advanceLearningEngine(sessionId: string, at: Date): Promise<boolean> {
   const session = await db.dailyLearningSessions.get(sessionId)
   if (!session || session.engineVersion !== ENGINE_VERSION || session.status === 'completed') return false
@@ -1449,10 +1465,39 @@ async function advanceLearningEngine(sessionId: string, at: Date): Promise<boole
     const updatedUnits = units.map((unit, index) => index === activeIndex
       ? { ...unit, status: 'active' as const }
       : unit)
+    const readingBatches = parseReadingBatchesJson(session.readingBatchesJson)
+    if (activeUnit.articleCompletedAt) {
+      const carryBatchIndex = nextCarryReadingBatchIndex(session, units, activeIndex)
+      if (carryBatchIndex >= 0) {
+        const updated = bump({
+          phase: 'article',
+          learningStage: 'read',
+          activeReadingBatchIndex: carryBatchIndex,
+          articleStatus: 'waiting',
+          unitsJson: JSON.stringify(updatedUnits),
+        })
+        await db.dailyLearningSessions.put(updated)
+        await markPayloadChanged('dailyLearningSessions', updated, now)
+        return true
+      }
+      const updated = bump({
+        phase: 'cards',
+        learningStage: 'learn',
+        unitsJson: JSON.stringify(updatedUnits),
+      })
+      await db.dailyLearningSessions.put(updated)
+      await markPayloadChanged('dailyLearningSessions', updated, now)
+      return true
+    }
+    const activeReadingBatchIndex = findReadingBatchForUnit(
+      readingBatches,
+      activeUnit.wordIds,
+      activeIndex > 0 ? session.activeReadingBatchIndex ?? -1 : -1,
+    )
     const updated = bump({
       phase: 'article',
       learningStage: 'read',
-      activeReadingBatchIndex: activeIndex,
+      activeReadingBatchIndex,
       articleStatus: 'waiting',
       unitsJson: JSON.stringify(updatedUnits),
     })
@@ -1464,6 +1509,18 @@ async function advanceLearningEngine(sessionId: string, at: Date): Promise<boole
   if (stage === 'learn') {
     const hasLearningCards = pending.some((item) => item.unitId === activeUnit.unitId && item.stage === 'learn')
     if (hasLearningCards) return true
+    const carryBatchIndex = nextCarryReadingBatchIndex(session, units, activeIndex)
+    if (carryBatchIndex >= 0) {
+      const updated = bump({
+        phase: 'article',
+        learningStage: 'read',
+        activeReadingBatchIndex: carryBatchIndex,
+        articleStatus: 'waiting',
+      })
+      await db.dailyLearningSessions.put(updated)
+      await markPayloadChanged('dailyLearningSessions', updated, now)
+      return true
+    }
     if (session.pendingPracticeSessionId
       && session.pendingPracticeRoundIndex === (session.activeRoundIndex ?? activeIndex + 1)
       && session.lastPracticeRoundIndex !== session.pendingPracticeRoundIndex) {
@@ -1606,10 +1663,31 @@ export async function resumeDailyCardsAfterArticle(sessionId: string, at = new D
   if (!session) throw new Error('今日学习会话不存在')
   const now = at.toISOString()
   if (session.engineVersion === ENGINE_VERSION) {
-    const activeIndex = session.activeUnitIndex ?? 0
-    const units = parseLearningUnits(session.unitsJson).map((unit, index) => index === activeIndex
-      ? { ...unit, articleCompletedAt: now }
-      : unit)
+    const plannedBatch = parseReadingBatchesJson(session.readingBatchesJson)[session.activeReadingBatchIndex ?? 0] ?? []
+    const handledWordIds = new Set<string>()
+    const completedReading = await db.readingSessions
+      .where('dayKey')
+      .equals(session.dayKey)
+      .filter((reading) => reading.selectionSeed === 0 && reading.status === 'completed')
+      .toArray()
+    completedReading.forEach((reading) => {
+      const coveredWordIds = [...reading.targetWordIds, ...(reading.unquizzedTargetWordIds ?? [])]
+      coveredWordIds.forEach((wordId) => handledWordIds.add(wordId))
+      try {
+        const segments = JSON.parse(reading.segmentsJson) as Array<{ wordId?: unknown }>
+        segments.forEach((segment) => {
+          if (typeof segment.wordId === 'string') handledWordIds.add(segment.wordId)
+        })
+      } catch {
+        // Older damaged segment payloads still retain targetWordIds above.
+      }
+    })
+    if (session.articleStatus === 'skipped') plannedBatch.forEach((wordId) => handledWordIds.add(wordId))
+    const units = parseLearningUnits(session.unitsJson).map((unit) => (
+      unit.wordIds.length > 0 && unit.wordIds.every((wordId) => handledWordIds.has(wordId))
+        ? { ...unit, articleCompletedAt: unit.articleCompletedAt ?? now }
+        : unit
+    ))
     const resumed: DailyLearningSession = {
       ...session,
       phase: 'cards',

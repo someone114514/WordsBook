@@ -19,6 +19,14 @@ import { createDeepseekRequest } from '../ai/deepseekRequest'
 import { GenerationRequestError, requestJsonCompletion, runSerializedGeneration } from '../ai/generationClient'
 import { articleLemmaCandidates, canonicalArticleForm, loadArticleInflectionIndex } from './inflectionService'
 import { parseSenseRecords } from '../dictionary/senseRecords'
+import {
+  buildUnitReadingBatches,
+  extractRecoveryReadingBatches,
+  findReadingBatchForUnit,
+  MAX_READING_BATCH_SIZE,
+  mergeReadingPlanWithRecovery,
+  READING_BATCH_PLAN_VERSION,
+} from './readingBatchPlan'
 
 interface AiReadingResponse {
   title?: string
@@ -35,7 +43,7 @@ interface ActiveGeneration {
 }
 
 const activeGenerations = new Map<string, ActiveGeneration>()
-export const MAX_READING_BATCH_SIZE = 12
+export { MAX_READING_BATCH_SIZE } from './readingBatchPlan'
 
 export class ReadingGenerationError extends Error {
   public readonly code: ReadingErrorCode
@@ -65,7 +73,7 @@ function headwordFromEntryId(entryId: string): string | undefined {
   return entryId.split(':').reverse().find((part) => /^[a-z][a-z' -]{1,79}$/i.test(part))
 }
 
-function cachedSessionHasValidTargets(session: ReadingSession, expectedWordIds?: string[]): boolean {
+export function readingSessionMatchesBatch(session: ReadingSession, expectedWordIds?: string[]): boolean {
   try {
     const targets = JSON.parse(session.targetsJson) as ReadingTarget[]
     const segments = JSON.parse(session.segmentsJson) as ReadingSegment[]
@@ -165,22 +173,17 @@ function roundReadingBatches(raw: string | undefined, roundsPerArticle: number):
   } catch { return [] }
 }
 
-function unitReadingBatches(raw: string | undefined): string[][] {
+function unitWordIdsAt(raw: string | undefined, index: number): string[] {
   if (!raw) return []
   try {
     const units = JSON.parse(raw) as Array<{ wordIds?: unknown }>
-    if (!Array.isArray(units)) return []
-    return units.flatMap((unit) => {
-      const words = Array.isArray(unit.wordIds)
-        ? [...new Set(unit.wordIds.filter((wordId): wordId is string => typeof wordId === 'string'))]
-        : []
-      const batches: string[][] = []
-      for (let index = 0; index < words.length; index += MAX_READING_BATCH_SIZE) {
-        batches.push(words.slice(index, index + MAX_READING_BATCH_SIZE))
-      }
-      return batches
-    })
-  } catch { return [] }
+    const wordIds = units[index]?.wordIds
+    return Array.isArray(wordIds)
+      ? wordIds.filter((wordId): wordId is string => typeof wordId === 'string')
+      : []
+  } catch {
+    return []
+  }
 }
 
 export async function persistReadingBatches(
@@ -199,6 +202,7 @@ export async function persistReadingBatches(
     ...session,
     readingBatchesJson: JSON.stringify(normalized),
     readingBatchRounds: session.engineVersion === 2 ? 1 : settings.articleEveryRounds,
+    readingBatchPlanVersion: READING_BATCH_PLAN_VERSION,
     activeReadingBatchIndex: index,
     sessionRevision: (session.sessionRevision ?? 0) + 1,
     updatedAt: new Date().toISOString(),
@@ -218,9 +222,31 @@ export async function getOrCreateReadingBatches(
   const cached = session?.articleStatus !== 'stale' ? parseReadingBatches(session?.readingBatchesJson) : []
   const roundsPerArticle = session?.engineVersion === 2 ? 1 : settings.articleEveryRounds
   const roundBatches = session?.engineVersion === 2
-    ? unitReadingBatches(session.unitsJson)
+    ? buildUnitReadingBatches(session.unitsJson)
     : roundReadingBatches(session?.roundsJson, roundsPerArticle)
   const cadenceChanged = session?.readingBatchRounds !== undefined && session.readingBatchRounds !== roundsPerArticle
+  const planChanged = session?.engineVersion === 2
+    && session.readingBatchPlanVersion !== READING_BATCH_PLAN_VERSION
+  const cachedWordSequence = [...new Set(cached.flat())]
+  const plannedWordSequence = [...new Set(roundBatches.flat())]
+  const membershipChanged = session?.engineVersion === 2 && (
+    cachedWordSequence.length !== plannedWordSequence.length
+    || cachedWordSequence.some((wordId, index) => wordId !== plannedWordSequence[index])
+  )
+  if ((planChanged || membershipChanged) && roundBatches.length) {
+    const refreshedBatches = mergeReadingPlanWithRecovery(roundBatches, cached)
+    const activeRecovery = extractRecoveryReadingBatches(cached)
+      .find((row) => row.sourceIndex === (session.activeReadingBatchIndex ?? -1))
+    const migratedRecovery = activeRecovery
+      ? extractRecoveryReadingBatches(refreshedBatches).find((row) =>
+          row.wordIds.length === activeRecovery.wordIds.length
+          && row.wordIds.every((wordId, index) => wordId === activeRecovery.wordIds[index]))
+      : undefined
+    const activeUnitWordIds = unitWordIdsAt(session.unitsJson, session.activeUnitIndex ?? 0)
+    const migratedBatchIndex = migratedRecovery?.sourceIndex
+      ?? findReadingBatchForUnit(refreshedBatches, activeUnitWordIds)
+    return persistReadingBatches(sessionId, refreshedBatches, migratedBatchIndex)
+  }
   if (cadenceChanged && roundBatches.length) return persistReadingBatches(sessionId, roundBatches, session?.activeReadingBatchIndex)
   if (roundBatches.length > cached.length) return persistReadingBatches(sessionId, roundBatches, session?.activeReadingBatchIndex)
   if (cached.length) return cached
@@ -237,7 +263,18 @@ export async function appendOmittedReadingTargets(
   const batches = parseReadingBatches(session?.readingBatchesJson)
   if (!session || !batches.length || !omittedWordIds.length) return batches
   const nextIndex = batchIndex + 1
-  const combined = [...new Set([...omittedWordIds, ...(batches[nextIndex] ?? [])])]
+  const omitted = [...new Set(omittedWordIds)]
+  if (session.engineVersion === 2) {
+    const nextBatch = batches[nextIndex] ?? []
+    if (omitted.every((wordId) => nextBatch.includes(wordId))) return batches
+    const recoveryBatches: string[][] = []
+    for (let index = 0; index < omitted.length; index += MAX_READING_BATCH_SIZE) {
+      recoveryBatches.push(omitted.slice(index, index + MAX_READING_BATCH_SIZE))
+    }
+    batches.splice(nextIndex, 0, ...recoveryBatches)
+    return persistReadingBatches(sessionId, batches, batchIndex)
+  }
+  const combined = [...new Set([...omitted, ...(batches[nextIndex] ?? [])])]
   const chunks: string[][] = []
   for (let index = 0; index < combined.length; index += MAX_READING_BATCH_SIZE) {
     chunks.push(combined.slice(index, index + MAX_READING_BATCH_SIZE))
@@ -338,14 +375,17 @@ function buildArticlePrompt(
 ): string {
   const englishAnswers = usesEnglishDefinitions(level, definitionLanguage)
   const answerLanguage = englishAnswers ? 'concise English definitions' : 'concise Simplified Chinese meanings'
+  const suggestedLength = rows.length >= 8
+    ? 'roughly 120-180 English words'
+    : rows.length >= 5 ? 'roughly 90-140 English words' : 'roughly 70-110 English words'
   return `Create one coherent English reading passage at CEFR ${level}${topic ? ` about ${topic}` : ''} and all of its vocabulary questions in one streamed response.
-The passage MUST naturally contain every target headword exactly once or in a common grammatical inflection. Never silently omit a target and never replace it with a derivationally different word.
-Keep the passage readable in 45-90 seconds. If all targets do not fit one scene, use a short second scene in the same passage.
+The passage MUST naturally contain every target headword at least once, either as written or in a common grammatical inflection. Avoid unnecessary repetition. Never silently omit a target and never replace it with a derivationally different word.
+For this ${rows.length}-target batch, aim for ${suggestedLength} and 45-90 seconds of reading. Prefer one coherent scene; for a larger batch, use two short connected paragraphs instead of forcing unrelated words into one sentence.
 For each target that actually appears, select exactly one sourceSense from its allowedSenses and create one meaning question. All contextualMeaning and choices must use ${answerLanguage}.
 TARGETS: ${JSON.stringify(rows.map((row) => ({ wordId: row.wordId, headword: row.headword, allowedSenses: row.senses })))}
 Output newline-delimited JSON only, one complete object per line, in this order:
 {"type":"meta","title":"concise English title"}
-{"type":"paragraph","text":"one complete English paragraph"} (2-5 lines)
+{"type":"paragraph","text":"one complete English paragraph"} (emit one or two paragraph objects)
 {"type":"target","wordId":"exact target id","headword":"exact target headword","sourceSense":"exactly one allowed sense used in the passage","contextualMeaning":"meaning in the required answer language","choices":["exactly three distinct choices in the same required language, including contextualMeaning"],"explanation":"concise explanation tied to the passage"} (one line for every target that appears)
 {"type":"translation","text":"complete Simplified Chinese translation"}
 {"type":"done"}
@@ -864,7 +904,7 @@ async function generateReadingSessionImpl(options: {
   const sessionId = `reading:${options.dayKey}:${options.seed}:${options.batchIndex}`
   const existing = await db.readingSessions.get(sessionId)
   const inflections = await loadArticleInflectionIndex()
-  if ((existing?.status === 'ready' || existing?.status === 'completed') && !options.force && cachedSessionHasValidTargets(existing, options.wordIds)) {
+  if ((existing?.status === 'ready' || existing?.status === 'completed') && !options.force && readingSessionMatchesBatch(existing, options.wordIds)) {
     const cachedTargets = JSON.parse(existing.targetsJson) as ReadingTarget[]
     const orderedTargets = sortTargetsByPassageOrder(cachedTargets, cachedPassage(existing), inflections)
     const orderedWordIds = orderedTargets.map((target) => target.wordId)
@@ -1239,12 +1279,16 @@ export async function resumePendingArticlePreload(at = new Date()): Promise<void
   if (!session || session.status === 'completed') return
   const settings = await loadSettings()
   if (!settings.deepseekApiKey.trim()) return
-  const roundIndex = session.activeRoundIndex ?? 1
-  const range = readingBatchRangeForRound(
-    session.roundsJson,
-    roundIndex,
-    Math.max(1, settings.articleEveryRounds),
-  )
+  const range = session.engineVersion === 2
+    ? {
+        start: session.activeReadingBatchIndex ?? 0,
+        end: session.activeReadingBatchIndex ?? 0,
+      }
+    : readingBatchRangeForRound(
+        session.roundsJson,
+        session.activeRoundIndex ?? 1,
+        Math.max(1, settings.articleEveryRounds),
+      )
   await Promise.all(Array.from(
     { length: range.end - range.start + 1 },
     (_, index) => preGenerateDailyArticle(day, range.start + index),
