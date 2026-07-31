@@ -658,11 +658,22 @@ function drainJsonObjects(input: string): { objects: string[]; rest: string } {
   return { objects, rest: start >= 0 ? input.slice(start) : '' }
 }
 
-async function requestArticle(
+export function visibleDeepseekStreamContent(payload: unknown): string {
+  if (!payload || typeof payload !== 'object') return ''
+  const choices = (payload as { choices?: unknown }).choices
+  if (!Array.isArray(choices) || !choices[0] || typeof choices[0] !== 'object') return ''
+  const delta = (choices[0] as { delta?: unknown }).delta
+  if (!delta || typeof delta !== 'object') return ''
+  const content = (delta as { content?: unknown }).content
+  return typeof content === 'string' ? content : ''
+}
+
+export async function requestArticle(
   settings: AppSettings,
   prompt: string,
   onProgress?: (progress: StreamProgress) => void,
   externalSignal?: AbortSignal,
+  timing?: { stallMs?: number; totalMs?: number },
 ): Promise<{ title: string; passage: string; targets: ReadingTarget[]; translation: string }> {
   if (!settings.deepseekApiKey.trim()) throw readingError('请先在设置页填写 DeepSeek API Key', 'missing-key')
   if (externalSignal?.aborted) throw readingError('已取消文章生成', 'cancelled')
@@ -677,12 +688,12 @@ async function requestArticle(
     stallTimer = window.setTimeout(() => {
       timeoutMessage = receivedFirst ? '文章流已中断 20 秒，请重试' : '20 秒内未收到文章片段，请重试'
       controller.abort()
-    }, 20_000)
+    }, timing?.stallMs ?? 20_000)
   }
   const totalTimer = window.setTimeout(() => {
     timeoutMessage = '文章生成超过 75 秒，已自动停止'
     controller.abort()
-  }, 75_000)
+  }, timing?.totalMs ?? 75_000)
   resetStall()
   try {
     const response = await fetch(settings.deepseekBaseUrl, {
@@ -693,6 +704,7 @@ async function requestArticle(
         messages: [{ role: 'user', content: prompt }],
         stream: true,
         maxTokens: 6200,
+        thinking: false,
       })),
       signal: controller.signal,
     })
@@ -727,8 +739,6 @@ async function requestArticle(
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
-      receivedFirst = true
-      resetStall()
       const decoded = decoder.decode(value, { stream: true })
       rawResponse += decoded
       sseBuffer += decoded
@@ -738,15 +748,18 @@ async function requestArticle(
         if (!line.startsWith('data:')) continue
         const data = line.slice(5).trim()
         if (!data || data === '[DONE]') continue
-        const payload = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> }
-        consumeContent(payload.choices?.[0]?.delta?.content ?? '')
+        const content = visibleDeepseekStreamContent(JSON.parse(data))
+        if (content) {
+          receivedFirst = true
+          resetStall()
+          consumeContent(content)
+        }
       }
     }
     if (sseBuffer.trim().startsWith('data:')) {
       const data = sseBuffer.trim().slice(5).trim()
       if (data && data !== '[DONE]') {
-        const payload = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> }
-        consumeContent(payload.choices?.[0]?.delta?.content ?? '')
+        consumeContent(visibleDeepseekStreamContent(JSON.parse(data)))
       }
     }
     if (!paragraphs.length && rawResponse.trim().startsWith('{')) {

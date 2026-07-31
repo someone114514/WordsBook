@@ -2,7 +2,8 @@ import 'fake-indexeddb/auto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { db } from '../../db/database'
 import type { ReadingTarget, ReviewLog } from '../../types/models'
-import { appendOmittedReadingTargets, buildReadingTargetBatches, generateReadingSession, getOrCreateReadingBatches, groupReadingSegmentsByParagraph, listReadingHistory, readingBatchRangeForRound, readingSessionMatchesBatch, recordContextAttempt, resetReadingSessionAttempts, saveReadingProgress, sortTargetsByPassageOrder } from './readingService'
+import { loadSettings } from '../settings/settingsService'
+import { appendOmittedReadingTargets, buildReadingTargetBatches, generateReadingSession, getOrCreateReadingBatches, groupReadingSegmentsByParagraph, listReadingHistory, readingBatchRangeForRound, readingSessionMatchesBatch, recordContextAttempt, requestArticle, resetReadingSessionAttempts, saveReadingProgress, sortTargetsByPassageOrder, visibleDeepseekStreamContent } from './readingService'
 
 function log(wordId: string, rating: ReviewLog['rating'], wasNew = false): ReviewLog {
   return {
@@ -44,7 +45,10 @@ describe('reading target selection and context feedback', () => {
     await db.settings.put({ key: 'definitionLanguage', value: 'chinese-first' })
   })
 
-  afterEach(() => vi.unstubAllGlobals())
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
 
   it('includes every new/hard/again word and only 25% of good-only words', async () => {
     const logs = [log('new', 'good', true), log('hard', 'hard'), log('again', 'again')]
@@ -150,9 +154,122 @@ describe('reading target selection and context feedback', () => {
     expect(String(fetchMock.mock.calls[0]?.[1]?.body)).toContain('For this 1-target batch')
     expect(String(fetchMock.mock.calls[0]?.[1]?.body)).toContain('one or two paragraph objects')
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).response_format).toBeUndefined()
-    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({ thinking: { type: 'enabled' }, reasoning_effort: 'high' })
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({ thinking: { type: 'disabled' } })
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).temperature).toBeUndefined()
     expect((await db.readingSessions.get(session.sessionId))?.title).toBe('A Test')
+  })
+
+  it('does not treat hidden reasoning chunks as visible article progress', () => {
+    expect(visibleDeepseekStreamContent({
+      choices: [{ delta: { reasoning_content: 'still thinking' } }],
+    })).toBe('')
+    expect(visibleDeepseekStreamContent({
+      choices: [{ delta: { content: '{"type":"paragraph","text":"Visible."}' } }],
+    })).toContain('Visible.')
+  })
+
+  it('times out a live stream that only emits hidden reasoning', async () => {
+    await db.localSecrets.put({ key: 'deepseekApiKey', value: 'test-key' })
+    await db.settings.bulkPut([
+      { key: 'deepseekBaseUrl', value: 'https://example.test/chat' },
+      { key: 'deepseekModel', value: 'deepseek-v4-flash' },
+    ])
+    const settings = await loadSettings()
+    const encoder = new TextEncoder()
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      let readCount = 0
+      return {
+        ok: true,
+        body: {
+          getReader: () => ({
+            read: () => {
+              readCount += 1
+              if (readCount === 1) {
+                return Promise.resolve({
+                  done: false,
+                  value: encoder.encode(
+                    `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: 'still thinking' } }] })}\n\n`,
+                  ),
+                })
+              }
+              return new Promise((_resolve, reject) => {
+                init?.signal?.addEventListener('abort', () => {
+                  reject(new DOMException('aborted', 'AbortError'))
+                }, { once: true })
+              })
+            },
+          }),
+        },
+      } as Response
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(requestArticle(
+      settings,
+      'Create a short article.',
+      undefined,
+      undefined,
+      { stallMs: 20, totalMs: 100 },
+    )).rejects.toMatchObject({
+      code: 'timeout',
+      message: '20 秒内未收到文章片段，请重试',
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      thinking: { type: 'disabled' },
+    })
+  })
+
+  it('recognizes visible article content before reporting a later stream stall', async () => {
+    await db.localSecrets.put({ key: 'deepseekApiKey', value: 'test-key' })
+    await db.settings.bulkPut([
+      { key: 'deepseekBaseUrl', value: 'https://example.test/chat' },
+      { key: 'deepseekModel', value: 'deepseek-v4-flash' },
+    ])
+    const settings = await loadSettings()
+    const encoder = new TextEncoder()
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      let readCount = 0
+      return {
+        ok: true,
+        body: {
+          getReader: () => ({
+            read: () => {
+              readCount += 1
+              if (readCount === 1) {
+                return new Promise((resolve) => {
+                  window.setTimeout(() => resolve({
+                    done: false,
+                    value: encoder.encode(
+                      `data: ${JSON.stringify({ choices: [{ delta: { content: '{"type":"paragraph","text":"Visible article."}' } }] })}\n\n`,
+                    ),
+                  }), 40)
+                })
+              }
+              return new Promise((_resolve, reject) => {
+                init?.signal?.addEventListener('abort', () => {
+                  reject(new DOMException('aborted', 'AbortError'))
+                }, { once: true })
+              })
+            },
+          }),
+        },
+      } as Response
+    }))
+
+    const startedAt = Date.now()
+    await expect(requestArticle(
+      settings,
+      'Create a short article.',
+      undefined,
+      undefined,
+      { stallMs: 60, totalMs: 200 },
+    )).rejects.toMatchObject({
+      code: 'timeout',
+      message: '文章流已中断 20 秒，请重试',
+    })
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(85)
   })
 
   it('keeps distinct English definition choices that share common opening words', async () => {

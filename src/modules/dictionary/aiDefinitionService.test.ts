@@ -45,7 +45,7 @@ describe('AI dictionary enhancement', () => {
     })
     expect(draft.senses).toEqual(['noun: 一种专业术语'])
     expect(fetch).toHaveBeenCalledTimes(2)
-    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toMatchObject({ thinking: { type: 'enabled' }, reasoning_effort: 'high' })
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toMatchObject({ thinking: { type: 'disabled' } })
   })
 
   it('keeps useful senses when the optional example list is empty', async () => {
