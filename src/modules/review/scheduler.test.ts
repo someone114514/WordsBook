@@ -63,10 +63,22 @@ describe('review scheduler', () => {
       { wordId: 'legacy', reviewedAt: '2026-07-02T00:00:00.000Z', rating: 'forget' as const, cycleBefore: 1, cycleAfter: 0, nextReviewAtBefore: '2026-07-02T00:00:00.000Z', nextReviewAtAfter: '2026-07-02T00:00:00.000Z' },
     ]
     const migrated = migrateLegacyReviewState(legacy, logs, '2026-07-01T00:00:00.000Z')
-    expect(migrated.schedulerVersion).toBe('fsrs-5')
+    expect(migrated.schedulerVersion).toBe('fsrs-6')
     expect(migrated.reps).toBe(2)
     expect(migrateLegacyReviewState(migrated, logs, legacy.nextReviewAt)).toEqual(migrated)
     const next = scheduleFsrsReview(migrated, 'hard', new Date('2026-07-03T00:00:00.000Z'))
     expect(cardToReviewState('legacy', next.card, migrated).difficulty).toBeGreaterThan(0)
+  })
+
+  it('uses a stable card seed so preview and submission keep the same day interval', () => {
+    const state = {
+      wordId: 'stable-card', cycle: 0, nextReviewAt: '2026-07-13T08:00:00.000Z', successCount: 8,
+      lapseCount: 1, totalReviews: 9, schedulerVersion: 'fsrs-6' as const, fsrsState: 2 as const,
+      stability: 45, difficulty: 5.2, elapsedDays: 45, scheduledDays: 45, learningSteps: 0,
+      reps: 9, lapses: 1, lastReviewedAt: '2026-05-29T08:00:00.000Z',
+    }
+    const preview = previewFsrsReviews(state, new Date('2026-07-13T08:00:00.000Z'))
+    const applied = scheduleFsrsReview(state, 'good', new Date('2026-07-13T08:00:45.000Z'))
+    expect(applied.card.scheduled_days).toBe(preview.good.card.scheduled_days)
   })
 })

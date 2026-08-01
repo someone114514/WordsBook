@@ -24,6 +24,8 @@ export function snapshotDictionaryEntry(entry: DictionaryEntry): NonNullable<Wor
     senseRecordsJson: entry.senseRecordsJson,
     examplesJson: entry.examplesJson,
     usageJson: entry.usageJson,
+    synonymsJson: entry.synonymsJson,
+    antonymsJson: entry.antonymsJson,
     audioKey: entry.audioKey,
   }
 }
@@ -44,6 +46,8 @@ export function dictionaryEntryFromWordbook(item: WordbookItem): DictionaryEntry
     senseRecordsJson: snapshot?.senseRecordsJson,
     examplesJson: snapshot?.examplesJson ?? '[]',
     usageJson: snapshot?.usageJson ?? '[]',
+    synonymsJson: snapshot?.synonymsJson ?? '[]',
+    antonymsJson: snapshot?.antonymsJson ?? '[]',
     audioKey: snapshot?.audioKey,
   }
 }

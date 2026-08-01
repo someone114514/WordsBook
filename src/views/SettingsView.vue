@@ -19,7 +19,9 @@ import type { CloudSyncMode, SyncPreview, SyncResult } from '../modules/sync/syn
 import { getWordbookStats } from '../modules/wordbook/wordbookService'
 import {
   getFsrsPersonalizationStatus,
+  isFsrsTrainingMode,
   optimizeFsrsParameters,
+  type FsrsOptimizationProgress,
   type FsrsPersonalizationStatus,
 } from '../modules/review/fsrsPersonalizationService'
 
@@ -58,6 +60,8 @@ const fsrsBusy = ref(false)
 const fsrsProgress = ref('')
 const fsrsMessage = ref('')
 const fsrsMessageTone = ref<'success' | 'info' | 'error'>('info')
+const fsrsTrainingMode = isFsrsTrainingMode()
+const FSRS_TRAINING_PENDING_KEY = 'wordsbook:fsrs-training-pending'
 const aiKeyInput = ref<HTMLInputElement | null>(null)
 const aiBaseUrlInput = ref<HTMLInputElement | null>(null)
 const aiModelInput = ref<HTMLInputElement | null>(null)
@@ -105,8 +109,21 @@ const fsrsStatusText = computed(() => {
   if (!status.eligible) {
     return `${status.effectiveReviewCount}/${status.requiredReviewCount} 条有效每日首次评分`
   }
-  if (!status.runtimeAvailable) return '数据已足够；当前部署环境不支持本地优化器'
-  return '数据已足够，可以在本机训练并验证'
+  if (!fsrsTrainingMode) return '数据已足够；进入兼容训练模式后将在本机训练并验证'
+  if (!status.runtimeAvailable) return '训练环境尚未就绪，请查看下方诊断信息'
+  return '兼容训练环境已就绪，可以在本机训练并验证'
+})
+
+const fsrsRuntimeHint = computed(() => {
+  const status = fsrsStatus.value
+  if (!status || status.runtimeAvailable) return ''
+  return ({
+    'training-mode-required': '需要进入独立训练模式。',
+    'insecure-context': '当前页面不是安全连接，浏览器无法启用本地优化器。',
+    'shared-array-buffer-unavailable': '当前浏览器版本未开放训练所需的共享内存能力。',
+    'cross-origin-isolation-unavailable': '训练页面未获得浏览器隔离；请更新浏览器或重新进入训练模式。',
+    ready: '',
+  })[status.runtimeReason]
 })
 
 const installProgressText = computed(() => {
@@ -176,8 +193,17 @@ function initializeSettingsView(options: { force?: boolean } = {}): Promise<void
   return settingsRefreshPromise
 }
 
-onMounted(() => {
-  void initializeSettingsView({ force: true })
+onMounted(async () => {
+  await initializeSettingsView({ force: true })
+  if (
+    fsrsTrainingMode
+    && sessionStorage.getItem(FSRS_TRAINING_PENDING_KEY)
+    && fsrsStatus.value?.eligible
+    && fsrsStatus.value.runtimeAvailable
+  ) {
+    sessionStorage.removeItem(FSRS_TRAINING_PENDING_KEY)
+    await onOptimizeFsrs()
+  }
 })
 
 onActivated(() => {
@@ -194,24 +220,68 @@ async function refreshFsrsStatus() {
 
 async function onOptimizeFsrs() {
   if (fsrsBusy.value) return
+  if (!fsrsTrainingMode) {
+    const target = new URL(window.location.href)
+    target.searchParams.set('fsrs-training', '1')
+    sessionStorage.setItem(FSRS_TRAINING_PENDING_KEY, '1')
+    window.location.assign(target.toString())
+    return
+  }
+  if (!fsrsStatus.value?.runtimeAvailable) {
+    fsrsMessageTone.value = 'error'
+    fsrsMessage.value = fsrsRuntimeHint.value || '当前浏览器无法启用本地训练环境'
+    return
+  }
   fsrsBusy.value = true
   fsrsMessage.value = ''
   fsrsProgress.value = '正在准备训练集与留出集…'
   try {
-    const result = await optimizeFsrsParameters((current, total) => {
-      fsrsProgress.value = total > 0 ? `正在训练 ${current}/${total}` : '正在训练个性化参数…'
+    const result = await optimizeFsrsParameters((progress: FsrsOptimizationProgress) => {
+      const count = progress.total && progress.current !== undefined ? ` ${progress.current}/${progress.total}` : ''
+      fsrsProgress.value = ({
+        preparing: '正在准备训练集与留出集…',
+        training: `正在训练个性化参数${count}`,
+        validating: '正在验证候选参数…',
+        rebuilding: `正在分批重建长期记忆状态${count}`,
+        saving: '正在安全保存训练结果…',
+      })[progress.phase]
     })
     fsrsMessageTone.value = result.lastOutcome === 'active' ? 'success' : 'info'
     fsrsMessage.value = result.lastOutcome === 'active'
       ? '候选参数在留出集的 Log loss 与 RMSE 均优于默认参数，已启用并重算长期状态。'
       : '候选参数未同时优于默认参数，已安全保留当前调度参数。'
     await refreshFsrsStatus()
+    if (fsrsTrainingMode) window.setTimeout(leaveFsrsTrainingMode, 1200)
   } catch (error) {
     fsrsMessageTone.value = 'error'
     fsrsMessage.value = error instanceof Error ? error.message : 'FSRS 参数训练失败'
   } finally {
     fsrsProgress.value = ''
     fsrsBusy.value = false
+  }
+}
+
+function leaveFsrsTrainingMode() {
+  const target = new URL(window.location.href)
+  target.searchParams.delete('fsrs-training')
+  sessionStorage.removeItem(FSRS_TRAINING_PENDING_KEY)
+  window.location.replace(target.toString())
+}
+
+async function copyFsrsDiagnostics() {
+  if (!fsrsStatus.value) return
+  const payload = {
+    ...fsrsStatus.value.diagnostics,
+    effectiveReviewCount: fsrsStatus.value.effectiveReviewCount,
+    trainableItemCount: fsrsStatus.value.trainableItemCount,
+  }
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(payload, null, 2))
+    fsrsMessageTone.value = 'info'
+    fsrsMessage.value = '训练环境诊断已复制'
+  } catch {
+    fsrsMessageTone.value = 'error'
+    fsrsMessage.value = '无法自动复制，请检查浏览器的剪贴板权限'
   }
 }
 
@@ -635,9 +705,18 @@ async function onRunCloudSync(mode: CloudSyncMode) {
         </p>
       </div>
       <div v-if="fsrsBusy" class="sync-progress" role="status" aria-live="polite"><span class="sync-spinner" aria-hidden="true" /><span>{{ fsrsProgress || '正在训练与验证…' }}</span></div>
+      <div v-if="fsrsStatus?.eligible && (!fsrsStatus.runtimeAvailable || fsrsTrainingMode)" class="sync-panel fsrs-runtime-panel">
+        <strong>{{ fsrsStatus.runtimeAvailable ? '训练环境已就绪' : '训练环境诊断' }}</strong>
+        <p v-if="fsrsRuntimeHint" class="muted">{{ fsrsRuntimeHint }}</p>
+        <p class="muted">隔离：{{ fsrsStatus.diagnostics.crossOriginIsolated ? '已启用' : '未启用' }} · 共享内存：{{ fsrsStatus.diagnostics.sharedArrayBuffer ? '可用' : '不可用' }} · 页面接管：{{ fsrsStatus.diagnostics.serviceWorkerControlled ? '已完成' : '等待中' }}</p>
+        <div class="actions">
+          <button class="btn btn-quiet" type="button" @click="copyFsrsDiagnostics">复制诊断</button>
+          <button v-if="fsrsTrainingMode && !fsrsBusy" class="btn btn-quiet" type="button" @click="leaveFsrsTrainingMode">退出训练模式</button>
+        </div>
+      </div>
       <p v-if="fsrsMessage" :class="['sync-message', `sync-message-${fsrsMessageTone}`]" :role="fsrsMessageTone === 'error' ? 'alert' : 'status'">{{ fsrsMessage }}</p>
-      <button class="btn btn-primary" type="button" :disabled="fsrsBusy || !fsrsStatus?.eligible || !fsrsStatus.runtimeAvailable" @click="onOptimizeFsrs">
-        {{ fsrsStatus?.active ? '重新训练并验证' : '训练个性化参数' }}
+      <button class="btn btn-primary" type="button" :disabled="fsrsBusy || !fsrsStatus?.eligible || (fsrsTrainingMode && !fsrsStatus.runtimeAvailable)" @click="onOptimizeFsrs">
+        {{ !fsrsTrainingMode ? '进入兼容训练模式' : fsrsStatus?.active ? '重新训练并验证' : '训练个性化参数' }}
       </button>
       <p class="muted settings-hint">只使用每词每天第一次有效无提示评分；至少 400 条后才开放。候选参数必须在历史留出集的 Log loss 与 RMSE 均优于默认值才会启用，否则继续使用默认/当前参数。</p>
     </article>

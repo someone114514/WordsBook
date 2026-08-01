@@ -38,6 +38,8 @@ export function applyAiOverrideToEntryView(
       senseRecordsJson: undefined,
       examplesJson: override.aiExamplesJson,
       usageJson: override.aiUsageJson,
+      synonymsJson: override.aiSynonymsJson ?? '[]',
+      antonymsJson: override.aiAntonymsJson ?? '[]',
       aiEnhanced: true,
       aiEnhanceMode: 'replace',
       aiUpdatedAt: override.createdAt,
@@ -53,6 +55,14 @@ export function applyAiOverrideToEntryView(
       ...parseJsonArray(override.aiExamplesJson),
     ]),
     usageJson: toJsonArray([...parseJsonArray(entry.usageJson), ...parseJsonArray(override.aiUsageJson)]),
+    synonymsJson: toJsonArray([
+      ...parseJsonArray(entry.synonymsJson ?? '[]'),
+      ...parseJsonArray(override.aiSynonymsJson ?? '[]'),
+    ]),
+    antonymsJson: toJsonArray([
+      ...parseJsonArray(entry.antonymsJson ?? '[]'),
+      ...parseJsonArray(override.aiAntonymsJson ?? '[]'),
+    ]),
     aiEnhanced: true,
     aiEnhanceMode: 'add',
     aiUpdatedAt: override.createdAt,

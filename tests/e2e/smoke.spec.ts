@@ -63,6 +63,15 @@ test('home page loads', async ({ page }) => {
   await expect(page.getByRole('heading', { level: 1, name: '查词' })).toBeVisible()
 })
 
+test('opens the dedicated FSRS training page in an isolated browser context', async ({ page }) => {
+  await page.goto('/settings?fsrs-training=1')
+  await expect(page.getByRole('heading', { level: 1, name: '设置' })).toBeVisible()
+  expect(await page.evaluate(() => ({
+    isolated: globalThis.crossOriginIsolated,
+    sharedMemory: typeof SharedArrayBuffer !== 'undefined',
+  }))).toEqual({ isolated: true, sharedMemory: true })
+})
+
 test('installs the core dictionary and completes lookup to daily review', async ({ page }) => {
   test.setTimeout(60_000)
   await page.setViewportSize({ width: 390, height: 844 })
@@ -124,6 +133,7 @@ test('installs the core dictionary and completes lookup to daily review', async 
     await finishLocalPractice(page)
   }
   await expect(page.getByRole('button', { name: '查看今日学习' })).toBeVisible()
+  await expect(page.locator('.study-total strong')).toHaveText('0')
 })
 
 test('imports a list and completes the four-grade daily queue without an AI key', async ({ page }) => {
@@ -145,7 +155,7 @@ test('imports a list and completes the four-grade daily queue without an AI key'
   await expect(page.getByText('inventedword', { exact: true })).toBeVisible()
 
   await page.getByRole('link', { name: '学习' }).click()
-  await expect(page.getByText('今日单词')).toBeVisible()
+  await expect(page.getByText('剩余单词', { exact: true }).first()).toBeVisible()
   await page.getByRole('button', { name: '开始今日学习' }).click()
   await finishLocalReading(page)
   await expect(page.getByRole('heading', { level: 1, name: 'inventedword' })).toBeVisible()
@@ -156,8 +166,8 @@ test('imports a list and completes the four-grade daily queue without an AI key'
   await expect(page.getByText('配置 DeepSeek Key 后可用')).toBeVisible()
   await expect(page.locator('.review-memory-grid')).toHaveCount(0)
   await expect(page.locator('.review-grade-dock-four .review-action-btn')).toHaveCount(4)
-  await expect(page.getByRole('button', { name: '不知道，按 Again 评分' })).toBeVisible()
-  await expect(page.getByRole('button', { name: '模糊，按 Hard 评分' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '没想起，按 Again 评分' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '勉强想起，按 Hard 评分' })).toBeVisible()
   await expect(page.getByRole('button', { name: '记得，按 Good 评分' })).toBeVisible()
   await expect(page.getByRole('button', { name: '秒懂，按 Easy 评分' })).toBeVisible()
   await page.getByRole('button', { name: '记得，按 Good 评分' }).click()

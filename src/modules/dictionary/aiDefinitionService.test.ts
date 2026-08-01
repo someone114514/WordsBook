@@ -23,11 +23,15 @@ describe('AI dictionary enhancement', () => {
 
     const result = await enhanceOrCreateVocabularyEntry({
       wordId: 'w-imported', entryId: 'missing:quarklet', model: 'test',
-      draft: { headword: 'quarklet', posList: ['noun'], senses: ['noun: 一种专业术语'], examples: [], usage: [] },
+      draft: {
+        headword: 'quarklet', posList: ['noun'], senses: ['noun: 一种专业术语'], examples: [], usage: [],
+        synonyms: ['particle'], antonyms: [],
+      },
     })
 
     expect(result.created).toBe(true)
     expect((await db.wordbook.get('w-imported'))?.entryId).toBe('ai:quarklet')
+    expect((await db.wordbook.get('w-imported'))?.entrySnapshot?.synonymsJson).toBe('["particle"]')
     expect(await db.reviewState.get('w-imported')).toBeTruthy()
     expect((await db.dailyQueueItems.get('i1'))?.wordId).toBe('w-imported')
   })
@@ -56,6 +60,8 @@ describe('AI dictionary enhancement', () => {
         senses: ['adj: 有韧性的'],
         examples: [],
         usage: [],
+        synonyms: ['tough', 'durable'],
+        antonyms: ['fragile'],
         notes: [],
       }) } }],
     }))))
@@ -65,6 +71,8 @@ describe('AI dictionary enhancement', () => {
     })
     expect(draft.senses).toEqual(['adj: 有韧性的'])
     expect(draft.examples).toEqual([])
+    expect(draft.synonyms).toEqual(['tough', 'durable'])
+    expect(draft.antonyms).toEqual(['fragile'])
   })
 
   it('retries a valid JSON null payload as an invalid contract', async () => {

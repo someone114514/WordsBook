@@ -18,15 +18,14 @@ export default defineConfig(() => {
     server: {
       headers: {
         'Cross-Origin-Opener-Policy': 'same-origin',
-        // credentialless keeps third-party pronunciation media usable while
-        // still exposing SharedArrayBuffer to the local FSRS WASI worker.
-        'Cross-Origin-Embedder-Policy': 'credentialless',
+        // Development runs the dedicated optimizer-compatible mode globally.
+        'Cross-Origin-Embedder-Policy': 'require-corp',
       },
     },
     preview: {
       headers: {
         'Cross-Origin-Opener-Policy': 'same-origin',
-        'Cross-Origin-Embedder-Policy': 'credentialless',
+        'Cross-Origin-Embedder-Policy': 'require-corp',
       },
     },
     define: {
@@ -91,18 +90,19 @@ export default defineConfig(() => {
                      * portable FSRS WASI worker available after the PWA takes
                      * control, without registering a competing service worker.
                      */
-                    fetchDidSucceed: async ({ response }: { response: Response }) => {
+                    fetchDidSucceed: async ({ request, response }: { request: Request; response: Response }) => {
                       if (!response || response.type === 'opaque') return response
                       const headers = new Headers(response.headers)
+                      const trainingMode = new URL(request.url).searchParams.get('fsrs-training') === '1'
                       headers.set('Cross-Origin-Opener-Policy', 'same-origin')
-                      headers.set('Cross-Origin-Embedder-Policy', 'credentialless')
+                      headers.set('Cross-Origin-Embedder-Policy', trainingMode ? 'require-corp' : 'credentialless')
                       return new Response(response.body, {
                         status: response.status,
                         statusText: response.statusText,
                         headers,
                       })
                     },
-                    handlerDidError: async () => {
+                    handlerDidError: async ({ request }: { request: Request }) => {
                       const workerGlobal = globalThis as unknown as {
                         registration: { scope: string }
                         caches: { match(url: string, options: { ignoreSearch: boolean }): Promise<Response | undefined> }
@@ -112,8 +112,9 @@ export default defineConfig(() => {
                       const response = await workerGlobal.caches.match(fallbackUrl, { ignoreSearch: true })
                       if (!response) return Response.error()
                       const headers = new Headers(response.headers)
+                      const trainingMode = new URL(request.url).searchParams.get('fsrs-training') === '1'
                       headers.set('Cross-Origin-Opener-Policy', 'same-origin')
-                      headers.set('Cross-Origin-Embedder-Policy', 'credentialless')
+                      headers.set('Cross-Origin-Embedder-Policy', trainingMode ? 'require-corp' : 'credentialless')
                       return new Response(response.body, {
                         status: response.status,
                         statusText: response.statusText,

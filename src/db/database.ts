@@ -233,6 +233,8 @@ class WordsBookDB extends Dexie {
               sensesJson: entry.sensesJson,
               examplesJson: entry.examplesJson,
               usageJson: entry.usageJson,
+              synonymsJson: entry.synonymsJson,
+              antonymsJson: entry.antonymsJson,
               audioKey: entry.audioKey,
             } : word.entrySnapshot,
             integrityStatus: usable ? 'ready' as const : 'needs-repair' as const,

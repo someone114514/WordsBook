@@ -46,7 +46,7 @@ describe('wordbook relearning', () => {
     expect(await db.reviewState.get('w1')).toEqual(expect.objectContaining({
       reps: 0,
       totalReviews: 0,
-      schedulerVersion: 'fsrs-5',
+      schedulerVersion: 'fsrs-6',
     }))
     const freshItems = await db.dailyQueueItems.where('wordId').equals('w1').toArray()
     expect(freshItems).toHaveLength(1)

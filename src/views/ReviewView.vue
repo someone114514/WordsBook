@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import dayjs from 'dayjs'
-import { computed, onActivated, onBeforeUnmount, onMounted, ref } from 'vue'
+import { liveQuery } from 'dexie'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { db } from '../db/database'
 import type { DailyLearningSession, ReadingSession, StudyPlan } from '../types/models'
@@ -28,6 +29,9 @@ const queueChanges = ref<DailyQueueChangePreview | null>(null)
 const changeBusy = ref(false)
 const replanMessage = ref('')
 const readingHistory = ref<ReadingSession[]>([])
+let liveSubscription: { unsubscribe(): void } | undefined
+let viewActive = false
+let loadToken = 0
 const latestReading = computed(() => readingHistory.value[0] ?? null)
 const canResumeLatestReading = computed(() => latestReading.value?.dayKey === dayjs().format('YYYY-MM-DD'))
 const latestReadingWordCount = computed(() => latestReading.value?.targetWordIds.length
@@ -35,9 +39,6 @@ const latestReadingWordCount = computed(() => latestReading.value?.targetWordIds
   || 0)
 const latestReadingCountLabel = computed(() => latestReading.value?.errorCode ? '预习词' : '目标词')
 
-const total = computed(() => snapshot.value
-  ? snapshot.value.totalCards
-  : plan.value?.queueWordIds.length ?? 0)
 const sessionNewCount = computed(() => {
   const firstItems = new Map<string, boolean>()
   for (const item of snapshot.value?.items ?? []) {
@@ -49,6 +50,9 @@ const sessionNewCount = computed(() => {
 const remainingCards = computed(() => new Set(snapshot.value?.items
   .filter((item) => item.kind === 'card' && item.wordId && (item.status === 'pending' || item.status === 'active'))
   .map((item) => item.wordId)).size)
+const total = computed(() => snapshot.value
+  ? remainingCards.value
+  : plan.value?.queueWordIds.length ?? 0)
 const repeatCards = computed(() => snapshot.value?.items.filter((item) => item.kind === 'card'
   && (item.status === 'pending' || item.status === 'active')
   && (item.attemptNo > 1 || item.reason === 'context-retry')).length ?? 0)
@@ -79,16 +83,43 @@ const recoveryText = computed(() => {
   return `间隔 ${days} 天，预计用 ${plan.value?.recoveryDays ?? 1} 天恢复；今天先处理最需要回忆的词。`
 })
 
+function stopSessionSubscription() {
+  liveSubscription?.unsubscribe()
+  liveSubscription = undefined
+}
+
+function subscribeToSession(sessionId: string) {
+  stopSessionSubscription()
+  liveSubscription = liveQuery(() => loadDailyQueueSnapshot(sessionId)).subscribe({
+    next: (fresh) => {
+      if (session.value?.sessionId !== sessionId) return
+      const currentRevision = snapshot.value?.session.sessionRevision ?? 0
+      const incomingRevision = fresh.session.sessionRevision ?? 0
+      if (incomingRevision < currentRevision) return
+      snapshot.value = fresh
+      session.value = fresh.session
+    },
+    error: (reason) => {
+      error.value = reason instanceof Error ? reason.message : String(reason)
+    },
+  })
+}
+
 async function load() {
+  const token = ++loadToken
   loading.value = true
   error.value = ''
+  stopSessionSubscription()
   try {
     session.value = await db.dailyLearningSessions.where('dayKey').equals(dayjs().format('YYYY-MM-DD')).first() ?? null
+    if (token !== loadToken) return
     if (session.value) {
       plan.value = null
       readingHistory.value = await listReadingHistory()
+      if (token !== loadToken) return
     } else {
       const [planResult, history] = await Promise.all([getTodayPlanStaleWhileRevalidate(), listReadingHistory()])
+      if (token !== loadToken) return
       plan.value = planResult.plan
       readingHistory.value = history
       refreshingPlan.value = planResult.stale
@@ -99,12 +130,15 @@ async function load() {
         loadDailyQueueSnapshot(session.value.sessionId),
         previewDailyQueueChanges(session.value.sessionId),
       ])
+      if (token !== loadToken) return
       snapshot.value = loadedSnapshot
       queueChanges.value = changes
       if (!changes.addedWordIds.length && !changes.removedWordIds.length && changes.revision !== session.value.sourceRevision) {
         snapshot.value = await applyDailyQueueChanges(session.value.sessionId)
+        if (token !== loadToken) return
         session.value = snapshot.value.session
       }
+      if (viewActive && token === loadToken) subscribeToSession(session.value.sessionId)
     } else {
       snapshot.value = null
       queueChanges.value = null
@@ -112,8 +146,10 @@ async function load() {
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : String(reason)
   } finally {
-    loading.value = false
-    hasLoaded.value = true
+    if (token === loadToken) {
+      loading.value = false
+      hasLoaded.value = true
+    }
   }
 }
 
@@ -159,10 +195,21 @@ async function dismissChanges() {
 }
 
 onActivated(() => {
+  viewActive = true
   void load()
 })
+onDeactivated(() => {
+  viewActive = false
+  loadToken += 1
+  stopSessionSubscription()
+})
 onMounted(() => window.addEventListener(STUDY_PLAN_REFRESHED_EVENT, onPlanRefreshed))
-onBeforeUnmount(() => window.removeEventListener(STUDY_PLAN_REFRESHED_EVENT, onPlanRefreshed))
+onBeforeUnmount(() => {
+  viewActive = false
+  loadToken += 1
+  stopSessionSubscription()
+  window.removeEventListener(STUDY_PLAN_REFRESHED_EVENT, onPlanRefreshed)
+})
 </script>
 
 <template>
@@ -177,9 +224,9 @@ onBeforeUnmount(() => window.removeEventListener(STUDY_PLAN_REFRESHED_EVENT, onP
 
     <section class="panel study-hero" :aria-busy="loading">
       <div class="study-total">
-        <span v-if="loading" class="study-number-skeleton study-number-skeleton-total" aria-label="今日单词数量加载中" />
+        <span v-if="loading" class="study-number-skeleton study-number-skeleton-total" aria-label="剩余单词数量加载中" />
         <strong v-else>{{ total }}</strong>
-        <span>今日单词</span>
+        <span>剩余单词</span>
       </div>
       <div :class="['study-metrics', { 'study-metrics-two': !snapshot }]">
         <template v-if="!snapshot">
@@ -187,7 +234,7 @@ onBeforeUnmount(() => window.removeEventListener(STUDY_PLAN_REFRESHED_EVENT, onP
           <div><span v-if="loading" class="study-number-skeleton" /><strong v-else>{{ plan?.newCount ?? 0 }}</strong><span>新词</span></div>
         </template>
         <template v-else>
-          <div><span v-if="loading" class="study-number-skeleton" /><strong v-else>{{ remainingCards }}</strong><span>剩余单词</span></div>
+          <div><span v-if="loading" class="study-number-skeleton" /><strong v-else>{{ snapshot.totalCards }}</strong><span>今日总量</span></div>
           <div><span v-if="loading" class="study-number-skeleton" /><strong v-else>{{ sessionNewCount }}</strong><span>今日新词</span></div>
           <div><span v-if="loading" class="study-number-skeleton" /><strong v-else>{{ repeatCards }}</strong><span>待重现</span></div>
         </template>

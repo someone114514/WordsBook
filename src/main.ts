@@ -14,11 +14,14 @@ import { initializePersonalizedReviewScheduler } from './modules/review/fsrsPers
 
 const COI_RELOAD_KEY = 'wordsbook:coi-reload'
 let reloadingForIsolation = false
+const fsrsTrainingMode = new URL(window.location.href).searchParams.get('fsrs-training') === '1'
+if (!fsrsTrainingMode) sessionStorage.removeItem(COI_RELOAD_KEY)
 
 function reloadAfterServiceWorkerControl() {
   if (
     reloadingForIsolation
     || import.meta.env.DEV
+    || !fsrsTrainingMode
     || globalThis.crossOriginIsolated
     || sessionStorage.getItem(COI_RELOAD_KEY)
   ) return

@@ -710,6 +710,47 @@ input[type='number']:focus {
   overflow-wrap: anywhere;
 }
 
+.lexical-relations {
+  display: grid;
+  gap: .55rem;
+  margin-top: .25rem;
+  padding: .7rem .8rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+}
+
+.lexical-relation-row {
+  display: grid;
+  grid-template-columns: 3.5rem minmax(0, 1fr);
+  align-items: start;
+  gap: .5rem;
+}
+
+.lexical-relation-row > strong {
+  color: var(--text-subtle);
+  font-size: .82rem;
+  line-height: 1.75;
+}
+
+.lexical-relation-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .32rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.lexical-relation-list > li {
+  padding: .16rem .48rem;
+  border-radius: 999px;
+  background: #fff;
+  color: var(--text-main);
+  font-size: .82rem;
+  line-height: 1.45;
+}
+
 .meta-sep {
   margin-inline: 0.56rem;
   color: var(--text-quiet);
@@ -1682,8 +1723,10 @@ input[type='number']:focus {
 .review-card-content-revealed .review-play-inline { min-height: 40px; }
 .review-answer-inline { position: static; z-index: auto; right: auto; bottom: auto; left: auto; flex: 0 1 auto; width: min(36rem, 100%); min-height: 0; max-height: min(38dvh, 22rem); margin: .35rem 0 0; overflow-x: hidden; overscroll-behavior: contain; padding: .85rem 1rem; background: rgba(248,251,255,.9); box-shadow: none; text-align: left; }
 .review-examples { margin-top: .7rem; border-top: 1px solid var(--border); padding-top: .55rem; }
+.review-lexical-relations { margin-top: .7rem; }
 .review-examples summary { cursor: pointer; color: var(--primary); font-weight: 700; }
 .review-examples .example { margin: .55rem 0 0; line-height: 1.5; }
+.review-rating-guide { margin-top: .7rem !important; padding: .58rem .68rem; border-radius: .7rem; background: #fff8e8; color: #7c4a03; font-size: .8rem; line-height: 1.5; }
 .review-ai-definition { display: grid; gap: .35rem; margin-top: .75rem; padding-top: .65rem; border-top: 1px solid var(--border); }
 .review-ai-definition-btn { justify-self: start; min-height: 2.35rem; padding-inline: .7rem; font-size: .84rem; }
 .review-ai-definition-hint, .review-ai-definition-message { margin: 0; font-size: .78rem; }

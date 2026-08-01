@@ -4,7 +4,7 @@ import { resolve } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { db } from '../../db/database'
 import { importUserData } from '../settings/backupService'
-import { avoidAdjacentWordInitials, buildTodayPlan, buildTodayPlanCached, invalidateStudyPlanCache } from './reviewService'
+import { avoidAdjacentWordInitials, buildTodayPlan, buildTodayPlanCached, invalidateStudyPlanCache, previewCardIntervals } from './reviewService'
 
 const backupFixtureIt = existsSync(resolve('backup/wordsbook-backup-2026-06-08.json')) ? it : it.skip
 
@@ -21,7 +21,7 @@ describe('review data migration', () => {
     await buildTodayPlan({ at: new Date('2026-07-13T08:00:00.000Z'), dailyNewLimit: 20, dailyReviewLimit: 200 })
     const states = await db.reviewState.toArray()
     expect(states).toHaveLength(536)
-    expect(states.every((state) => state.schedulerVersion === 'fsrs-5')).toBe(true)
+    expect(states.every((state) => state.schedulerVersion === 'fsrs-6')).toBe(true)
     expect(await db.reviewLogs.count()).toBe(3372)
     expect(await db.settings.get('deepseekApiKey')).toBeUndefined()
     expect((await db.localSecrets.get('deepseekApiKey'))?.value).toBeUndefined()
@@ -47,7 +47,30 @@ describe('review data migration', () => {
     await buildTodayPlan({ at: new Date(now), dailyNewLimit: 10, dailyReviewLimit: 10 })
 
     expect(fullScan).not.toHaveBeenCalled()
-    expect((await db.reviewState.get('w1'))?.schedulerVersion).toBe('fsrs-5')
+    expect((await db.reviewState.get('w1'))?.schedulerVersion).toBe('fsrs-6')
+  })
+
+  it('separates long-term FSRS previews from same-day retry effects', async () => {
+    const reviewedAt = new Date('2026-07-20T08:00:00.000Z')
+    await db.reviewState.put({
+      wordId: 'w-preview', cycle: 0, nextReviewAt: reviewedAt.toISOString(), successCount: 4, lapseCount: 0,
+      totalReviews: 4, schedulerVersion: 'fsrs-6', fsrsState: 2, stability: 30, difficulty: 5,
+      elapsedDays: 30, scheduledDays: 30, learningSteps: 0, reps: 4, lapses: 0,
+      lastReviewedAt: '2026-06-20T08:00:00.000Z',
+    })
+
+    const initial = await previewCardIntervals('w-preview', reviewedAt, { attemptNo: 1 })
+    expect(initial.good.longTerm).toBeTruthy()
+    expect(initial.again.sameDay).toContain('1 分钟')
+    expect(initial.good.appliesToLongTerm).toBe(true)
+
+    const retry = await previewCardIntervals('w-preview', reviewedAt, {
+      attemptNo: 2,
+      canonicalGradeCommitted: true,
+    })
+    expect(retry.good.longTerm).toBeUndefined()
+    expect(retry.again.sameDay).toContain('15 分钟')
+    expect(retry.good.appliesToLongTerm).toBe(false)
   })
 
   const performanceIt = process.env.RUN_PERF_TESTS === '1' ? it : it.skip

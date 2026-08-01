@@ -16,7 +16,7 @@ import { createDeepseekRequest } from '../ai/deepseekRequest'
 import { GenerationRequestError, requestJsonCompletion, runSerializedGeneration } from '../ai/generationClient'
 import { parseSenseRecords } from './senseRecords'
 
-const AI_PROMPT_VERSION = 'v2-context-aware-bilingual'
+const AI_PROMPT_VERSION = 'v3-lexical-relations'
 const AI_PROVIDER: AiOverrideRecord['provider'] = 'deepseek'
 
 interface AiStructuredResponse {
@@ -26,6 +26,8 @@ interface AiStructuredResponse {
   senses?: string[]
   examples?: string[]
   usage?: string[]
+  synonyms?: string[]
+  antonyms?: string[]
   notes?: string[]
 }
 
@@ -55,6 +57,8 @@ Requirements:
   "senses": ["string"],
   "examples": ["string"],
   "usage": ["string"],
+  "synonyms": ["string"],
+  "antonyms": ["string"],
   "notes": ["string"]
 }
 Detailed constraints:
@@ -64,6 +68,9 @@ Detailed constraints:
 - senses: 3-8 items, each format "词性: 中文义项；英文短释义(可选)".
 - examples: 3-8 items, each format "EN: ... | ZH: ...".
 - usage: 3-8 items, include collocations / phrase patterns / grammar.
+- synonyms: 2-6 close English synonyms when appropriate; use an empty array if none are reliable.
+- antonyms: 1-4 English antonyms when appropriate; use an empty array if none are reliable.
+- Keep relation items concise. Add a short Simplified Chinese distinction after the word only when it prevents confusion.
 - notes: 1-4 compact items for register, confusion warning, or frequency.
 - Avoid unsafe content.
 `
@@ -90,6 +97,8 @@ function normalizeAiDraft(raw: unknown, fallbackWord: string): AiDictionaryEntry
   const senses = normalizeList(response.senses)
   const examples = normalizeList(response.examples)
   const usage = normalizeList(response.usage)
+  const synonyms = normalizeList(response.synonyms)
+  const antonyms = normalizeList(response.antonyms)
   const notes = normalizeList(response.notes)
 
   if (senses.length === 0) {
@@ -107,6 +116,8 @@ function normalizeAiDraft(raw: unknown, fallbackWord: string): AiDictionaryEntry
     senses,
     examples,
     usage,
+    synonyms,
+    antonyms,
     notes,
   }
 }
@@ -170,6 +181,8 @@ function draftToOverride(
     aiSensesJson: toJsonArray(dedupe(draft.senses)),
     aiExamplesJson: toJsonArray(dedupe(draft.examples)),
     aiUsageJson: toJsonArray(dedupe([...draft.usage, ...(draft.notes ?? [])])),
+    aiSynonymsJson: toJsonArray(dedupe(draft.synonyms)),
+    aiAntonymsJson: toJsonArray(dedupe(draft.antonyms)),
     provider: AI_PROVIDER,
     model,
     promptVersion: AI_PROMPT_VERSION,
@@ -365,6 +378,8 @@ export async function createOrReplaceAiEntry(options: {
     sensesJson: toJsonArray(dedupe(options.draft.senses)),
     examplesJson: toJsonArray(dedupe(options.draft.examples)),
     usageJson: toJsonArray(dedupe([...options.draft.usage, ...(options.draft.notes ?? [])])),
+    synonymsJson: toJsonArray(dedupe(options.draft.synonyms)),
+    antonymsJson: toJsonArray(dedupe(options.draft.antonyms)),
     aiEnhanced: true,
     aiEnhanceMode: 'replace',
     aiUpdatedAt: now,

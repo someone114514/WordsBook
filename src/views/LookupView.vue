@@ -639,6 +639,25 @@ function parseLines(raw: string): string[] {
                       <li v-for="sense in parseLines(entry.sensesJson)" :key="sense">{{ sense }}</li>
                     </ul>
 
+                    <div
+                      v-if="parseLines(entry.synonymsJson ?? '[]').length || parseLines(entry.antonymsJson ?? '[]').length"
+                      class="lexical-relations"
+                      aria-label="词义关系"
+                    >
+                      <div v-if="parseLines(entry.synonymsJson ?? '[]').length" class="lexical-relation-row">
+                        <strong>近义词</strong>
+                        <ul class="lexical-relation-list">
+                          <li v-for="synonym in parseLines(entry.synonymsJson ?? '[]')" :key="synonym">{{ synonym }}</li>
+                        </ul>
+                      </div>
+                      <div v-if="parseLines(entry.antonymsJson ?? '[]').length" class="lexical-relation-row">
+                        <strong>反义词</strong>
+                        <ul class="lexical-relation-list">
+                          <li v-for="antonym in parseLines(entry.antonymsJson ?? '[]')" :key="antonym">{{ antonym }}</li>
+                        </ul>
+                      </div>
+                    </div>
+
                     <p v-for="example in parseLines(entry.examplesJson)" :key="example" class="example">{{ example }}</p>
 
                     <div class="actions">

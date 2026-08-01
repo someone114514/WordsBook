@@ -36,8 +36,36 @@ export interface FsrsPersonalizationStatus {
   requiredReviewCount: number
   eligible: boolean
   runtimeAvailable: boolean
+  runtimeReason: FsrsRuntimeReason
+  diagnostics: FsrsRuntimeDiagnostics
   active: boolean
   record?: FsrsPersonalizationRecord
+}
+
+export type FsrsRuntimeReason =
+  | 'ready'
+  | 'training-mode-required'
+  | 'insecure-context'
+  | 'shared-array-buffer-unavailable'
+  | 'cross-origin-isolation-unavailable'
+
+export interface FsrsRuntimeDiagnostics {
+  available: boolean
+  reason: FsrsRuntimeReason
+  trainingMode: boolean
+  secureContext: boolean
+  crossOriginIsolated: boolean
+  sharedArrayBuffer: boolean
+  serviceWorkerControlled: boolean
+  userAgent: string
+}
+
+export type FsrsOptimizationPhase = 'preparing' | 'training' | 'validating' | 'rebuilding' | 'saving'
+
+export interface FsrsOptimizationProgress {
+  phase: FsrsOptimizationPhase
+  current?: number
+  total?: number
 }
 
 export interface FsrsReviewDefinition {
@@ -55,6 +83,11 @@ export interface FsrsOptimizationDataset {
   effectiveReviewCount: number
   items: FsrsItemDefinition[]
   canonicalLogsByWord: Map<string, ReviewLog[]>
+}
+
+export interface FsrsOptimizationStats {
+  effectiveReviewCount: number
+  trainableItemCount: number
 }
 
 function ratingNumber(log: ReviewLog): 1 | 2 | 3 | 4 {
@@ -126,6 +159,25 @@ export function buildFsrsOptimizationDataset(logs: ReviewLog[]): FsrsOptimizatio
   }
 }
 
+/** Lightweight eligibility count that avoids building cumulative review histories. */
+export function summarizeFsrsOptimizationLogs(logs: ReviewLog[]): FsrsOptimizationStats {
+  const seenDayByWord = new Set<string>()
+  const countByWord = new Map<string, number>()
+  for (const log of logs) {
+    if (log.source === 'context') continue
+    const studyDay = localDayKey(log.reviewedAt)
+    if (!studyDay) continue
+    const key = `${log.wordId}:${studyDay}`
+    if (seenDayByWord.has(key)) continue
+    seenDayByWord.add(key)
+    countByWord.set(log.wordId, (countByWord.get(log.wordId) ?? 0) + 1)
+  }
+  return {
+    effectiveReviewCount: seenDayByWord.size,
+    trainableItemCount: [...countByWord.values()].reduce((total, count) => total + Math.max(0, count - 1), 0),
+  }
+}
+
 function parseRecord(value: unknown): FsrsPersonalizationRecord | undefined {
   if (!value || typeof value !== 'object') return undefined
   const candidate = value as Partial<FsrsPersonalizationRecord>
@@ -142,10 +194,36 @@ async function loadRecord(): Promise<FsrsPersonalizationRecord | undefined> {
   return parseRecord((await db.settings.get(FSRS_PERSONALIZATION_KEY))?.value)
 }
 
-function optimizerRuntimeAvailable(): boolean {
-  return typeof SharedArrayBuffer !== 'undefined'
-    && typeof crossOriginIsolated !== 'undefined'
-    && crossOriginIsolated
+export function isFsrsTrainingMode(): boolean {
+  if (typeof window === 'undefined') return false
+  return new URL(window.location.href).searchParams.get('fsrs-training') === '1'
+}
+
+export function getFsrsRuntimeDiagnostics(): FsrsRuntimeDiagnostics {
+  const trainingMode = isFsrsTrainingMode()
+  const secureContext = typeof globalThis.isSecureContext === 'boolean' ? globalThis.isSecureContext : true
+  const isolated = typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated
+  const sharedArrayBuffer = typeof SharedArrayBuffer !== 'undefined'
+  const available = isolated && sharedArrayBuffer
+  const reason: FsrsRuntimeReason = available
+    ? 'ready'
+    : !trainingMode
+      ? 'training-mode-required'
+      : !secureContext
+        ? 'insecure-context'
+        : !sharedArrayBuffer
+          ? 'shared-array-buffer-unavailable'
+          : 'cross-origin-isolation-unavailable'
+  return {
+    available,
+    reason,
+    trainingMode,
+    secureContext,
+    crossOriginIsolated: isolated,
+    sharedArrayBuffer,
+    serviceWorkerControlled: typeof navigator !== 'undefined' && Boolean(navigator.serviceWorker?.controller),
+    userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : '',
+  }
 }
 
 export async function initializePersonalizedReviewScheduler(): Promise<boolean> {
@@ -155,14 +233,17 @@ export async function initializePersonalizedReviewScheduler(): Promise<boolean> 
 
 export async function getFsrsPersonalizationStatus(): Promise<FsrsPersonalizationStatus> {
   const [logs, record] = await Promise.all([db.reviewLogs.toArray(), loadRecord()])
-  const dataset = buildFsrsOptimizationDataset(logs)
+  const stats = summarizeFsrsOptimizationLogs(logs)
+  const diagnostics = getFsrsRuntimeDiagnostics()
   return {
-    effectiveReviewCount: dataset.effectiveReviewCount,
-    trainableItemCount: dataset.items.length,
+    effectiveReviewCount: stats.effectiveReviewCount,
+    trainableItemCount: stats.trainableItemCount,
     requiredReviewCount: FSRS_PERSONALIZATION_MIN_REVIEWS,
-    eligible: dataset.effectiveReviewCount >= FSRS_PERSONALIZATION_MIN_REVIEWS
-      && dataset.items.length >= MIN_HOLDOUT_ITEMS,
-    runtimeAvailable: optimizerRuntimeAvailable(),
+    eligible: stats.effectiveReviewCount >= FSRS_PERSONALIZATION_MIN_REVIEWS
+      && stats.trainableItemCount >= MIN_HOLDOUT_ITEMS,
+    runtimeAvailable: diagnostics.available,
+    runtimeReason: diagnostics.reason,
+    diagnostics,
     active: Boolean(record?.activeParameters),
     record,
   }
@@ -183,6 +264,7 @@ function candidateIsBetter(
 
 async function rebuildReviewStates(
   canonicalLogsByWord: Map<string, ReviewLog[]>,
+  onProgress?: (progress: FsrsOptimizationProgress) => void,
 ): Promise<ReviewState[]> {
   const wordIds = [...canonicalLogsByWord.keys()]
   const [states, words] = await Promise.all([
@@ -196,23 +278,30 @@ async function rebuildReviewStates(
     const logs = canonicalLogsByWord.get(wordId)
     if (!state || !word || !logs?.length) continue
     rebuilt.push(replayReviewState(state, logs, word.addedAt))
+    onProgress?.({ phase: 'rebuilding', current: index + 1, total: wordIds.length })
+    if ((index + 1) % 25 === 0) await new Promise((resolve) => globalThis.setTimeout(resolve, 0))
   }
   return rebuilt
 }
 
 export async function optimizeFsrsParameters(
-  onProgress?: (current: number, total: number) => void,
+  onProgress?: (progress: FsrsOptimizationProgress) => void,
 ): Promise<FsrsPersonalizationRecord> {
+  onProgress?.({ phase: 'preparing', current: 0, total: 1 })
   const logs = await db.reviewLogs.toArray()
   const dataset = buildFsrsOptimizationDataset(logs)
+  onProgress?.({ phase: 'preparing', current: 1, total: 1 })
   if (dataset.effectiveReviewCount < FSRS_PERSONALIZATION_MIN_REVIEWS) {
     throw new Error(`至少需要 ${FSRS_PERSONALIZATION_MIN_REVIEWS} 条有效的每日首次评分`)
   }
   if (dataset.items.length < MIN_HOLDOUT_ITEMS) {
     throw new Error('有效评分已足够，但跨日复习序列仍太少，暂时无法可靠训练')
   }
-  if (!optimizerRuntimeAvailable()) {
-    throw new Error('当前部署未启用浏览器隔离，无法安全运行本地 FSRS 优化器')
+  const diagnostics = getFsrsRuntimeDiagnostics()
+  if (!diagnostics.available) {
+    throw new Error(diagnostics.reason === 'training-mode-required'
+      ? '请先进入移动兼容训练模式'
+      : '训练环境未成功启用浏览器隔离，请更新浏览器或重新进入训练模式')
   }
 
   const [
@@ -237,12 +326,20 @@ export async function optimizeFsrsParameters(
   const splitIndex = Math.max(1, dataset.items.length - holdoutCount)
   const trainSet = makeItems(dataset.items.slice(0, splitIndex))
   const holdoutSet = makeItems(dataset.items.slice(splitIndex))
-  const parameters = await binding.computeParameters(trainSet, {
-    enableShortTerm: false,
-    numRelearningSteps: 0,
-    timeout: 120,
-    progress: (current, total) => onProgress?.(current, total),
-  })
+  let parameters: number[]
+  try {
+    parameters = await binding.computeParameters(trainSet, {
+      enableShortTerm: false,
+      numRelearningSteps: 0,
+      timeout: 120,
+      progress: (current, total) => onProgress?.({ phase: 'training', current, total }),
+    })
+  } catch (error) {
+    if (error instanceof Error && /timeout|timed out/i.test(error.message)) {
+      throw new Error('训练超过 120 秒，请关闭其他页面后重试；复习记录不会受影响')
+    }
+    throw error
+  }
   if (
     parameters.length !== DEFAULT_FSRS_PARAMETERS.length
     || parameters.some((parameter) => !Number.isFinite(parameter))
@@ -250,8 +347,10 @@ export async function optimizeFsrsParameters(
     throw new Error('FSRS 优化器返回了不兼容的参数')
   }
 
+  onProgress?.({ phase: 'validating', current: 0, total: 1 })
   const defaultMetrics = new binding.FSRSBinding(DEFAULT_FSRS_PARAMETERS).evaluate(holdoutSet)
   const candidateMetrics = new binding.FSRSBinding(parameters).evaluate(holdoutSet)
+  onProgress?.({ phase: 'validating', current: 1, total: 1 })
   if (!metricsAreFinite(defaultMetrics) || !metricsAreFinite(candidateMetrics)) {
     throw new Error('FSRS 留出集评估结果无效')
   }
@@ -271,7 +370,7 @@ export async function optimizeFsrsParameters(
   if (activate) {
     if (!configureReviewScheduler(parameters)) throw new Error('FSRS 参数无法应用到调度器')
     try {
-      rebuiltStates = await rebuildReviewStates(dataset.canonicalLogsByWord)
+      rebuiltStates = await rebuildReviewStates(dataset.canonicalLogsByWord, onProgress)
     } catch (error) {
       configureReviewScheduler(previous?.activeParameters)
       throw error
@@ -279,6 +378,7 @@ export async function optimizeFsrsParameters(
   }
 
   const now = record.trainedAt!
+  onProgress?.({ phase: 'saving', current: 0, total: 1 })
   try {
     await db.transaction('rw', [db.settings, db.reviewState, db.syncMeta, db.syncRecords, db.syncTombstones], async () => {
       await db.settings.put({ key: FSRS_PERSONALIZATION_KEY, value: record })
@@ -296,5 +396,6 @@ export async function optimizeFsrsParameters(
     invalidateStudyPlanCache()
     await markStudyDataChanged()
   }
+  onProgress?.({ phase: 'saving', current: 1, total: 1 })
   return record
 }

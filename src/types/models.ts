@@ -25,6 +25,9 @@ export interface DictionaryEntry {
   senseRecordsJson?: string
   examplesJson: string
   usageJson: string
+  /** Optional lexical relations, primarily supplied by AI-enhanced entries. */
+  synonymsJson?: string
+  antonymsJson?: string
   audioKey?: string
 }
 
@@ -47,7 +50,7 @@ export interface WordbookItem {
   /** Stable vocabulary identity. Dictionary package entry ids may change between installs. */
   headword?: string
   headwordLower?: string
-  entrySnapshot?: Pick<DictionaryEntry, 'headword' | 'headwordLower' | 'phonetic' | 'posList' | 'sensesJson' | 'senseRecordsJson' | 'examplesJson' | 'usageJson' | 'audioKey'>
+  entrySnapshot?: Pick<DictionaryEntry, 'headword' | 'headwordLower' | 'phonetic' | 'posList' | 'sensesJson' | 'senseRecordsJson' | 'examplesJson' | 'usageJson' | 'synonymsJson' | 'antonymsJson' | 'audioKey'>
   integrityStatus?: 'ready' | 'needs-repair'
   addedAt: string
   note: string
@@ -97,7 +100,8 @@ export interface ReviewState {
   sameDayRelearnAt?: string
   /** Per-skill evidence is deliberately separate from the FSRS memory state. */
   skillEvidenceJson?: string
-  schedulerVersion?: 'fsrs-5'
+  /** fsrs-5 is retained as a legacy marker; current runtime writes fsrs-6. */
+  schedulerVersion?: 'fsrs-5' | 'fsrs-6'
 }
 
 export interface ReviewLog {
@@ -498,6 +502,8 @@ export interface AiOverrideRecord {
   aiSensesJson: string
   aiExamplesJson: string
   aiUsageJson: string
+  aiSynonymsJson?: string
+  aiAntonymsJson?: string
   provider: 'deepseek'
   model: string
   promptVersion: string
@@ -518,6 +524,8 @@ export interface AiDictionaryEntryDraft {
   senses: string[]
   examples: string[]
   usage: string[]
+  synonyms: string[]
+  antonyms: string[]
   notes?: string[]
 }
 

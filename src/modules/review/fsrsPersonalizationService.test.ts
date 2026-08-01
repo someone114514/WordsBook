@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ReviewLog } from '../../types/models'
-import { buildFsrsOptimizationDataset } from './fsrsPersonalizationService'
+import { buildFsrsOptimizationDataset, summarizeFsrsOptimizationLogs } from './fsrsPersonalizationService'
 
 function log(
   wordId: string,
@@ -51,5 +51,19 @@ describe('FSRS personalization dataset', () => {
       { rating: 1, deltaT: 0 },
       { rating: 3, deltaT: 2 },
     ])
+  })
+
+  it('computes eligibility counts without constructing cumulative histories', () => {
+    const logs = [
+      log('w1', '2026-07-10T08:00:00.000Z', 'again'),
+      log('w1', '2026-07-10T09:00:00.000Z', 'good'),
+      log('w1', '2026-07-11T08:00:00.000Z', 'good'),
+      log('w2', '2026-07-11T08:00:00.000Z', 'easy'),
+      log('w2', '2026-07-12T08:00:00.000Z', 'easy', 'context'),
+    ]
+    expect(summarizeFsrsOptimizationLogs(logs)).toEqual({
+      effectiveReviewCount: 3,
+      trainableItemCount: 1,
+    })
   })
 })

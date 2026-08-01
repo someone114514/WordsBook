@@ -20,6 +20,7 @@ import {
   previewFsrsReviews,
   scheduleFsrsReview,
   getReviewRetrievability,
+  isFsrsReviewState,
 } from './scheduler'
 
 interface BuildPlanOptions {
@@ -207,7 +208,7 @@ async function getActiveStateRows(listIds?: string[], includeImportBacklog = fal
     await db.reviewState.bulkPut(missingStates)
   }
 
-  const legacyRows = activeRows.filter((row) => row.state.schedulerVersion !== 'fsrs-5')
+  const legacyRows = activeRows.filter((row) => !isFsrsReviewState(row.state))
   if (legacyRows.length > 0) {
     const legacyIds = new Set(legacyRows.map((row) => row.wordId))
     const logs = legacyIds.size ? await db.reviewLogs.where('wordId').anyOf([...legacyIds]).toArray() : []
@@ -599,7 +600,7 @@ export async function prepareCardGrade(
   const state = await db.reviewState.get(wordId)
   if (!state) throw new Error('Review state missing')
 
-  const normalizedState = state.schedulerVersion === 'fsrs-5'
+  const normalizedState = isFsrsReviewState(state)
     ? state
     : migrateLegacyReviewState(
         state,
@@ -647,18 +648,52 @@ export async function persistPreparedCardGrade(prepared: PreparedCardGrade): Pro
   await markPayloadChanged('reviewLogs', prepared.log, prepared.log.reviewedAt)
 }
 
+export interface CardIntervalPreview {
+  longTerm?: string
+  sameDay: string
+  appliesToLongTerm: boolean
+}
+
+export type CardIntervalPreviewMap = Record<ReviewRating, CardIntervalPreview>
+
+export interface CardIntervalPreviewContext {
+  canonicalGradeCommitted?: boolean
+  attemptNo?: number
+}
+
 export async function previewCardIntervals(
   wordId: string,
   reviewedAt = new Date(),
-): Promise<Record<ReviewRating, string>> {
+  context: CardIntervalPreviewContext = {},
+): Promise<CardIntervalPreviewMap> {
   const state = await db.reviewState.get(wordId)
   if (!state) throw new Error('Review state missing')
-  const preview = previewFsrsReviews(state, reviewedAt)
+  const appliesToLongTerm = context.canonicalGradeCommitted !== true
+  const preview = appliesToLongTerm ? previewFsrsReviews(state, reviewedAt) : undefined
+  const repeatedFailure = (context.attemptNo ?? 1) >= 2
+  const failedAgainText = repeatedFailure ? '今日约 15 分钟后微复习' : '今日至少 1 分钟后再测'
+  const failedHardText = repeatedFailure ? '今日约 15 分钟后微复习' : '今日至少 3 分钟后再测'
   return {
-    again: formatInterval(reviewedAt, preview.again.card.due),
-    hard: formatInterval(reviewedAt, preview.hard.card.due),
-    good: formatInterval(reviewedAt, preview.good.card.due),
-    easy: formatInterval(reviewedAt, preview.easy.card.due),
+    again: {
+      longTerm: preview ? formatInterval(reviewedAt, preview.again.card.due) : undefined,
+      sameDay: failedAgainText,
+      appliesToLongTerm,
+    },
+    hard: {
+      longTerm: preview ? formatInterval(reviewedAt, preview.hard.card.due) : undefined,
+      sameDay: failedHardText,
+      appliesToLongTerm,
+    },
+    good: {
+      longTerm: preview ? formatInterval(reviewedAt, preview.good.card.due) : undefined,
+      sameDay: '本轮通过',
+      appliesToLongTerm,
+    },
+    easy: {
+      longTerm: preview ? formatInterval(reviewedAt, preview.easy.card.due) : undefined,
+      sameDay: '本轮通过',
+      appliesToLongTerm,
+    },
   }
 }
 

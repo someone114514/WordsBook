@@ -1,6 +1,8 @@
 import {
   Rating,
   State,
+  GenSeedStrategyWithCardId,
+  StrategyMode,
   createEmptyCard,
   default_w,
   fsrs,
@@ -12,6 +14,7 @@ import type { ReviewLog, ReviewRating, ReviewState, SchedulerRating } from '../.
 
 export const REVIEW_INTERVAL_DAYS = [0, 1, 2, 4, 7, 15, 30, 60] as const
 export const DEFAULT_FSRS_PARAMETERS = [...default_w]
+type StableSchedulerCard = Card & { wordId: string }
 
 function createReviewScheduler(parameters = DEFAULT_FSRS_PARAMETERS) {
   return fsrs({
@@ -22,7 +25,7 @@ function createReviewScheduler(parameters = DEFAULT_FSRS_PARAMETERS) {
     enable_short_term: false,
     learning_steps: [],
     relearning_steps: [],
-  })
+  }).useStrategy(StrategyMode.SEED, GenSeedStrategyWithCardId('wordId'))
 }
 
 export let reviewScheduler = createReviewScheduler()
@@ -47,9 +50,13 @@ export function normalizeReviewRating(rating: ReviewLog['rating']): SchedulerRat
   return rating
 }
 
-export function reviewStateToCard(state: ReviewState): Card {
-  if (state.schedulerVersion !== 'fsrs-5') {
-    return createEmptyCard(state.nextReviewAt)
+export function isFsrsReviewState(state: ReviewState): boolean {
+  return state.schedulerVersion === 'fsrs-5' || state.schedulerVersion === 'fsrs-6'
+}
+
+export function reviewStateToCard(state: ReviewState): StableSchedulerCard {
+  if (!isFsrsReviewState(state)) {
+    return { ...createEmptyCard(state.nextReviewAt), wordId: state.wordId }
   }
 
   return {
@@ -63,6 +70,7 @@ export function reviewStateToCard(state: ReviewState): Card {
     lapses: state.lapses ?? state.lapseCount,
     state: (state.fsrsState ?? State.New) as State,
     last_review: state.lastReviewedAt ? new Date(state.lastReviewedAt) : undefined,
+    wordId: state.wordId,
   }
 }
 
@@ -90,7 +98,7 @@ export function cardToReviewState(
     suspendedAt: previous?.suspendedAt,
     sameDayRelearnAt: previous?.sameDayRelearnAt,
     skillEvidenceJson: previous?.skillEvidenceJson,
-    schedulerVersion: 'fsrs-5',
+    schedulerVersion: 'fsrs-6',
   }
 }
 
@@ -117,7 +125,7 @@ export function migrateLegacyReviewState(
   logs: ReviewLog[],
   createdAt: string,
 ): ReviewState {
-  if (state.schedulerVersion === 'fsrs-5') return state
+  if (isFsrsReviewState(state)) return state
   return replayReviewState(state, logs, createdAt)
 }
 
@@ -126,14 +134,17 @@ export function replayReviewState(
   logs: ReviewLog[],
   createdAt: string,
 ): ReviewState {
-  let card = createEmptyCard(createdAt)
+  let card: StableSchedulerCard = { ...createEmptyCard(createdAt), wordId: state.wordId }
   const ordered = [...logs].sort((a, b) => a.reviewedAt.localeCompare(b.reviewedAt))
   for (const log of ordered) {
-    card = reviewScheduler.next(
+    card = {
+      ...reviewScheduler.next(
       card,
       new Date(log.reviewedAt),
       RATING_TO_FSRS[normalizeReviewRating(log.rating)],
-    ).card
+      ).card,
+      wordId: state.wordId,
+    }
   }
   return cardToReviewState(state.wordId, card, state)
 }
@@ -146,7 +157,7 @@ export function formatInterval(from: Date, due: Date): string {
 }
 
 export function getReviewRetrievability(state: ReviewState, at = new Date()): number {
-  if ((state.reps ?? state.totalReviews) === 0 || state.schedulerVersion !== 'fsrs-5') return 0
+  if ((state.reps ?? state.totalReviews) === 0 || !isFsrsReviewState(state)) return 0
   try {
     const value = reviewScheduler.get_retrievability(reviewStateToCard(state), at, false)
     return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0

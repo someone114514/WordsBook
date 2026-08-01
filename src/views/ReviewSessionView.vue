@@ -15,7 +15,12 @@ import {
 } from '../modules/review/dailyQueueService'
 import { preGenerateDailyArticle, readingBatchRangeForRound } from '../modules/reading/readingService'
 import { scheduleRoundPractice } from '../modules/reading/practiceService'
-import { loadReviewCards, previewCardIntervals, setWordSuspended } from '../modules/review/reviewService'
+import {
+  loadReviewCards,
+  previewCardIntervals,
+  setWordSuspended,
+  type CardIntervalPreviewMap,
+} from '../modules/review/reviewService'
 import { enhanceOrCreateVocabularyEntry, fetchAiDictionaryDraft } from '../modules/dictionary/aiDefinitionService'
 import { removeWordFromWordbook } from '../modules/wordbook/wordbookService'
 import { playEntryPronunciation, stopActivePronunciation } from '../modules/dictionary/audioService'
@@ -52,11 +57,11 @@ const aiDefinitionBusy = ref(false)
 const aiDefinitionMessage = ref('')
 const aiDefinitionMessageTone = ref<'success' | 'error'>('success')
 const preloadingRound = ref<string | null>(null)
-const intervals = ref<Record<ReviewRating, string>>({
-  again: '明天',
-  hard: '明天',
-  good: '明天',
-  easy: '明天',
+const intervals = ref<CardIntervalPreviewMap>({
+  again: { sameDay: '今日至少 1 分钟后再测', appliesToLongTerm: true },
+  hard: { sameDay: '今日至少 3 分钟后再测', appliesToLongTerm: true },
+  good: { sameDay: '本轮通过', appliesToLongTerm: true },
+  easy: { sameDay: '本轮通过', appliesToLongTerm: true },
 })
 let cardShownAt = Date.now()
 let liveSubscription: { unsubscribe(): void } | undefined
@@ -126,7 +131,10 @@ async function loadCurrentCard() {
   try {
     const [cards, nextIntervals] = await Promise.all([
       loadReviewCards([item.wordId]),
-      previewCardIntervals(item.wordId),
+      previewCardIntervals(item.wordId, new Date(), {
+        canonicalGradeCommitted: item.canonicalGradeCommitted,
+        attemptNo: item.attemptNo,
+      }),
     ])
     // A newer load token or a different queue item always wins. Revision-only
     // changes do not invalidate the dictionary payload for the same card.
@@ -473,10 +481,29 @@ async function enterArticle() {
               </li>
             </ul>
             <ul v-else><li v-for="sense in parseJsonArray(card.entry.sensesJson)" :key="sense">{{ sense }}</li></ul>
+            <div
+              v-if="parseJsonArray(card.entry.synonymsJson ?? '[]').length || parseJsonArray(card.entry.antonymsJson ?? '[]').length"
+              class="lexical-relations review-lexical-relations"
+              aria-label="词义关系"
+            >
+              <div v-if="parseJsonArray(card.entry.synonymsJson ?? '[]').length" class="lexical-relation-row">
+                <strong>近义词</strong>
+                <ul class="lexical-relation-list">
+                  <li v-for="synonym in parseJsonArray(card.entry.synonymsJson ?? '[]')" :key="synonym">{{ synonym }}</li>
+                </ul>
+              </div>
+              <div v-if="parseJsonArray(card.entry.antonymsJson ?? '[]').length" class="lexical-relation-row">
+                <strong>反义词</strong>
+                <ul class="lexical-relation-list">
+                  <li v-for="antonym in parseJsonArray(card.entry.antonymsJson ?? '[]')" :key="antonym">{{ antonym }}</li>
+                </ul>
+              </div>
+            </div>
             <details v-if="parseJsonArray(card.entry.examplesJson).length" class="review-examples">
               <summary>例句</summary>
               <p v-for="example in parseJsonArray(card.entry.examplesJson)" :key="example" class="example">{{ example }}</p>
             </details>
+            <p class="review-rating-guide">“勉强想起”只用于看答案前确实想起、但很费力的情况；完全没想起请选择“没想起”。</p>
             <p v-if="card.note" class="example">{{ card.note }}</p>
             <div class="review-ai-definition">
               <button
@@ -520,10 +547,10 @@ async function enterArticle() {
     <footer v-if="card && currentItem && card.wordId === currentItem.wordId" :class="['review-grade-dock', revealMeaning ? 'review-grade-dock-four' : 'review-reveal-dock']">
       <button v-if="!revealMeaning" class="btn btn-primary review-reveal-action" :disabled="cardLoading || coachingVisible" type="button" @click="revealMeaning = true">显示释义</button>
       <template v-else>
-        <button class="btn btn-danger review-action-btn" :disabled="grading || aiDefinitionBusy || cardLoading || coachingVisible" type="button" aria-label="不知道，按 Again 评分" @click="onGrade('again')">不知道 <small>{{ intervals.again }}</small><span class="review-grade-hint">至少 1 分钟后再测</span></button>
-        <button class="btn review-action-btn review-hard" :disabled="grading || aiDefinitionBusy || cardLoading || coachingVisible" type="button" aria-label="模糊，按 Hard 评分" @click="onGrade('hard')">模糊 <small>{{ intervals.hard }}</small><span class="review-grade-hint">至少 3 分钟后再测</span></button>
-        <button class="btn btn-primary review-action-btn" :disabled="grading || aiDefinitionBusy || cardLoading || coachingVisible" type="button" aria-label="记得，按 Good 评分" @click="onGrade('good')">记得 <small>{{ intervals.good }}</small><span class="review-grade-hint">本轮通过</span></button>
-        <button class="btn review-action-btn review-easy" :disabled="grading || aiDefinitionBusy || cardLoading || coachingVisible" type="button" aria-label="秒懂，按 Easy 评分" @click="onGrade('easy')">秒懂 <small>{{ intervals.easy }}</small><span class="review-grade-hint">本轮通过</span></button>
+        <button class="btn btn-danger review-action-btn" :disabled="grading || aiDefinitionBusy || cardLoading || coachingVisible" type="button" aria-label="没想起，按 Again 评分" @click="onGrade('again')">没想起 <small v-if="intervals.again.longTerm">长期 {{ intervals.again.longTerm }}</small><span class="review-grade-hint">{{ intervals.again.sameDay }}</span></button>
+        <button class="btn review-action-btn review-hard" :disabled="grading || aiDefinitionBusy || cardLoading || coachingVisible" type="button" aria-label="勉强想起，按 Hard 评分" @click="onGrade('hard')">勉强想起 <small v-if="intervals.hard.longTerm">长期 {{ intervals.hard.longTerm }}</small><span class="review-grade-hint">{{ intervals.hard.sameDay }}</span></button>
+        <button class="btn btn-primary review-action-btn" :disabled="grading || aiDefinitionBusy || cardLoading || coachingVisible" type="button" aria-label="记得，按 Good 评分" @click="onGrade('good')">记得 <small v-if="intervals.good.longTerm">长期 {{ intervals.good.longTerm }}</small><span class="review-grade-hint">{{ intervals.good.sameDay }}</span></button>
+        <button class="btn review-action-btn review-easy" :disabled="grading || aiDefinitionBusy || cardLoading || coachingVisible" type="button" aria-label="秒懂，按 Easy 评分" @click="onGrade('easy')">秒懂 <small v-if="intervals.easy.longTerm">长期 {{ intervals.easy.longTerm }}</small><span class="review-grade-hint">{{ intervals.easy.sameDay }}</span></button>
       </template>
     </footer>
 
