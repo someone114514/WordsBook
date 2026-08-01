@@ -224,7 +224,7 @@ onBeforeUnmount(() => {
 
     <section class="panel study-hero" :aria-busy="loading">
       <div class="study-total">
-        <span v-if="loading" class="study-number-skeleton study-number-skeleton-total" aria-label="剩余单词数量加载中" />
+        <span v-if="loading" class="study-number-skeleton study-number-skeleton-total" role="status" aria-label="剩余单词数量加载中" />
         <strong v-else>{{ total }}</strong>
         <span>剩余单词</span>
       </div>

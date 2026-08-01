@@ -1,6 +1,7 @@
 ﻿<script setup lang="ts">
 import { computed, onActivated, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
+import { BookOpen, BrainCircuit, ChevronDown, Cloud, DatabaseBackup, Sparkles } from 'lucide-vue-next'
 import { useDictionaryStore } from '../modules/dictionary/dictionaryStore'
 import { exportUserData, importUserData } from '../modules/settings/backupService'
 import { useSettingsStore } from '../modules/settings/settingsStore'
@@ -587,7 +588,13 @@ async function onRunCloudSync(mode: CloudSyncMode) {
       <p v-if="message" class="success">{{ message }}</p>
     </Transition>
 
-    <article class="result-section">
+    <details class="settings-group" open>
+      <summary class="settings-group-summary">
+        <span class="settings-group-title"><span class="settings-group-icon"><BookOpen :size="20" aria-hidden="true" /></span><span><strong>词典与学习</strong><small>离线词典、发音与每日目标</small></span></span>
+        <ChevronDown class="settings-group-chevron" :size="20" aria-hidden="true" />
+      </summary>
+      <div class="settings-group-content">
+    <article class="result-section settings-card">
       <h2>词典</h2>
       <p v-if="installedMeta" class="muted">
         当前版本 {{ installedMeta.version }}，词条 {{ installedMeta.entryCount }}
@@ -607,7 +614,7 @@ async function onRunCloudSync(mode: CloudSyncMode) {
       </div>
     </article>
 
-    <article class="result-section">
+    <article class="result-section settings-card">
       <h2>背诵设置</h2>
       <label class="setting-row">
         <span>自动播放发音</span>
@@ -685,8 +692,16 @@ async function onRunCloudSync(mode: CloudSyncMode) {
       </label>
       <p class="muted settings-hint">每批最多加入 5 个新词。设为 0 可关闭语境练习；文章与卡片按批循环。</p>
     </article>
+      </div>
+    </details>
 
-    <article class="result-section">
+    <details class="settings-group">
+      <summary class="settings-group-summary">
+        <span class="settings-group-title"><span class="settings-group-icon"><BrainCircuit :size="20" aria-hidden="true" /></span><span><strong>FSRS 个性化</strong><small>长期记忆模型与训练状态</small></span></span>
+        <ChevronDown class="settings-group-chevron" :size="20" aria-hidden="true" />
+      </summary>
+      <div class="settings-group-content">
+    <article class="result-section settings-card">
       <div class="sync-heading">
         <div><p class="eyebrow">长期记忆模型</p><h2>FSRS 个性化</h2></div>
         <span :class="['sync-status-badge', { connected: fsrsStatus?.active, loading: fsrsBusy }]">{{ fsrsBusy ? '训练中' : fsrsStatus?.active ? '已启用' : '默认参数' }}</span>
@@ -720,8 +735,16 @@ async function onRunCloudSync(mode: CloudSyncMode) {
       </button>
       <p class="muted settings-hint">只使用每词每天第一次有效无提示评分；至少 400 条后才开放。候选参数必须在历史留出集的 Log loss 与 RMSE 均优于默认值才会启用，否则继续使用默认/当前参数。</p>
     </article>
+      </div>
+    </details>
 
-    <article class="result-section">
+    <details class="settings-group">
+      <summary class="settings-group-summary">
+        <span class="settings-group-title"><span class="settings-group-icon"><Sparkles :size="20" aria-hidden="true" /></span><span><strong>AI 与语境</strong><small>DeepSeek、释义语言与文章难度</small></span></span>
+        <ChevronDown class="settings-group-chevron" :size="20" aria-hidden="true" />
+      </summary>
+      <div class="settings-group-content">
+    <article class="result-section settings-card">
       <h2>AI 词典增强（Deepseek）</h2>
       <label class="setting-stack">
         <span><strong>API Key</strong><small>默认仅保存在当前设备</small></span>
@@ -789,8 +812,16 @@ async function onRunCloudSync(mode: CloudSyncMode) {
       <p v-if="settings.syncDeepseekApiKey" class="warning-note">Key 会以明文保存到独立的 Supabase 表。RLS 可阻止其他普通用户访问，但项目数据库管理员和高权限凭据仍可读取。</p>
       <p class="muted">Key 不会进入普通同步记录、备份、文章会话或日志。AI 同时用于词典增强和今日语境文章。</p>
     </article>
+      </div>
+    </details>
 
-    <article class="result-section">
+    <details class="settings-group">
+      <summary class="settings-group-summary">
+        <span class="settings-group-title"><span class="settings-group-icon"><Cloud :size="20" aria-hidden="true" /></span><span><strong>同步与安全</strong><small>账号、云端同步与敏感数据</small></span></span>
+        <ChevronDown class="settings-group-chevron" :size="20" aria-hidden="true" />
+      </summary>
+      <div class="settings-group-content">
+    <article class="result-section settings-card">
       <div class="sync-heading"><div><p class="eyebrow">多设备数据</p><h2>云同步</h2></div><span :class="['sync-status-badge', { connected: cloudAuth.signedIn, loading: cloudStateLoading }]">{{ cloudStateLoading ? '检查中' : cloudAuth.signedIn ? '已连接' : cloudAuth.configured ? '未登录' : '未配置' }}</span></div>
       <p class="muted">{{ cloudStatusText }}<template v-if="cloudLastSyncAt"> · 上次同步 {{ cloudLastSyncAt }}</template></p>
 
@@ -868,8 +899,16 @@ async function onRunCloudSync(mode: CloudSyncMode) {
         <button class="btn btn-quiet sync-signout" :disabled="cloudBusy" @click="onCloudSignOut">退出云同步</button>
       </div>
     </article>
+      </div>
+    </details>
 
-    <article class="result-section">
+    <details class="settings-group">
+      <summary class="settings-group-summary">
+        <span class="settings-group-title"><span class="settings-group-icon"><DatabaseBackup :size="20" aria-hidden="true" /></span><span><strong>数据与关于</strong><small>备份、恢复与版本信息</small></span></span>
+        <ChevronDown class="settings-group-chevron" :size="20" aria-hidden="true" />
+      </summary>
+      <div class="settings-group-content">
+    <article class="result-section settings-card">
       <h2>数据与备份</h2>
       <p class="muted">单词总数：{{ wordbookStats.total }}，活跃：{{ wordbookStats.active }}</p>
       <div class="actions">
@@ -884,5 +923,7 @@ async function onRunCloudSync(mode: CloudSyncMode) {
     <footer class="settings-version muted" aria-label="应用版本">
       WordsBook Beta · v{{ appVersion }} · 更新于 {{ appUpdatedAt }}
     </footer>
+      </div>
+    </details>
   </section>
 </template>

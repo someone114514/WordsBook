@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onActivated, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ChevronLeft } from 'lucide-vue-next'
 import { addWordToStudyList, deleteStudyList, listStudyLists, listStudyListWords, removeWordFromStudyList, setStudyListWordsLearningEnabled, updateStudyList } from '../modules/wordbook/studyListService'
 import { importWordList, previewWordList, WORD_LIST_JSON_EXAMPLE } from '../modules/wordbook/wordListImportService'
 
@@ -35,7 +36,7 @@ onActivated(() => void load())
 
 <template>
   <main v-if="current" class="page-shell list-detail">
-    <header class="detail-header"><RouterLink class="btn" to="/lists">返回词表</RouterLink><div><h1>{{ current.name }}</h1><p>{{ current.wordCount }} 个单词 · 已激活 {{ current.activeWordCount }} 个 · {{ current.studyEnabled ? '词表参与每日学习' : '词表已暂停' }}</p></div></header>
+    <header class="detail-header"><RouterLink class="btn" to="/lists"><ChevronLeft :size="19" aria-hidden="true" />返回词表</RouterLink><div><h1>{{ current.name }}</h1><p>{{ current.wordCount }} 个单词 · 已激活 {{ current.activeWordCount }} 个 · {{ current.studyEnabled ? '词表参与每日学习' : '词表已暂停' }}</p></div></header>
     <nav class="detail-tabs" aria-label="词表详情"><button :class="{ active: tab === 'words' }" @click="tab='words'">单词</button><button :class="{ active: tab === 'import' }" @click="tab='import'">导入</button><button :class="{ active: tab === 'settings' }" @click="tab='settings'">设置</button></nav>
     <p v-if="message" class="success" role="status">{{ message }}</p>
     <section v-if="tab === 'words'" class="panel">

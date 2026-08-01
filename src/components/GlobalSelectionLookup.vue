@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { X } from 'lucide-vue-next'
 import type { DictionaryEntry, StudyList } from '../types/models'
 import { lookupWord } from '../modules/dictionary/dictionaryService'
 import { playEntryPronunciation } from '../modules/dictionary/audioService'
@@ -240,7 +241,7 @@ onBeforeUnmount(() => {
         <strong>{{ selectedText }}</strong>
         <span v-if="loading" class="muted">正在查词…</span>
         <span v-else class="muted">{{ summary }}</span>
-        <button class="selection-close" type="button" aria-label="关闭选词查词" @click="clearSelection()">×</button>
+        <button class="selection-close" type="button" aria-label="关闭选词查词" @click="clearSelection()"><X :size="19" aria-hidden="true" /></button>
       </div>
       <div v-if="choosingList" class="selection-list-picker">
         <select v-model="selectedListId" aria-label="选择学习词表">

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onActivated, ref } from 'vue'
+import { Plus } from 'lucide-vue-next'
 import { createStudyList, listStudyLists } from '../modules/wordbook/studyListService'
 
 type ListRow = Awaited<ReturnType<typeof listStudyLists>>[number]
@@ -43,7 +44,7 @@ onActivated(() => void load())
       <form class="inline-create" @submit.prevent="create">
         <label class="sr-only" for="new-list-name">词表名称</label>
         <input id="new-list-name" v-model="name" class="inline-input" autocomplete="off" placeholder="输入词表名称" />
-        <button class="btn btn-primary" :disabled="busy || !name.trim()" type="submit">{{ busy ? '创建中…' : '创建' }}</button>
+        <button class="btn btn-primary" :disabled="busy || !name.trim()" type="submit"><Plus :size="19" aria-hidden="true" />{{ busy ? '创建中…' : '创建' }}</button>
       </form>
       <p v-if="error" class="error" role="alert">创建失败：{{ error }}</p>
       <p v-if="message" class="success" role="status">{{ message }}</p>

@@ -25,11 +25,12 @@ async function finishLearningFlow(page: Page): Promise<void> {
   for (let step = 0; step < 30; step += 1) {
     const completed = page.getByRole('button', { name: '查看今日学习' })
     const localReading = page.getByRole('button', { name: '我已读完，继续学习' })
+    const continueReading = page.getByRole('button', { name: '继续学习', exact: true })
     const localPractice = page.locator('.context-choice-list')
     const reveal = page.getByRole('button', { name: '显示释义' })
     const enterArticle = page.getByRole('button', { name: '进入今日文章' })
     const returnHome = page.getByRole('button', { name: '返回学习首页' })
-    await expect(completed.or(localReading).or(localPractice).or(reveal).or(enterArticle).or(returnHome))
+    await expect(completed.or(localReading).or(continueReading).or(localPractice).or(reveal).or(enterArticle).or(returnHome))
       .toBeVisible({ timeout: 15_000 })
     if (await completed.isVisible()) return
     if (await enterArticle.isVisible()) {
@@ -44,6 +45,11 @@ async function finishLearningFlow(page: Page): Promise<void> {
     }
     if (await localReading.isVisible()) {
       await finishLocalReading(page)
+      continue
+    }
+    if (await continueReading.isVisible()) {
+      await continueReading.click({ force: true, timeout: 2_000 }).catch(() => undefined)
+      await page.waitForTimeout(100)
       continue
     }
     if (await localPractice.isVisible()) {

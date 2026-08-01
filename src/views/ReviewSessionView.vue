@@ -2,6 +2,7 @@
 import { liveQuery } from 'dexie'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { Ellipsis, Volume2, X } from 'lucide-vue-next'
 import type { DailyQueueSnapshot } from '../modules/review/dailyQueueService'
 import type { ReviewCard, ReviewRating } from '../types/models'
 import {
@@ -27,6 +28,7 @@ import { playEntryPronunciation, stopActivePronunciation } from '../modules/dict
 import { loadSettings } from '../modules/settings/settingsService'
 import { parseJsonArray } from '../utils/json'
 import { definitionLines } from '../modules/dictionary/senseRecords'
+import AppActionSheet from '../components/AppActionSheet.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -439,7 +441,7 @@ async function enterArticle() {
 <template>
   <section class="immersive-stage daily-queue-stage">
     <header class="immersive-header">
-      <button class="btn" type="button" @click="router.push('/review')">退出</button>
+      <button class="btn" type="button" @click="router.push('/review')"><X :size="18" aria-hidden="true" />退出</button>
       <div class="immersive-progress"><span>今日学习 · {{ roundLabel }}</span><strong>{{ queueLabel }}</strong></div>
       <span class="progress-chip">{{ progress }}%</span>
     </header>
@@ -458,13 +460,13 @@ async function enterArticle() {
         <div class="review-card-topline">
           <span class="immersive-caption">{{ reasonLabel }}</span>
           <span class="review-memory-confidence">{{ memoryStateLabel }}</span>
-          <button class="review-delete-mini" :disabled="actionBusy" type="button" aria-haspopup="dialog" @click="showWordMenu = true">移除</button>
+          <button class="review-delete-mini" :disabled="actionBusy" type="button" aria-haspopup="dialog" @click="showWordMenu = true"><Ellipsis :size="17" aria-hidden="true" />移除</button>
         </div>
         <div :class="['review-card-content', 'review-card-content-center', { 'review-card-content-revealed': revealMeaning }]">
           <div class="review-word-stack">
             <h1 class="review-word">{{ card.entry.headword }}</h1>
             <p class="review-phonetic muted">{{ card.entry.phonetic || '暂无音标' }}</p>
-            <button class="btn review-play-inline" type="button" @click="play">播放发音</button>
+            <button class="btn review-play-inline" type="button" @click="play"><Volume2 :size="18" aria-hidden="true" />播放发音</button>
           </div>
           <aside v-if="revealMeaning" class="review-answer-sheet review-answer-inline" aria-live="polite">
             <p class="muted">{{ card.entry.posList.join(' / ') || '释义' }}</p>
@@ -554,8 +556,8 @@ async function enterArticle() {
       </template>
     </footer>
 
-    <div v-if="coachingVisible && coachingCard" class="sheet-backdrop" role="presentation">
-      <section class="bottom-action-sheet review-coaching-sheet" role="dialog" aria-modal="true" aria-label="单词讲解">
+    <AppActionSheet :open="coachingVisible && Boolean(coachingCard)" aria-label="单词讲解" :dismissible="false">
+      <template v-if="coachingCard">
         <div>
           <p class="eyebrow">先讲解，再微复习</p>
           <h2>{{ coachingCard.entry.headword }}</h2>
@@ -576,26 +578,22 @@ async function enterArticle() {
           <button class="btn" type="button" @click="playEntryPronunciation(coachingCard.entry, { rate: speechRate, ttsEngine })">再听一次</button>
           <button class="btn btn-primary" type="button" @click="coachingVisible = false; coachingCard = null">我已看懂，继续</button>
         </div>
-      </section>
-    </div>
+      </template>
+    </AppActionSheet>
 
-    <div v-if="showWordMenu" class="sheet-backdrop" role="presentation" @click.self="showWordMenu = false">
-      <section class="bottom-action-sheet" role="dialog" aria-modal="true" aria-label="单词操作">
+    <AppActionSheet :open="showWordMenu" title="单词操作" @close="showWordMenu = false">
         <div><strong>{{ card?.entry.headword }}</strong><p class="muted">选择如何从今日学习中移除</p></div>
         <button class="btn" :disabled="actionBusy" type="button" @click="pauseCurrentWord">暂停学习</button>
         <button class="btn btn-danger" :disabled="actionBusy" type="button" @click="deleteCurrentWord">彻底删除</button>
         <button class="btn btn-quiet" :disabled="actionBusy" type="button" @click="showWordMenu = false">取消</button>
-      </section>
-    </div>
+    </AppActionSheet>
 
-    <div v-if="showMoreSheet" class="sheet-backdrop" role="presentation" @click.self="showMoreSheet = false">
-      <section class="bottom-action-sheet more-study-sheet" role="dialog" aria-modal="true" aria-label="继续学习">
+    <AppActionSheet :open="showMoreSheet" title="再学一组" @close="showMoreSheet = false">
         <div><strong>再学一组</strong><p class="muted">继续加入当前队列，不会改变已经完成的进度。</p></div>
         <div class="more-study-presets"><button class="btn btn-primary" :disabled="actionBusy" type="button" @click="addMore(5)">再学 5 个</button><button class="btn" :disabled="actionBusy" type="button" @click="addMore(10)">再学 10 个</button></div>
         <label class="more-study-custom"><span>自定义数量</span><input v-model.number="customCount" class="inline-input" type="number" min="1" max="100" inputmode="numeric" /></label>
         <button class="btn" :disabled="actionBusy || customCount < 1" type="button" @click="addMore(customCount)">加入队列</button>
         <button class="btn btn-quiet" :disabled="actionBusy" type="button" @click="showMoreSheet = false">取消</button>
-      </section>
-    </div>
+    </AppActionSheet>
   </section>
 </template>

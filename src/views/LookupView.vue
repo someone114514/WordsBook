@@ -2,6 +2,7 @@
 import { computed, onActivated, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRoute } from 'vue-router'
+import { ClipboardPaste, Search as SearchIcon } from 'lucide-vue-next'
 import type { DictionaryEntry, LookupResult } from '../types/models'
 import { parseJsonArray } from '../utils/json'
 import { playEntryPronunciation } from '../modules/dictionary/audioService'
@@ -732,7 +733,7 @@ function parseLines(raw: string): string[] {
 
     <form class="lookup-dock lookup-search-strip" @submit.prevent="onLookupSubmit">
       <label class="lookup-search-pill">
-        <span class="lookup-search-glyph" aria-hidden="true">⌕</span>
+        <SearchIcon class="lookup-search-glyph" :size="18" :stroke-width="2" aria-hidden="true" />
         <span class="sr-only">查词输入框</span>
         <input
           ref="searchInputRef"
@@ -755,7 +756,7 @@ function parseLines(raw: string): string[] {
         </button>
       </label>
 
-      <button type="button" class="quick-action-btn quick-action-btn-soft" @click="onPasteQuery">粘贴</button>
+      <button type="button" class="quick-action-btn quick-action-btn-soft" @click="onPasteQuery"><ClipboardPaste :size="18" aria-hidden="true" /><span>粘贴</span></button>
       <button type="submit" class="sr-only">查询</button>
     </form>
   </section>
