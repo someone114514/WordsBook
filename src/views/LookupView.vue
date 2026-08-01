@@ -2,7 +2,9 @@
 import { computed, onActivated, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRoute } from 'vue-router'
-import { ClipboardPaste, Search as SearchIcon } from 'lucide-vue-next'
+import { ClipboardPaste, Search as SearchIcon, X } from 'lucide-vue-next'
+import { notify } from '../app/feedback'
+import AppActionSheet from '../components/AppActionSheet.vue'
 import type { DictionaryEntry, LookupResult } from '../types/models'
 import { parseJsonArray } from '../utils/json'
 import { playEntryPronunciation } from '../modules/dictionary/audioService'
@@ -50,6 +52,8 @@ const addingEntryId = ref<string | null>(null)
 const relearningEntryId = ref<string | null>(null)
 const clearingHistoryEntryId = ref<string | null>(null)
 const sectionExpanded = ref<Record<string, boolean>>({})
+const pendingAction = ref<{ kind: 'relearn' | 'clear-history' | 'remove-saved'; entry: DictionaryEntry } | null>(null)
+const confirmationBusy = ref(false)
 
 const MAX_VISIBLE_ENTRIES = 8
 const RESULT_MOTION_THRESHOLD = 24
@@ -108,6 +112,28 @@ const selectionReturnTo = computed(() => {
 const selectionReturnLabel = computed(() => selectionReturnTo.value.startsWith('/review/reading')
   ? '返回文章'
   : selectionReturnTo.value.startsWith('/review') ? '返回学习' : '返回原页面')
+const pendingActionCopy = computed(() => {
+  const action = pendingAction.value
+  if (!action) return { title: '', consequence: '', label: '', destructive: false }
+  if (action.kind === 'relearn') return {
+    title: `重新学习「${action.entry.headword}」？`,
+    consequence: '这个词会加入今日重学。历史评分和长期记忆状态会保留。',
+    label: '加入今日重学',
+    destructive: false,
+  }
+  if (action.kind === 'remove-saved') return {
+    title: `取消保存「${action.entry.headword}」？`,
+    consequence: '仅从“已保存”中移除，学习词表归属和复习记录不会改变。',
+    label: '取消保存',
+    destructive: true,
+  }
+  return {
+    title: `清空「${action.entry.headword}」的学习记录？`,
+    consequence: 'FSRS 状态、复习历史与语境练习记录会被永久清除；词条和词表归属会保留，并作为新词重新学习。此操作不可撤销。',
+    label: '彻底清空并重新学习',
+    destructive: true,
+  }
+})
 
 async function retryDictionaryInstall() {
   await dictionaryStore.installDefaultDictionary()
@@ -336,6 +362,7 @@ async function onAddToStudyList(entry: DictionaryEntry) {
     messageType.value = 'success'
     const listName = studyLists.value.find((list) => list.listId === selectedStudyListId.value)?.name ?? '学习词表'
     message.value = `已加入「${listName}」· 将进入每日队列`
+    notify(`已加入「${listName}」。`, { tone: 'success' })
     manageEntryId.value = ''
   } catch (error) {
     messageType.value = 'error'
@@ -355,7 +382,6 @@ async function onRelearn(entry: DictionaryEntry) {
     manageEntryId.value = entry.entryId
     return
   }
-  if (!window.confirm(`将「${entry.headword}」加入今日重学？历史记录和长期记忆状态会保留。`)) return
   relearningEntryId.value = entry.entryId
   try {
     await resetWordForRelearning(status.wordId, hasLearningList ? undefined : selectedStudyListId.value)
@@ -367,6 +393,7 @@ async function onRelearn(entry: DictionaryEntry) {
     }
     messageType.value = 'success'
     message.value = '已加入今日重学，当前学习页会自动刷新'
+    notify(`「${entry.headword}」已加入今日重学。`, { tone: 'success' })
     manageEntryId.value = ''
   } catch (error) {
     messageType.value = 'error'
@@ -385,13 +412,12 @@ async function onClearLearningHistory(entry: DictionaryEntry) {
     message.value = '请先选择一个学习词表'
     return
   }
-  if (!window.confirm(`将彻底清空「${entry.headword}」的 FSRS、复习与语境练习记录。词条和词表归属会保留，确定继续？`)) return
-  if (!window.confirm('此操作不可撤销。再次确认清空，并将这个词作为新词重新学习？')) return
   clearingHistoryEntryId.value = entry.entryId
   try {
     await clearWordLearningHistory(status.wordId, hasLearningList ? undefined : selectedStudyListId.value)
     messageType.value = 'success'
     message.value = '学习记录已清空，已作为新词加入今日学习'
+    notify(`「${entry.headword}」已作为新词重新加入学习。`, { tone: 'success' })
     manageEntryId.value = ''
   } catch (error) {
     messageType.value = 'error'
@@ -407,10 +433,6 @@ async function onRemoveWord(entry: DictionaryEntry) {
     return
   }
 
-  if (!window.confirm(`确认取消保存「${entry.headword}」吗？学习词表中的归属不会受影响。`)) {
-    return
-  }
-
   deletingEntryId.value = entry.entryId
   try {
     await removeFromLookupCollection(status.wordId)
@@ -421,8 +443,30 @@ async function onRemoveWord(entry: DictionaryEntry) {
     entryStatusMap.value = nextStatusMap
     messageType.value = 'success'
     message.value = '已取消仅保存'
+    notify(`已取消保存「${entry.headword}」。`, { tone: 'success' })
+  } catch (error) {
+    messageType.value = 'error'
+    message.value = error instanceof Error ? error.message : '取消保存失败，请重试'
   } finally {
     deletingEntryId.value = null
+  }
+}
+
+function requestEntryAction(kind: 'relearn' | 'clear-history' | 'remove-saved', entry: DictionaryEntry): void {
+  pendingAction.value = { kind, entry }
+}
+
+async function confirmEntryAction(): Promise<void> {
+  const action = pendingAction.value
+  if (!action || confirmationBusy.value) return
+  confirmationBusy.value = true
+  try {
+    if (action.kind === 'relearn') await onRelearn(action.entry)
+    else if (action.kind === 'clear-history') await onClearLearningHistory(action.entry)
+    else await onRemoveWord(action.entry)
+    pendingAction.value = null
+  } finally {
+    confirmationBusy.value = false
   }
 }
 
@@ -663,7 +707,7 @@ function parseLines(raw: string): string[] {
 
                     <div class="actions">
                       <button class="btn" @click="onPlay(entry)">发音</button>
-                      <button v-if="entryStatusMap.has(entry.entryId)" class="btn lookup-relearn-action" type="button" :disabled="relearningEntryId === entry.entryId" @click="onRelearn(entry)">{{ relearningEntryId === entry.entryId ? '加入中…' : '重新学习' }}</button>
+                      <button v-if="entryStatusMap.has(entry.entryId)" class="btn lookup-relearn-action" type="button" :disabled="relearningEntryId === entry.entryId" @click="requestEntryAction('relearn', entry)">{{ relearningEntryId === entry.entryId ? '加入中…' : '重新学习' }}</button>
                       <button
                         :class="['btn', 'btn-primary', 'lookup-study-action', { added: isAdded(entry.entryId) }]"
                         type="button"
@@ -681,10 +725,10 @@ function parseLines(raw: string): string[] {
                       <button class="btn btn-primary" :disabled="addingEntryId === entry.entryId || isInSelectedStudyList(entry.entryId)" type="button" @click="onAddToStudyList(entry)">{{ addingEntryId === entry.entryId ? '加入中…' : isInSelectedStudyList(entry.entryId) ? '已在此词表' : '确认加入' }}</button>
                       <hr><p class="muted">只想留作参考，不安排复习？</p>
                       <button v-if="!isSaved(entry.entryId)" class="btn" type="button" @click="onAddWord(entry.entryId)">仅保存</button>
-                      <button v-else class="btn btn-danger" :disabled="deletingEntryId === entry.entryId" type="button" @click="onRemoveWord(entry)">{{ deletingEntryId === entry.entryId ? '处理中…' : '取消仅保存' }}</button>
+                      <button v-else class="btn btn-danger" :disabled="deletingEntryId === entry.entryId" type="button" @click="requestEntryAction('remove-saved', entry)">{{ deletingEntryId === entry.entryId ? '处理中…' : '取消仅保存' }}</button>
                       <template v-if="entryStatusMap.has(entry.entryId)">
                         <hr><p class="muted">不可撤销的高级操作</p>
-                        <button class="btn btn-danger" :disabled="clearingHistoryEntryId === entry.entryId" type="button" @click="onClearLearningHistory(entry)">{{ clearingHistoryEntryId === entry.entryId ? '清空中…' : '彻底清空学习记录' }}</button>
+                        <button class="btn btn-danger" :disabled="clearingHistoryEntryId === entry.entryId" type="button" @click="requestEntryAction('clear-history', entry)">{{ clearingHistoryEntryId === entry.entryId ? '清空中…' : '彻底清空学习记录' }}</button>
                       </template>
                     </div>
 
@@ -743,7 +787,11 @@ function parseLines(raw: string): string[] {
           type="text"
           placeholder="查询单词"
           autocomplete="off"
+          autocapitalize="none"
+          autocorrect="off"
+          enterkeyhint="search"
           inputmode="search"
+          :spellcheck="false"
         />
         <button
           v-if="query"
@@ -752,12 +800,27 @@ function parseLines(raw: string): string[] {
           aria-label="清空输入"
           @click="onClearQuery"
         >
-          清空
+          <X :size="17" aria-hidden="true" /><span class="sr-only">清空</span>
         </button>
       </label>
 
       <button type="button" class="quick-action-btn quick-action-btn-soft" @click="onPasteQuery"><ClipboardPaste :size="18" aria-hidden="true" /><span>粘贴</span></button>
       <button type="submit" class="sr-only">查询</button>
     </form>
+
+    <AppActionSheet
+      :open="Boolean(pendingAction)"
+      :title="pendingActionCopy.title"
+      :dismissible="!confirmationBusy"
+      @close="pendingAction = null"
+    >
+      <p>{{ pendingActionCopy.consequence }}</p>
+      <template #actions>
+        <button class="btn" type="button" :disabled="confirmationBusy" @click="pendingAction = null">取消</button>
+        <button :class="['btn', pendingActionCopy.destructive ? 'btn-danger' : 'btn-primary']" type="button" :disabled="confirmationBusy" @click="confirmEntryAction">
+          {{ confirmationBusy ? '处理中…' : pendingActionCopy.label }}
+        </button>
+      </template>
+    </AppActionSheet>
   </section>
 </template>

@@ -35,7 +35,7 @@ export default defineConfig(() => {
     plugins: [
       vue(),
       VitePWA({
-        registerType: 'autoUpdate',
+        registerType: 'prompt',
         includeAssets: ['icons/icon-192.svg', 'icons/icon-512.svg'],
         manifest: {
           id: base,
@@ -66,7 +66,7 @@ export default defineConfig(() => {
         workbox: {
           cleanupOutdatedCaches: true,
           clientsClaim: true,
-          skipWaiting: true,
+          skipWaiting: false,
           // Let the document runtime route handle navigations so its response
           // header plugin also runs on GitHub Pages. The same plugin supplies
           // the precached SPA shell when a navigation is fully offline.
@@ -93,6 +93,9 @@ export default defineConfig(() => {
                      */
                     fetchDidSucceed: async ({ request, response }: { request: Request; response: Response }) => {
                       if (!response || response.type === 'opaque') return response
+                      if (request.mode === 'navigate' && !response.ok) {
+                        throw new Error(`Navigation failed with ${response.status}`)
+                      }
                       const headers = new Headers(response.headers)
                       const trainingMode = new URL(request.url).searchParams.get('fsrs-training') === '1'
                       headers.set('Cross-Origin-Opener-Policy', 'same-origin')
@@ -117,8 +120,8 @@ export default defineConfig(() => {
                       headers.set('Cross-Origin-Opener-Policy', 'same-origin')
                       headers.set('Cross-Origin-Embedder-Policy', trainingMode ? 'require-corp' : 'credentialless')
                       return new Response(response.body, {
-                        status: response.status,
-                        statusText: response.statusText,
+                        status: 200,
+                        statusText: 'OK',
                         headers,
                       })
                     },

@@ -214,10 +214,6 @@ onBeforeUnmount(() => {
 
 <template>
   <main class="page-shell study-home">
-    <header class="page-heading">
-      <h1>今日学习</h1>
-    </header>
-
     <section v-if="error" class="panel empty-state">
       <p class="error" role="alert">{{ error }}</p><button class="btn btn-primary" type="button" @click="load">重试</button>
     </section>

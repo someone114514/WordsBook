@@ -2,6 +2,7 @@ import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import { registerSW } from 'virtual:pwa-register'
 import './style.css'
+import './native.css'
 import App from './App.vue'
 import { router } from './app/router'
 import { startCloudSessionRecovery } from './modules/sync/cloudAuthService'
@@ -11,6 +12,13 @@ import { resumePendingArticlePreload } from './modules/reading/readingService'
 import { resumePendingPracticePreload } from './modules/reading/practiceService'
 import { reconcileStudyDay } from './modules/review/dailyQueueService'
 import { initializePersonalizedReviewScheduler } from './modules/review/fsrsPersonalizationService'
+import { notify } from './app/feedback'
+import {
+  configureServiceWorkerUpdate,
+  initializeAppLifecycle,
+  setOfflineReady,
+  setServiceWorkerRefreshAvailable,
+} from './app/useAppLifecycle'
 
 const COI_RELOAD_KEY = 'wordsbook:coi-reload'
 let reloadingForIsolation = false
@@ -33,7 +41,21 @@ function reloadAfterServiceWorkerControl() {
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.addEventListener('controllerchange', reloadAfterServiceWorkerControl)
 }
-registerSW({ immediate: true })
+initializeAppLifecycle()
+const updateServiceWorker = registerSW({
+  immediate: true,
+  onNeedRefresh() {
+    setServiceWorkerRefreshAvailable(true)
+  },
+  onOfflineReady() {
+    setOfflineReady(true)
+    notify('离线资源已准备好，断网后仍可查词和学习。', { tone: 'success' })
+  },
+  onRegisterError() {
+    notify('离线功能暂未启用，联网时仍可正常使用。', { tone: 'error' })
+  },
+})
+configureServiceWorkerUpdate(updateServiceWorker)
 startCloudSessionRecovery()
 await initializePersonalizedReviewScheduler().catch(() => undefined)
 
@@ -59,6 +81,13 @@ function reconcileCurrentStudyDay() {
 }
 void reconcileCurrentStudyDay()
 router.afterEach(() => { void reconcileCurrentStudyDay() })
+window.addEventListener('wordsbook:network-restored', () => {
+  scheduleTodayPlanPrewarm()
+  void reconcileCurrentStudyDay()
+  void resumePendingArticlePreload().catch(() => undefined)
+  void resumePendingPracticePreload().catch(() => undefined)
+  notify('网络已恢复，正在更新学习状态。', { tone: 'success' })
+})
 
 let midnightTimer = 0
 function scheduleMidnightReconcile() {

@@ -1,7 +1,12 @@
 ﻿<script setup lang="ts">
-import { computed, onActivated, onMounted, ref } from 'vue'
+import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { BookOpen, BrainCircuit, ChevronDown, Cloud, DatabaseBackup, Sparkles } from 'lucide-vue-next'
+import { useRoute, useRouter } from 'vue-router'
+import { notify } from '../app/feedback'
+import { setWakeLockOwner } from '../app/screenWakeLock'
+import { parseSettingsSection, type SettingsSection } from '../app/settingsSections'
+import { setCriticalActivity, useAppLifecycle } from '../app/useAppLifecycle'
 import { useDictionaryStore } from '../modules/dictionary/dictionaryStore'
 import { exportUserData, importUserData } from '../modules/settings/backupService'
 import { useSettingsStore } from '../modules/settings/settingsStore'
@@ -20,12 +25,17 @@ import type { CloudSyncMode, SyncPreview, SyncResult } from '../modules/sync/syn
 import { getWordbookStats } from '../modules/wordbook/wordbookService'
 import {
   getFsrsPersonalizationStatus,
+  describeFsrsError,
   isFsrsTrainingMode,
   optimizeFsrsParameters,
   type FsrsOptimizationProgress,
   type FsrsPersonalizationStatus,
 } from '../modules/review/fsrsPersonalizationService'
 
+const route = useRoute()
+const router = useRouter()
+const lifecycle = useAppLifecycle()
+const { canInstall, standalone } = lifecycle
 const settingsStore = useSettingsStore()
 const dictionaryStore = useDictionaryStore()
 const appVersion = __APP_VERSION__
@@ -61,6 +71,7 @@ const fsrsBusy = ref(false)
 const fsrsProgress = ref('')
 const fsrsMessage = ref('')
 const fsrsMessageTone = ref<'success' | 'info' | 'error'>('info')
+const fsrsTechnicalDetails = ref('')
 const fsrsTrainingMode = isFsrsTrainingMode()
 const FSRS_TRAINING_PENDING_KEY = 'wordsbook:fsrs-training-pending'
 const aiKeyInput = ref<HTMLInputElement | null>(null)
@@ -68,6 +79,12 @@ const aiBaseUrlInput = ref<HTMLInputElement | null>(null)
 const aiModelInput = ref<HTMLInputElement | null>(null)
 const aiSettingsMessage = ref('')
 const aiSettingsBusy = ref(false)
+const aiFormDirty = ref(false)
+const SETTINGS_SECTION_KEY = 'wordsbook:settings:last-section:v1'
+const storedSection = parseSettingsSection(localStorage.getItem(SETTINGS_SECTION_KEY))
+const openSection = ref<SettingsSection>(
+  fsrsTrainingMode ? 'fsrs' : parseSettingsSection(route.query.section) ?? storedSection ?? 'dictionary',
+)
 
 const SETTINGS_REFRESH_TTL_MS = 15 * 1000
 let settingsRefreshPromise: Promise<void> | null = null
@@ -112,7 +129,24 @@ const fsrsStatusText = computed(() => {
   }
   if (!fsrsTrainingMode) return '数据已足够；进入兼容训练模式后将在本机训练并验证'
   if (!status.runtimeAvailable) return '训练环境尚未就绪，请查看下方诊断信息'
-  return '兼容训练环境已就绪，可以在本机训练并验证'
+  return '浏览器能力满足；开始后将继续启动 Worker、训练、验证并安全保存'
+})
+
+async function selectSection(section: SettingsSection, scroll = false): Promise<void> {
+  openSection.value = section
+  localStorage.setItem(SETTINGS_SECTION_KEY, section)
+  if (route.query.section !== section) {
+    await router.replace({ query: { ...route.query, section } })
+  }
+  if (scroll) {
+    await nextTick()
+    document.getElementById(`settings-section-${section}`)?.scrollIntoView({ block: 'start' })
+  }
+}
+
+watch(() => route.query.section, (value) => {
+  const section = parseSettingsSection(value)
+  if (section && section !== openSection.value) void selectSection(section, true)
 })
 
 const fsrsRuntimeHint = computed(() => {
@@ -195,6 +229,7 @@ function initializeSettingsView(options: { force?: boolean } = {}): Promise<void
 }
 
 onMounted(async () => {
+  await selectSection(openSection.value, Boolean(route.query.section || fsrsTrainingMode))
   await initializeSettingsView({ force: true })
   if (
     fsrsTrainingMode
@@ -209,6 +244,12 @@ onMounted(async () => {
 
 onActivated(() => {
   void initializeSettingsView()
+})
+
+onBeforeUnmount(() => {
+  setCriticalActivity('fsrs-training', false)
+  setCriticalActivity('settings-form', false)
+  void setWakeLockOwner('fsrs-training', false)
 })
 
 async function refreshStats() {
@@ -235,12 +276,20 @@ async function onOptimizeFsrs() {
   }
   fsrsBusy.value = true
   fsrsMessage.value = ''
+  fsrsTechnicalDetails.value = ''
   fsrsProgress.value = '正在准备训练集与留出集…'
+  setCriticalActivity('fsrs-training', true)
+  if (fsrsStatus.value) fsrsStatus.value.diagnostics.workerStage = 'starting'
+  await setWakeLockOwner('fsrs-training', true)
   try {
     const result = await optimizeFsrsParameters((progress: FsrsOptimizationProgress) => {
+      if (progress.phase === 'initializing' && progress.current === 1 && fsrsStatus.value) {
+        fsrsStatus.value.diagnostics.workerStage = 'ready'
+      }
       const count = progress.total && progress.current !== undefined ? ` ${progress.current}/${progress.total}` : ''
       fsrsProgress.value = ({
         preparing: '正在准备训练集与留出集…',
+        initializing: '正在启动本地训练组件…',
         training: `正在训练个性化参数${count}`,
         validating: '正在验证候选参数…',
         rebuilding: `正在分批重建长期记忆状态${count}`,
@@ -251,14 +300,21 @@ async function onOptimizeFsrs() {
     fsrsMessage.value = result.lastOutcome === 'active'
       ? '候选参数在留出集的 Log loss 与 RMSE 均优于默认参数，已启用并重算长期状态。'
       : '候选参数未同时优于默认参数，已安全保留当前调度参数。'
+    notify(result.lastOutcome === 'active' ? 'FSRS 个性化参数已安全启用。' : '验证完成，已保留当前参数。', { tone: 'success' })
     await refreshFsrsStatus()
     if (fsrsTrainingMode) window.setTimeout(leaveFsrsTrainingMode, 1200)
   } catch (error) {
+    const failure = describeFsrsError(error)
+    if (fsrsStatus.value) fsrsStatus.value.diagnostics.workerStage = 'failed'
     fsrsMessageTone.value = 'error'
-    fsrsMessage.value = error instanceof Error ? error.message : 'FSRS 参数训练失败'
+    fsrsMessage.value = failure.message
+    fsrsTechnicalDetails.value = failure.technicalDetails
+    notify('FSRS 训练未完成，现有学习进度不受影响。', { tone: 'error' })
   } finally {
     fsrsProgress.value = ''
     fsrsBusy.value = false
+    setCriticalActivity('fsrs-training', false)
+    await setWakeLockOwner('fsrs-training', false)
   }
 }
 
@@ -275,6 +331,7 @@ async function copyFsrsDiagnostics() {
     ...fsrsStatus.value.diagnostics,
     effectiveReviewCount: fsrsStatus.value.effectiveReviewCount,
     trainableItemCount: fsrsStatus.value.trainableItemCount,
+    lastFailure: fsrsTechnicalDetails.value || undefined,
   }
   try {
     await navigator.clipboard.writeText(JSON.stringify(payload, null, 2))
@@ -286,9 +343,22 @@ async function copyFsrsDiagnostics() {
   }
 }
 
+async function onInstallApp(): Promise<void> {
+  const installed = await lifecycle.promptInstall()
+  if (installed) notify('WordsBook 已添加到主屏幕。', { tone: 'success' })
+  else notify('在 Safari 分享菜单中选择“添加到主屏幕”。')
+}
+
 async function onUpdateBoolean(key: 'autoPronunciation', event: Event) {
   const target = event.target as HTMLInputElement
-  await settingsStore.update({ [key]: target.checked })
+  const previous = settings.value[key]
+  try {
+    await settingsStore.update({ [key]: target.checked })
+    notify('设置已保存。', { tone: 'success' })
+  } catch {
+    target.checked = previous
+    notify('保存失败，已恢复原设置。', { tone: 'error' })
+  }
 }
 
 async function onUpdateNumber(
@@ -300,27 +370,54 @@ async function onUpdateNumber(
   if (!Number.isFinite(value)) {
     return
   }
-
-  await settingsStore.update({ [key]: value })
+  const previous = settings.value[key]
+  try {
+    await settingsStore.update({ [key]: value })
+    notify('设置已保存。', { tone: 'success' })
+  } catch {
+    target.value = String(previous)
+    notify('保存失败，已恢复原设置。', { tone: 'error' })
+  }
 }
 
 async function onUpdateEngine(event: Event): Promise<void> {
   const target = event.target as HTMLSelectElement
-  await settingsStore.update({
-    ttsEngine: target.value as 'auto' | 'browser' | 'youdao' | 'google' | 'dictionaryapi',
-  })
+  const previous = settings.value.ttsEngine
+  try {
+    await settingsStore.update({
+      ttsEngine: target.value as 'auto' | 'browser' | 'youdao' | 'google' | 'dictionaryapi',
+    })
+    notify('发音设置已保存。', { tone: 'success' })
+  } catch {
+    target.value = previous
+    notify('保存失败，已恢复原设置。', { tone: 'error' })
+  }
 }
 
 async function onUpdateArticleLevel(event: Event): Promise<void> {
   const target = event.target as HTMLSelectElement
-  await settingsStore.update({ articleLevel: target.value as 'A2' | 'B1' | 'B2' | 'C1' })
+  const previous = settings.value.articleLevel
+  try {
+    await settingsStore.update({ articleLevel: target.value as 'A2' | 'B1' | 'B2' | 'C1' })
+    notify('文章难度已保存。', { tone: 'success' })
+  } catch {
+    target.value = previous
+    notify('保存失败，已恢复原设置。', { tone: 'error' })
+  }
 }
 
 async function onUpdateDefinitionLanguage(event: Event): Promise<void> {
   const target = event.target as HTMLSelectElement
-  await settingsStore.update({
-    definitionLanguage: target.value as 'adaptive' | 'english-first' | 'chinese-first',
-  })
+  const previous = settings.value.definitionLanguage
+  try {
+    await settingsStore.update({
+      definitionLanguage: target.value as 'adaptive' | 'english-first' | 'chinese-first',
+    })
+    notify('释义语言已保存。', { tone: 'success' })
+  } catch {
+    target.value = previous
+    notify('保存失败，已恢复原设置。', { tone: 'error' })
+  }
 }
 
 async function onUpdateString(
@@ -329,6 +426,8 @@ async function onUpdateString(
 ): Promise<void> {
   const target = event.target as HTMLInputElement
   await settingsStore.update({ [key]: target.value.trim() })
+  aiFormDirty.value = false
+  setCriticalActivity('settings-form', false)
   if (key === 'deepseekApiKey' && settings.value.syncDeepseekApiKey && cloudAuth.value.signedIn) {
     cloudBusy.value = true
     cloudOperation.value = 'key-sync'
@@ -363,11 +462,20 @@ async function saveAiSettings(): Promise<void> {
     aiSettingsMessage.value = deepseekApiKey
       ? 'AI 设置已保存到当前设备'
       : 'AI 设置已保存；当前未配置 API Key'
+    notify('AI 设置已保存。', { tone: 'success' })
+    aiFormDirty.value = false
+    setCriticalActivity('settings-form', false)
   } catch (error) {
     aiSettingsMessage.value = error instanceof Error ? error.message : String(error)
+    notify('AI 设置保存失败，输入内容仍保留在页面中。', { tone: 'error' })
   } finally {
     aiSettingsBusy.value = false
   }
+}
+
+function markAiFormDirty(): void {
+  aiFormDirty.value = true
+  setCriticalActivity('settings-form', true)
 }
 
 async function onToggleKeySync(event: Event) {
@@ -588,8 +696,8 @@ async function onRunCloudSync(mode: CloudSyncMode) {
       <p v-if="message" class="success">{{ message }}</p>
     </Transition>
 
-    <details class="settings-group" open>
-      <summary class="settings-group-summary">
+    <details id="settings-section-dictionary" class="settings-group" :open="openSection === 'dictionary'">
+      <summary class="settings-group-summary" @click.prevent="selectSection('dictionary')">
         <span class="settings-group-title"><span class="settings-group-icon"><BookOpen :size="20" aria-hidden="true" /></span><span><strong>词典与学习</strong><small>离线词典、发音与每日目标</small></span></span>
         <ChevronDown class="settings-group-chevron" :size="20" aria-hidden="true" />
       </summary>
@@ -695,8 +803,8 @@ async function onRunCloudSync(mode: CloudSyncMode) {
       </div>
     </details>
 
-    <details class="settings-group">
-      <summary class="settings-group-summary">
+    <details id="settings-section-fsrs" class="settings-group" :open="openSection === 'fsrs'">
+      <summary class="settings-group-summary" @click.prevent="selectSection('fsrs')">
         <span class="settings-group-title"><span class="settings-group-icon"><BrainCircuit :size="20" aria-hidden="true" /></span><span><strong>FSRS 个性化</strong><small>长期记忆模型与训练状态</small></span></span>
         <ChevronDown class="settings-group-chevron" :size="20" aria-hidden="true" />
       </summary>
@@ -721,15 +829,20 @@ async function onRunCloudSync(mode: CloudSyncMode) {
       </div>
       <div v-if="fsrsBusy" class="sync-progress" role="status" aria-live="polite"><span class="sync-spinner" aria-hidden="true" /><span>{{ fsrsProgress || '正在训练与验证…' }}</span></div>
       <div v-if="fsrsStatus?.eligible && (!fsrsStatus.runtimeAvailable || fsrsTrainingMode)" class="sync-panel fsrs-runtime-panel">
-        <strong>{{ fsrsStatus.runtimeAvailable ? '训练环境已就绪' : '训练环境诊断' }}</strong>
+        <strong>{{ fsrsStatus.runtimeAvailable ? '浏览器能力满足' : '训练环境诊断' }}</strong>
         <p v-if="fsrsRuntimeHint" class="muted">{{ fsrsRuntimeHint }}</p>
-        <p class="muted">隔离：{{ fsrsStatus.diagnostics.crossOriginIsolated ? '已启用' : '未启用' }} · 共享内存：{{ fsrsStatus.diagnostics.sharedArrayBuffer ? '可用' : '不可用' }} · 页面接管：{{ fsrsStatus.diagnostics.serviceWorkerControlled ? '已完成' : '等待中' }}</p>
+        <p class="muted">浏览器隔离：{{ fsrsStatus.diagnostics.crossOriginIsolated ? '可用' : '不可用' }} · 共享内存：{{ fsrsStatus.diagnostics.sharedArrayBuffer ? '可用' : '不可用' }} · Worker：{{ fsrsBusy ? '运行中' : '开始训练后启动' }}</p>
         <div class="actions">
           <button class="btn btn-quiet" type="button" @click="copyFsrsDiagnostics">复制诊断</button>
           <button v-if="fsrsTrainingMode && !fsrsBusy" class="btn btn-quiet" type="button" @click="leaveFsrsTrainingMode">退出训练模式</button>
         </div>
       </div>
       <p v-if="fsrsMessage" :class="['sync-message', `sync-message-${fsrsMessageTone}`]" :role="fsrsMessageTone === 'error' ? 'alert' : 'status'">{{ fsrsMessage }}</p>
+      <details v-if="fsrsTechnicalDetails" class="technical-details">
+        <summary>查看技术详情</summary>
+        <pre>{{ fsrsTechnicalDetails }}</pre>
+        <button class="btn btn-quiet" type="button" @click="copyFsrsDiagnostics">复制技术详情</button>
+      </details>
       <button class="btn btn-primary" type="button" :disabled="fsrsBusy || !fsrsStatus?.eligible || (fsrsTrainingMode && !fsrsStatus.runtimeAvailable)" @click="onOptimizeFsrs">
         {{ !fsrsTrainingMode ? '进入兼容训练模式' : fsrsStatus?.active ? '重新训练并验证' : '训练个性化参数' }}
       </button>
@@ -738,8 +851,8 @@ async function onRunCloudSync(mode: CloudSyncMode) {
       </div>
     </details>
 
-    <details class="settings-group">
-      <summary class="settings-group-summary">
+    <details id="settings-section-ai" class="settings-group" :open="openSection === 'ai'">
+      <summary class="settings-group-summary" @click.prevent="selectSection('ai')">
         <span class="settings-group-title"><span class="settings-group-icon"><Sparkles :size="20" aria-hidden="true" /></span><span><strong>AI 与语境</strong><small>DeepSeek、释义语言与文章难度</small></span></span>
         <ChevronDown class="settings-group-chevron" :size="20" aria-hidden="true" />
       </summary>
@@ -755,6 +868,7 @@ async function onRunCloudSync(mode: CloudSyncMode) {
           :value="settings.deepseekApiKey"
           :disabled="!settingsLoaded || cloudOperation === 'key-sync'"
           placeholder="sk-..."
+          @input="markAiFormDirty"
           @change="onUpdateString('deepseekApiKey', $event)"
         />
       </label>
@@ -767,6 +881,7 @@ async function onRunCloudSync(mode: CloudSyncMode) {
           class="inline-input"
           :disabled="!settingsLoaded"
           :value="settings.deepseekBaseUrl"
+          @input="markAiFormDirty"
           @change="onUpdateString('deepseekBaseUrl', $event)"
         />
       </label>
@@ -779,6 +894,7 @@ async function onRunCloudSync(mode: CloudSyncMode) {
           class="inline-input"
           :disabled="!settingsLoaded"
           :value="settings.deepseekModel"
+          @input="markAiFormDirty"
           @change="onUpdateString('deepseekModel', $event)"
         />
       </label>
@@ -815,8 +931,8 @@ async function onRunCloudSync(mode: CloudSyncMode) {
       </div>
     </details>
 
-    <details class="settings-group">
-      <summary class="settings-group-summary">
+    <details id="settings-section-sync" class="settings-group" :open="openSection === 'sync'">
+      <summary class="settings-group-summary" @click.prevent="selectSection('sync')">
         <span class="settings-group-title"><span class="settings-group-icon"><Cloud :size="20" aria-hidden="true" /></span><span><strong>同步与安全</strong><small>账号、云端同步与敏感数据</small></span></span>
         <ChevronDown class="settings-group-chevron" :size="20" aria-hidden="true" />
       </summary>
@@ -902,8 +1018,8 @@ async function onRunCloudSync(mode: CloudSyncMode) {
       </div>
     </details>
 
-    <details class="settings-group">
-      <summary class="settings-group-summary">
+    <details id="settings-section-data" class="settings-group" :open="openSection === 'data'">
+      <summary class="settings-group-summary" @click.prevent="selectSection('data')">
         <span class="settings-group-title"><span class="settings-group-icon"><DatabaseBackup :size="20" aria-hidden="true" /></span><span><strong>数据与关于</strong><small>备份、恢复与版本信息</small></span></span>
         <ChevronDown class="settings-group-chevron" :size="20" aria-hidden="true" />
       </summary>
@@ -918,6 +1034,14 @@ async function onRunCloudSync(mode: CloudSyncMode) {
           <input type="file" accept="application/json" class="file-input" @change="onImport" />
         </label>
       </div>
+    </article>
+
+    <article v-if="!standalone" class="result-section settings-card install-app-card">
+      <h2>添加到主屏幕</h2>
+      <p class="muted">安装后可获得独立窗口、安全区适配和更稳定的离线启动体验。</p>
+      <button class="btn" type="button" @click="onInstallApp">
+        {{ canInstall ? '安装 WordsBook' : '查看安装方法' }}
+      </button>
     </article>
 
     <footer class="settings-version muted" aria-label="应用版本">

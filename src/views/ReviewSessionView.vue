@@ -29,6 +29,8 @@ import { loadSettings } from '../modules/settings/settingsService'
 import { parseJsonArray } from '../utils/json'
 import { definitionLines } from '../modules/dictionary/senseRecords'
 import AppActionSheet from '../components/AppActionSheet.vue'
+import { notify } from '../app/feedback'
+import { setWakeLockOwner } from '../app/screenWakeLock'
 
 const router = useRouter()
 const route = useRoute()
@@ -44,6 +46,7 @@ const error = ref('')
 const showWordMenu = ref(false)
 const actionBusy = ref(false)
 const showMoreSheet = ref(false)
+const showDeleteConfirmation = ref(false)
 const customCount = ref(15)
 const noMoreWords = ref(false)
 const autoPronunciation = ref(true)
@@ -288,10 +291,23 @@ async function prewarmRoundContent() {
   }
 }
 
-onMounted(() => void initialize())
+async function refreshAfterResume(): Promise<void> {
+  if (document.visibilityState !== 'visible' || grading.value || actionBusy.value || !snapshot.value) return
+  snapshot.value = await loadDailyQueueSnapshot(snapshot.value.session.sessionId)
+  await loadCurrentCard()
+  void setWakeLockOwner('review-session', true)
+}
+
+onMounted(() => {
+  void initialize()
+  void setWakeLockOwner('review-session', true)
+  document.addEventListener('visibilitychange', refreshAfterResume)
+})
 onBeforeUnmount(() => {
   liveSubscription?.unsubscribe()
   if (wakeupTimer) clearTimeout(wakeupTimer)
+  document.removeEventListener('visibilitychange', refreshAfterResume)
+  void setWakeLockOwner('review-session', false)
 })
 
 async function onGrade(rating: ReviewRating) {
@@ -399,14 +415,17 @@ async function pauseCurrentWord() {
 
 async function deleteCurrentWord() {
   if (!card.value || !snapshot.value) return
-  if (!window.confirm(`彻底删除「${card.value.entry.headword}」？词表归属、记忆状态和复习历史都会删除。`)) return
   actionBusy.value = true
   try {
+    const headword = card.value.entry.headword
     const wordId = card.value.wordId
     await skipWordInDailySession(snapshot.value.session.sessionId, wordId)
     await removeWordFromWordbook(wordId)
     snapshot.value = await getOrCreateDailySession(selectedListIds.value)
     await loadCurrentCard()
+    showDeleteConfirmation.value = false
+    showWordMenu.value = false
+    notify(`已彻底删除「${headword}」。`, { tone: 'success' })
   } finally {
     actionBusy.value = false
   }
@@ -584,8 +603,17 @@ async function enterArticle() {
     <AppActionSheet :open="showWordMenu" title="单词操作" @close="showWordMenu = false">
         <div><strong>{{ card?.entry.headword }}</strong><p class="muted">选择如何从今日学习中移除</p></div>
         <button class="btn" :disabled="actionBusy" type="button" @click="pauseCurrentWord">暂停学习</button>
-        <button class="btn btn-danger" :disabled="actionBusy" type="button" @click="deleteCurrentWord">彻底删除</button>
+        <button class="btn btn-danger" :disabled="actionBusy" type="button" @click="showWordMenu = false; showDeleteConfirmation = true">彻底删除</button>
         <button class="btn btn-quiet" :disabled="actionBusy" type="button" @click="showWordMenu = false">取消</button>
+    </AppActionSheet>
+
+    <AppActionSheet :open="showDeleteConfirmation" title="彻底删除这个词？" :dismissible="!actionBusy" @close="showDeleteConfirmation = false">
+      <p><strong>{{ card?.entry.headword }}</strong> 将从所有词表和学习队列中移除。</p>
+      <p class="muted">长期记忆状态、复习历史和语境练习记录也会永久删除，此操作不可撤销。</p>
+      <template #actions>
+        <button class="btn" type="button" :disabled="actionBusy" @click="showDeleteConfirmation = false">取消</button>
+        <button class="btn btn-danger" type="button" :disabled="actionBusy" @click="deleteCurrentWord">{{ actionBusy ? '删除中…' : '彻底删除' }}</button>
+      </template>
     </AppActionSheet>
 
     <AppActionSheet :open="showMoreSheet" title="再学一组" @close="showMoreSheet = false">

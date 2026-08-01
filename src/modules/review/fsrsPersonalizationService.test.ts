@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ReviewLog } from '../../types/models'
-import { buildFsrsOptimizationDataset, summarizeFsrsOptimizationLogs } from './fsrsPersonalizationService'
+import { buildFsrsOptimizationDataset, describeFsrsError, summarizeFsrsOptimizationLogs } from './fsrsPersonalizationService'
 
 function log(
   wordId: string,
@@ -65,5 +65,20 @@ describe('FSRS personalization dataset', () => {
       effectiveReviewCount: 3,
       trainableItemCount: 1,
     })
+  })
+})
+
+describe('FSRS user-facing failures', () => {
+  it('hides N-API details behind a recoverable Chinese runtime error', () => {
+    const result = describeFsrsError(new Error("import function env:napi_create_async_work must be callable"))
+    expect(result.code).toBe('runtime-version-mismatch')
+    expect(result.message).toContain('更新应用')
+    expect(result.message).not.toContain('napi_create_async_work')
+    expect(result.technicalDetails).toContain('napi_create_async_work')
+  })
+
+  it('maps memory and timeout failures without discarding technical details', () => {
+    expect(describeFsrsError(new Error('out of memory')).code).toBe('memory-pressure')
+    expect(describeFsrsError(new Error('optimizer timed out')).code).toBe('timeout')
   })
 })

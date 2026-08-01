@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import dayjs from 'dayjs'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { ReadingSession, ReadingTarget } from '../types/models'
 import {
@@ -23,6 +23,7 @@ import {
 import { resumeDailyCardsAfterArticle, setArticleStatus } from '../modules/review/dailyQueueService'
 import { loadSettings } from '../modules/settings/settingsService'
 import { db } from '../db/database'
+import { setWakeLockOwner } from '../app/screenWakeLock'
 
 const route = useRoute()
 const router = useRouter()
@@ -385,8 +386,23 @@ async function cancel() {
   loading.value = false
 }
 
+async function refreshReadingAfterResume(): Promise<void> {
+  if (document.visibilityState !== 'visible') return
+  void setWakeLockOwner('reading-session', true)
+  if (loading.value || !session.value) return
+  const persisted = await db.readingSessions.get(session.value.sessionId)
+  if (persisted) await restoreSavedArticle(persisted)
+}
+
 onMounted(() => {
   void initialize()
+  void setWakeLockOwner('reading-session', true)
+  document.addEventListener('visibilitychange', refreshReadingAfterResume)
+})
+onBeforeUnmount(() => {
+  controller?.abort()
+  document.removeEventListener('visibilitychange', refreshReadingAfterResume)
+  void setWakeLockOwner('reading-session', false)
 })
 </script>
 
@@ -401,7 +417,7 @@ onMounted(() => {
     <div v-if="staleArticle" class="immersive-empty article-stale-state">
       <h1>文章需要更新</h1>
       <p>新增词尚未包含在原文章中，可以重新生成，也可以继续阅读原文。</p>
-      <div class="action-row"><button class="btn btn-primary" type="button" @click="regenerateStaleArticle">重新准备</button><button class="btn" type="button" @click="continuePreviousArticle">继续原文</button><button v-if="noKey" class="btn" type="button" @click="router.push('/settings')">配置 DeepSeek Key</button></div>
+      <div class="action-row"><button class="btn btn-primary" type="button" @click="regenerateStaleArticle">重新准备</button><button class="btn" type="button" @click="continuePreviousArticle">继续原文</button><button v-if="noKey" class="btn" type="button" @click="router.push({ path: '/settings', query: { section: 'ai' } })">配置 DeepSeek Key</button></div>
     </div>
 
     <article v-else class="reading-card reading-card-stable" :aria-busy="loading">
@@ -449,7 +465,7 @@ onMounted(() => {
           <button class="btn btn-primary" type="button" @click="loadBatch(false)">{{ errorActionLabel }}</button>
           <button v-if="hasRetainedPassage" class="btn" type="button" @click="loadBatch(true)">重新生成正文</button>
           <button class="btn" type="button" @click="skip">跳过并完成今日学习</button>
-          <button v-if="generationErrorCode === 'missing-key' || error.includes('Key')" class="btn" type="button" @click="router.push('/settings')">去设置</button>
+          <button v-if="generationErrorCode === 'missing-key' || error.includes('Key')" class="btn" type="button" @click="router.push({ path: '/settings', query: { section: 'ai' } })">去设置</button>
         </div>
       </section>
 

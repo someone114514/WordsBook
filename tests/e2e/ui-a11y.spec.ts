@@ -5,7 +5,7 @@ const compact = { width: 390, height: 844 }
 const regular = { width: 1440, height: 900 }
 
 async function disableMotion(page: import('@playwright/test').Page): Promise<void> {
-  await page.addStyleTag({ content: '*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}' })
+  await page.addStyleTag({ content: '*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}.app-toast,.app-system-banner{display:none!important}' })
 }
 
 test('uses a touch tab bar on compact screens without overflow', async ({ page }) => {
@@ -28,6 +28,7 @@ test('uses a touch tab bar on compact screens without overflow', async ({ page }
 
 test('keeps the adaptive shell stable at tablet breakpoints', async ({ page }) => {
   for (const viewport of [
+    { width: 430, height: 932, sidebar: false },
     { width: 768, height: 1024, sidebar: false },
     { width: 1024, height: 768, sidebar: true },
   ]) {
@@ -62,7 +63,8 @@ test('switches to a sidebar on regular screens', async ({ page }) => {
 
 test('keeps immersive learning free of global chrome', async ({ page }) => {
   await page.setViewportSize(compact)
-  await page.goto('/review/session')
+  await page.goto('/review')
+  await page.getByRole('button', { name: '开始今日学习' }).click()
   await expect(page.locator('.bottom-nav')).toHaveCount(0)
   await expect(page.locator('.app-sidebar')).toHaveCount(0)
   await expect(page.locator('.topbar')).toHaveCount(0)
@@ -99,9 +101,9 @@ test('matches compact core-screen visual baselines', async ({ page }) => {
   await disableMotion(page)
   await expect(page).toHaveScreenshot('lists-compact.png', { animations: 'disabled', maxDiffPixelRatio: 0.02 })
 
-  await page.goto('/settings')
+  await page.goto('/settings?section=fsrs')
   await disableMotion(page)
-  await page.locator('.settings-group').evaluateAll((groups) => groups.forEach((group) => group.removeAttribute('open')))
+  await expect(page.locator('.settings-group[open]')).toHaveCount(1)
   await expect(page).toHaveScreenshot('settings-compact.png', { animations: 'disabled', maxDiffPixelRatio: 0.02 })
 })
 

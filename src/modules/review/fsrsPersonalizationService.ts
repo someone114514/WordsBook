@@ -52,15 +52,97 @@ export type FsrsRuntimeReason =
 export interface FsrsRuntimeDiagnostics {
   available: boolean
   reason: FsrsRuntimeReason
+  capabilityStage: 'ready' | 'blocked'
+  workerStage: 'not-started' | 'starting' | 'ready' | 'failed'
   trainingMode: boolean
   secureContext: boolean
   crossOriginIsolated: boolean
   sharedArrayBuffer: boolean
   serviceWorkerControlled: boolean
   userAgent: string
+  runtimeVersions: {
+    binding: '0.5.0'
+    napiWasmRuntime: '1.1.4'
+    emnapi: '1.11.3'
+  }
 }
 
-export type FsrsOptimizationPhase = 'preparing' | 'training' | 'validating' | 'rebuilding' | 'saving'
+export type FsrsOptimizationPhase = 'preparing' | 'initializing' | 'training' | 'validating' | 'rebuilding' | 'saving'
+
+export type FsrsErrorCode =
+  | 'samples-insufficient'
+  | 'runtime-unavailable'
+  | 'runtime-version-mismatch'
+  | 'worker-initialization-failed'
+  | 'memory-pressure'
+  | 'timeout'
+  | 'validation-failed'
+  | 'save-failed'
+  | 'unknown'
+
+export interface FsrsErrorInfo {
+  code: FsrsErrorCode
+  message: string
+  technicalDetails: string
+}
+
+class FsrsOptimizationError extends Error {
+  readonly code: FsrsErrorCode
+  readonly technicalDetails: string
+
+  constructor(
+    code: FsrsErrorCode,
+    message: string,
+    technicalDetails: string,
+  ) {
+    super(message)
+    this.name = 'FsrsOptimizationError'
+    this.code = code
+    this.technicalDetails = technicalDetails
+  }
+}
+
+function failure(code: FsrsErrorCode, message: string, cause?: unknown): FsrsOptimizationError {
+  const technicalDetails = cause instanceof Error
+    ? `${cause.name}: ${cause.message}${cause.stack ? `\n${cause.stack}` : ''}`
+    : cause === undefined ? message : String(cause)
+  return new FsrsOptimizationError(code, message, technicalDetails)
+}
+
+export function describeFsrsError(reason: unknown): FsrsErrorInfo {
+  if (reason instanceof FsrsOptimizationError) {
+    return { code: reason.code, message: reason.message, technicalDetails: reason.technicalDetails }
+  }
+  const technicalDetails = reason instanceof Error
+    ? `${reason.name}: ${reason.message}${reason.stack ? `\n${reason.stack}` : ''}`
+    : String(reason)
+  if (/napi_create_async_work|import function env:|emnapi|wasm-runtime/i.test(technicalDetails)) {
+    return {
+      code: 'runtime-version-mismatch',
+      message: '训练组件版本不兼容。请更新应用后重新打开；当前记忆参数和复习进度不受影响。',
+      technicalDetails,
+    }
+  }
+  if (/out of memory|memory access|allocation failed|oom/i.test(technicalDetails)) {
+    return {
+      code: 'memory-pressure',
+      message: '设备可用内存不足。请关闭其他页面后重试；当前参数会继续使用。',
+      technicalDetails,
+    }
+  }
+  if (/timeout|timed out/i.test(technicalDetails)) {
+    return {
+      code: 'timeout',
+      message: '训练等待时间过长。请保持应用在前台并关闭其他页面后重试。',
+      technicalDetails,
+    }
+  }
+  return {
+    code: 'unknown',
+    message: '本次训练未完成。当前参数和复习进度均已保留，可以稍后重试。',
+    technicalDetails,
+  }
+}
 
 export interface FsrsOptimizationProgress {
   phase: FsrsOptimizationPhase
@@ -217,12 +299,19 @@ export function getFsrsRuntimeDiagnostics(): FsrsRuntimeDiagnostics {
   return {
     available,
     reason,
+    capabilityStage: available ? 'ready' : 'blocked',
+    workerStage: 'not-started',
     trainingMode,
     secureContext,
     crossOriginIsolated: isolated,
     sharedArrayBuffer,
     serviceWorkerControlled: typeof navigator !== 'undefined' && Boolean(navigator.serviceWorker?.controller),
     userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : '',
+    runtimeVersions: {
+      binding: '0.5.0',
+      napiWasmRuntime: '1.1.4',
+      emnapi: '1.11.3',
+    },
   }
 }
 
@@ -292,18 +381,19 @@ export async function optimizeFsrsParameters(
   const dataset = buildFsrsOptimizationDataset(logs)
   onProgress?.({ phase: 'preparing', current: 1, total: 1 })
   if (dataset.effectiveReviewCount < FSRS_PERSONALIZATION_MIN_REVIEWS) {
-    throw new Error(`至少需要 ${FSRS_PERSONALIZATION_MIN_REVIEWS} 条有效的每日首次评分`)
+    throw failure('samples-insufficient', `至少需要 ${FSRS_PERSONALIZATION_MIN_REVIEWS} 条有效的每日首次评分`)
   }
   if (dataset.items.length < MIN_HOLDOUT_ITEMS) {
-    throw new Error('有效评分已足够，但跨日复习序列仍太少，暂时无法可靠训练')
+    throw failure('samples-insufficient', '有效评分已足够，但跨日复习序列仍太少，暂时无法可靠训练')
   }
   const diagnostics = getFsrsRuntimeDiagnostics()
   if (!diagnostics.available) {
-    throw new Error(diagnostics.reason === 'training-mode-required'
+    throw failure('runtime-unavailable', diagnostics.reason === 'training-mode-required'
       ? '请先进入移动兼容训练模式'
       : '训练环境未成功启用浏览器隔离，请更新浏览器或重新进入训练模式')
   }
 
+  onProgress?.({ phase: 'initializing', current: 0, total: 1 })
   const [
     { initOptimizer },
     { default: wasmUrl },
@@ -313,21 +403,41 @@ export async function optimizeFsrsParameters(
     import('../../assets/fsrs-binding.wasm32-wasi.wasm?url'),
     import('./fsrsOptimizerWorker?worker'),
   ])
-  const binding = await initOptimizer({
-    wasm: wasmUrl,
-    worker: () => new OptimizerWorker(),
-    errorEvent: true,
-  })
+  const optimizerWorkers: Worker[] = []
+  let binding: Awaited<ReturnType<typeof initOptimizer>>
+  try {
+    binding = await initOptimizer({
+      wasm: wasmUrl,
+      worker: () => {
+        const worker = new OptimizerWorker()
+        optimizerWorkers.push(worker)
+        return worker
+      },
+      errorEvent: true,
+    })
+    onProgress?.({ phase: 'initializing', current: 1, total: 1 })
+  } catch (reason) {
+    optimizerWorkers.forEach((worker) => worker.terminate())
+    const mapped = describeFsrsError(reason)
+    throw failure(
+      mapped.code === 'runtime-version-mismatch' ? mapped.code : 'worker-initialization-failed',
+      mapped.code === 'runtime-version-mismatch'
+        ? mapped.message
+        : '训练组件未能启动。请重新打开应用后重试；当前参数会继续使用。',
+      reason,
+    )
+  }
   const makeItems = (definitions: FsrsItemDefinition[]) => definitions.map((definition) =>
     new binding.FSRSBindingItem(definition.reviews.map((review) =>
       new binding.FSRSBindingReview(review.rating, review.deltaT))),
   )
   const holdoutCount = Math.max(MIN_HOLDOUT_ITEMS, Math.ceil(dataset.items.length * HOLDOUT_FRACTION))
   const splitIndex = Math.max(1, dataset.items.length - holdoutCount)
-  const trainSet = makeItems(dataset.items.slice(0, splitIndex))
-  const holdoutSet = makeItems(dataset.items.slice(splitIndex))
+  let holdoutSet: ReturnType<typeof makeItems> = []
   let parameters: number[]
   try {
+    const trainSet = makeItems(dataset.items.slice(0, splitIndex))
+    holdoutSet = makeItems(dataset.items.slice(splitIndex))
     parameters = await binding.computeParameters(trainSet, {
       enableShortTerm: false,
       numRelearningSteps: 0,
@@ -335,16 +445,21 @@ export async function optimizeFsrsParameters(
       progress: (current, total) => onProgress?.({ phase: 'training', current, total }),
     })
   } catch (error) {
-    if (error instanceof Error && /timeout|timed out/i.test(error.message)) {
-      throw new Error('训练超过 120 秒，请关闭其他页面后重试；复习记录不会受影响')
-    }
-    throw error
+    const mapped = describeFsrsError(error)
+    throw failure(mapped.code, mapped.message, error)
+  } finally {
+    optimizerWorkers.forEach((worker) => worker.terminate())
   }
   if (
     parameters.length !== DEFAULT_FSRS_PARAMETERS.length
     || parameters.some((parameter) => !Number.isFinite(parameter))
   ) {
-    throw new Error('FSRS 优化器返回了不兼容的参数')
+    throw failure('validation-failed', '训练结果没有通过完整性检查，当前参数会继续使用。')
+  }
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('wordsbook:fsrs-optimizer-result', {
+      detail: { parameterCount: parameters.length, allFinite: parameters.every(Number.isFinite) },
+    }))
   }
 
   onProgress?.({ phase: 'validating', current: 0, total: 1 })
@@ -352,7 +467,7 @@ export async function optimizeFsrsParameters(
   const candidateMetrics = new binding.FSRSBinding(parameters).evaluate(holdoutSet)
   onProgress?.({ phase: 'validating', current: 1, total: 1 })
   if (!metricsAreFinite(defaultMetrics) || !metricsAreFinite(candidateMetrics)) {
-    throw new Error('FSRS 留出集评估结果无效')
+    throw failure('validation-failed', '训练结果没有通过留出集验证，当前参数会继续使用。')
   }
   const previous = await loadRecord()
   const activate = candidateIsBetter(defaultMetrics, candidateMetrics)
@@ -368,7 +483,9 @@ export async function optimizeFsrsParameters(
 
   let rebuiltStates: ReviewState[] = []
   if (activate) {
-    if (!configureReviewScheduler(parameters)) throw new Error('FSRS 参数无法应用到调度器')
+    if (!configureReviewScheduler(parameters)) {
+      throw failure('validation-failed', '训练结果无法安全应用，当前参数会继续使用。')
+    }
     try {
       rebuiltStates = await rebuildReviewStates(dataset.canonicalLogsByWord, onProgress)
     } catch (error) {
@@ -390,7 +507,7 @@ export async function optimizeFsrsParameters(
     })
   } catch (error) {
     if (activate) configureReviewScheduler(previous?.activeParameters)
-    throw error
+    throw failure('save-failed', '训练已完成，但保存失败。当前参数和复习状态没有改变，请稍后重试。', error)
   }
   if (activate) {
     invalidateStudyPlanCache()

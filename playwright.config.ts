@@ -20,5 +20,10 @@ export default defineConfig({
       name: 'chromium',
       use: { ...devices['Desktop Chrome'] },
     },
+    {
+      name: 'webkit-mobile',
+      testMatch: /(?:native-pwa|fsrs-wasm)\.spec\.ts/,
+      use: { ...devices['iPhone 13'] },
+    },
   ],
 })

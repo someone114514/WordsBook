@@ -30,7 +30,7 @@ async function finishLearningFlow(page: Page): Promise<void> {
     const reveal = page.getByRole('button', { name: '显示释义' })
     const enterArticle = page.getByRole('button', { name: '进入今日文章' })
     const returnHome = page.getByRole('button', { name: '返回学习首页' })
-    await expect(completed.or(localReading).or(continueReading).or(localPractice).or(reveal).or(enterArticle).or(returnHome))
+    await expect(completed.or(localReading).or(continueReading).or(localPractice).or(reveal).or(enterArticle).or(returnHome).first())
       .toBeVisible({ timeout: 15_000 })
     if (await completed.isVisible()) return
     if (await enterArticle.isVisible()) {
@@ -147,8 +147,10 @@ test('imports a list and completes the four-grade daily queue without an AI key'
   await page.goto('/lists')
   await expect(page.getByRole('heading', { level: 1, name: '词表' })).toBeVisible()
 
-  await page.getByLabel('词表名称').fill('E2E 学习表')
-  await page.getByRole('button', { name: '创建', exact: true }).click()
+  await page.getByRole('button', { name: '新建词表' }).click()
+  const createListDialog = page.getByRole('dialog', { name: '新建词表' })
+  await createListDialog.getByLabel('词表名称').fill('E2E 学习表')
+  await createListDialog.getByRole('button', { name: '创建词表' }).click()
   await page.getByRole('link', { name: '管理词表', exact: true }).last().click()
   await page.getByRole('button', { name: '导入', exact: true }).click()
   await page.getByText('查看 JSON 范例').click()
@@ -192,8 +194,10 @@ test('keeps the started queue stable, applies list changes, and adds another gro
   test.setTimeout(90_000)
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto('/lists')
-  await page.getByLabel('词表名称').fill('稳定队列表')
-  await page.getByRole('button', { name: '创建', exact: true }).click()
+  await page.getByRole('button', { name: '新建词表' }).click()
+  const createListDialog = page.getByRole('dialog', { name: '新建词表' })
+  await createListDialog.getByLabel('词表名称').fill('稳定队列表')
+  await createListDialog.getByRole('button', { name: '创建词表' }).click()
   await page.getByRole('link', { name: '管理词表', exact: true }).last().click()
   await page.getByRole('button', { name: '导入', exact: true }).click()
   await page.getByPlaceholder(/粘贴 JSON/).fill(JSON.stringify({ words: [
@@ -219,7 +223,14 @@ test('keeps the started queue stable, applies list changes, and adds another gro
   await page.getByRole('button', { name: '退出' }).click()
 
   await page.getByRole('link', { name: '词表' }).click()
-  await page.getByRole('link', { name: '管理词表', exact: true }).last().click()
+  const restoredDetailImport = page.getByRole('button', { name: '导入', exact: true })
+  const rootManageList = page.getByRole('link', { name: '管理词表', exact: true }).last()
+  await expect(restoredDetailImport.or(rootManageList)).toBeVisible()
+  if (await restoredDetailImport.isVisible()) {
+    await page.getByRole('link', { name: '词表' }).click()
+    await expect(rootManageList).toBeVisible()
+  }
+  await rootManageList.click()
   await page.getByRole('button', { name: '导入', exact: true }).click()
   await page.getByPlaceholder(/粘贴 JSON/).fill(JSON.stringify({ words: [{ word: 'stablefour', meaning: '稳定四' }] }))
   await page.getByRole('button', { name: '预览导入' }).click()

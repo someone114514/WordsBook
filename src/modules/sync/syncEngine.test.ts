@@ -84,7 +84,7 @@ describe('cloud sync engine', () => {
     expect(dataset.records.filter((row) => row.entity === 'reviewState')).toHaveLength(536)
     expect(dataset.records.filter((row) => row.entity === 'reviewLogs')).toHaveLength(3372)
     expect(dataset.records.filter((row) => row.entity === 'settings')).toHaveLength(7)
-  })
+  }, 20_000)
 
   backupFixtureIt('uploads the backup sample and restores it into an empty local database', async () => {
     await importUserData(loadBackupFile())

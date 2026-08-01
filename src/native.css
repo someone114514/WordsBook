@@ -1,0 +1,51 @@
+/* Final cascade for native navigation and viewport behavior. */
+.topbar.topbar-compact {
+  position: sticky;
+  top: 0;
+  display: flex;
+  min-height: calc(52px + env(safe-area-inset-top));
+  align-items: flex-end;
+  justify-content: center;
+  padding: env(safe-area-inset-top) 1rem 0.6rem;
+  border-bottom-color: transparent;
+  background: rgba(247, 247, 249, 0.66);
+}
+
+.topbar.topbar-compact.is-collapsed {
+  border-bottom-color: var(--border-subtle);
+  background: rgba(247, 247, 249, 0.82);
+}
+
+.bottom-nav {
+  transition:
+    opacity var(--motion-fast) var(--ease-standard),
+    transform var(--motion-base) var(--ease-emphasized),
+    box-shadow var(--motion-base) var(--ease-standard),
+    border-color var(--motion-base) var(--ease-standard);
+}
+
+.fsrs-runtime-panel,
+.sync-message,
+.settings-card {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (min-width: 1024px) {
+  .topbar.topbar-compact {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-forward-enter-from,
+  .page-forward-leave-to,
+  .page-back-enter-from,
+  .page-back-leave-to,
+  .page-zoom-enter-from,
+  .page-zoom-leave-to,
+  .toast-rise-enter-from,
+  .toast-rise-leave-to {
+    transform: none !important;
+  }
+}

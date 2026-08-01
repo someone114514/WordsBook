@@ -1,7 +1,11 @@
 <script setup lang="ts">
-import { computed, onActivated, ref } from 'vue'
+import { computed, onActivated, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ChevronLeft } from 'lucide-vue-next'
+import { contextualBack } from '../app/appNavigation'
+import { notify } from '../app/feedback'
+import AppActionSheet from '../components/AppActionSheet.vue'
+import { setCriticalActivity } from '../app/useAppLifecycle'
 import { addWordToStudyList, deleteStudyList, listStudyLists, listStudyListWords, removeWordFromStudyList, setStudyListWordsLearningEnabled, updateStudyList } from '../modules/wordbook/studyListService'
 import { importWordList, previewWordList, WORD_LIST_JSON_EXAMPLE } from '../modules/wordbook/wordListImportService'
 
@@ -16,6 +20,7 @@ const busy = ref(false); const message = ref(''); const importError = ref('')
 const current = computed(() => lists.value.find((list) => list.listId === listId.value))
 const filtered = computed(() => words.value.filter((row) => !query.value.trim() || row.entry?.headwordLower.includes(query.value.trim().toLowerCase())))
 const draftName = ref(''); const draftDescription = ref('')
+const deleteSheetOpen = ref(false)
 
 async function load() {
   lists.value = await listStudyLists(); words.value = await listStudyListWords(listId.value)
@@ -30,13 +35,32 @@ async function moveSelected(copy = false) { if (!targetListId.value) return; awa
 async function setSelectedLearning(enabled: boolean) { const count = await setStudyListWordsLearningEnabled(listId.value, selected.value, enabled); message.value = enabled ? `已将 ${count} 个词加入学习` : `已暂停 ${count} 个词`; selected.value = []; await load() }
 async function saveSettings() { if (!current.value) return; await updateStudyList(listId.value, { name: draftName.value, description: draftDescription.value, studyEnabled: current.value.studyEnabled }); message.value = '词表设置已保存'; await load() }
 async function toggleStudy() { if (!current.value) return; await updateStudyList(listId.value, { studyEnabled: current.value.studyEnabled ? 0 : 1 }); await load() }
-async function removeList() { if (!current.value || !confirm(`删除“${current.value.name}”？单词和复习历史会保留。`)) return; await deleteStudyList(listId.value); await router.replace('/lists') }
+async function removeList() {
+  if (!current.value || busy.value) return
+  busy.value = true
+  const listName = current.value.name
+  try {
+    await deleteStudyList(listId.value)
+    deleteSheetOpen.value = false
+    notify(`已删除「${listName}」，单词与复习记录仍保留。`, { tone: 'success' })
+    await router.replace('/lists')
+  } finally {
+    busy.value = false
+  }
+}
 onActivated(() => void load())
+watch([draftName, draftDescription, importText], ([nextName, nextDescription, nextImport]) => {
+  const settingsDirty = Boolean(current.value && (
+    nextName !== current.value.name || nextDescription !== (current.value.description ?? '')
+  ))
+  setCriticalActivity('list-detail-form', settingsDirty || Boolean(nextImport.trim()))
+})
+onBeforeUnmount(() => setCriticalActivity('list-detail-form', false))
 </script>
 
 <template>
   <main v-if="current" class="page-shell list-detail">
-    <header class="detail-header"><RouterLink class="btn" to="/lists"><ChevronLeft :size="19" aria-hidden="true" />返回词表</RouterLink><div><h1>{{ current.name }}</h1><p>{{ current.wordCount }} 个单词 · 已激活 {{ current.activeWordCount }} 个 · {{ current.studyEnabled ? '词表参与每日学习' : '词表已暂停' }}</p></div></header>
+    <header class="detail-header"><button class="btn" type="button" @click="contextualBack(router, route)"><ChevronLeft :size="19" aria-hidden="true" />返回词表</button><div><h1>{{ current.name }}</h1><p>{{ current.wordCount }} 个单词 · 已激活 {{ current.activeWordCount }} 个 · {{ current.studyEnabled ? '词表参与每日学习' : '词表已暂停' }}</p></div></header>
     <nav class="detail-tabs" aria-label="词表详情"><button :class="{ active: tab === 'words' }" @click="tab='words'">单词</button><button :class="{ active: tab === 'import' }" @click="tab='import'">导入</button><button :class="{ active: tab === 'settings' }" @click="tab='settings'">设置</button></nav>
     <p v-if="message" class="success" role="status">{{ message }}</p>
     <section v-if="tab === 'words'" class="panel">
@@ -51,6 +75,14 @@ onActivated(() => void load())
       <template v-else-if="importStep === 2 && preview"><div class="preview-stats"><div><strong>{{ preview.rows.length }}</strong><span>总行数</span></div><div><strong>{{ preview.matched }}</strong><span>词典匹配</span></div><div><strong>{{ preview.pending }}</strong><span>待补全</span></div><div><strong>{{ preview.duplicates }}</strong><span>重复</span></div><div><strong>{{ preview.invalid }}</strong><span>无效</span></div></div><p v-if="importError" class="error" role="alert">{{ importError }}</p><button class="btn" @click="importStep=1">返回修改</button><button class="btn btn-primary" :disabled="busy" @click="runImport">确认导入</button></template>
       <template v-else-if="report"><h2>导入完成</h2><p>匹配 {{ report.matched }}，新建 {{ report.created }}，待补全 {{ report.pending }}，重复 {{ report.duplicates }}，无效 {{ report.invalid }}。导入词已进入待学习，不会自动加入每日队列。</p><button class="btn btn-primary" @click="tab='words'; importStep=1; importText=''">查看单词</button></template>
     </section>
-    <section v-else class="panel settings-form"><label>名称<input v-model="draftName" class="inline-input"/></label><label>说明<textarea v-model="draftDescription" class="notes-area" rows="3"/></label><label class="setting-switch"><span><strong>参与每日学习</strong><small>开启后与其他词表混合去重</small></span><input type="checkbox" :checked="Boolean(current.studyEnabled)" @change="toggleStudy"/></label><button class="btn btn-primary" @click="saveSettings">保存设置</button><button v-if="!current.systemType" class="btn btn-danger" @click="removeList">删除词表</button></section>
+    <section v-else class="panel settings-form"><label>名称<input v-model="draftName" class="inline-input"/></label><label>说明<textarea v-model="draftDescription" class="notes-area" rows="3"/></label><label class="setting-switch"><span><strong>参与每日学习</strong><small>开启后与其他词表混合去重</small></span><input type="checkbox" :checked="Boolean(current.studyEnabled)" @change="toggleStudy"/></label><button class="btn btn-primary" @click="saveSettings">保存设置</button><button v-if="!current.systemType" class="btn btn-danger" @click="deleteSheetOpen = true">删除词表</button></section>
   </main>
+  <AppActionSheet :open="deleteSheetOpen" title="删除词表？" @close="deleteSheetOpen = false">
+    <p>「{{ current?.name }}」将从词表列表中移除。</p>
+    <p class="muted">其中的单词、长期记忆状态与复习历史都会保留，此操作不会清空学习数据。</p>
+    <template #actions>
+      <button class="btn" type="button" @click="deleteSheetOpen = false">取消</button>
+      <button class="btn btn-danger" type="button" :disabled="busy" @click="removeList">{{ busy ? '删除中…' : '删除词表' }}</button>
+    </template>
+  </AppActionSheet>
 </template>

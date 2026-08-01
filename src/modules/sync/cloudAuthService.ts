@@ -129,6 +129,7 @@ export function startCloudSessionRecovery(): void {
   }
 
   window.addEventListener('pageshow', recover)
+  window.addEventListener('online', recover)
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
       recover()

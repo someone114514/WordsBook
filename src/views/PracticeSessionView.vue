@@ -11,6 +11,7 @@ import {
   retryRoundPractice,
 } from '../modules/reading/practiceService'
 import { resumeDailyCardsAfterPractice } from '../modules/review/dailyQueueService'
+import { setWakeLockOwner } from '../app/screenWakeLock'
 
 const route = useRoute()
 const router = useRouter()
@@ -159,6 +160,8 @@ async function finish(skipped: boolean) {
 
 onMounted(async () => {
   await refresh()
+  void setWakeLockOwner('practice-session', true)
+  document.addEventListener('visibilitychange', refreshPracticeAfterResume)
   pollTimer = window.setInterval(() => {
     if (content.value?.status === 'pending' || content.value?.status === 'streaming') void refresh()
   }, 800)
@@ -166,7 +169,16 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   disposed = true
   window.clearInterval(pollTimer)
+  document.removeEventListener('visibilitychange', refreshPracticeAfterResume)
+  void setWakeLockOwner('practice-session', false)
 })
+
+function refreshPracticeAfterResume(): void {
+  if (document.visibilityState !== 'visible') return
+  disposed = false
+  void setWakeLockOwner('practice-session', true)
+  void refresh()
+}
 </script>
 
 <template>
