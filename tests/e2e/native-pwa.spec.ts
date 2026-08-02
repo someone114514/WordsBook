@@ -83,6 +83,14 @@ test.describe('native PWA navigation and panels', () => {
         .every((chunk) => resources.some((resource) => resource.includes(chunk)))
     })).toBe(true)
 
+    // Mount every cached root once before timing repeated tab switches. This
+    // keeps the assertion focused on navigation feedback rather than first-use
+    // IndexedDB work and module initialization on a shared CI runner.
+    for (const target of tabs) {
+      await page.locator('.bottom-nav').getByRole('link', { name: target.label }).click()
+      await expect.poll(() => new URL(page.url()).pathname).toBe(target.path)
+    }
+
     for (const viewport of viewports) {
       await page.setViewportSize(viewport)
 
