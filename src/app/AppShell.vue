@@ -1,11 +1,12 @@
 ﻿<script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { BookOpenCheck, CloudOff, Download, LibraryBig, Search, Settings2, X } from 'lucide-vue-next'
 import GlobalSelectionLookup from '../components/GlobalSelectionLookup.vue'
 import AppToastHost from '../components/AppToastHost.vue'
 import { notify } from './feedback'
 import { navigateToTab, navigationTransition, rememberRoute, type AppTab } from './appNavigation'
+import { prefetchAppTab } from './router'
 import { setCriticalActivity, useAppLifecycle } from './useAppLifecycle'
 
 const route = useRoute()
@@ -28,29 +29,14 @@ const level = computed(() => route.meta.level ?? 'root')
 const rootPage = computed(() => level.value === 'root')
 const immersiveMode = computed(() => shellMode.value === 'immersive')
 const keepAliveViews = ['LookupView', 'ReviewView', 'StudyListsView', 'StudyListDetailView', 'SettingsView']
-const largeTitleElement = ref<HTMLElement | null>(null)
-const compactTitleVisible = ref(false)
-let titleObserver: IntersectionObserver | undefined
-let scrollFrame = 0
 
 function navigateTab(tab: AppTab, event: MouseEvent): void {
   event.preventDefault()
   void navigateToTab(router, route, tab)
 }
 
-function watchLargeTitle(): void {
-  titleObserver?.disconnect()
-  compactTitleVisible.value = false
-  if (!largeTitleElement.value || !rootPage.value || !('IntersectionObserver' in window)) return
-  titleObserver = new IntersectionObserver(([entry]) => {
-    compactTitleVisible.value = !entry?.isIntersecting
-  }, { rootMargin: '-52px 0px 0px', threshold: 0 })
-  titleObserver.observe(largeTitleElement.value)
-}
-
-function rememberCurrentScroll(): void {
-  window.cancelAnimationFrame(scrollFrame)
-  scrollFrame = window.requestAnimationFrame(() => rememberRoute(route, window.scrollY))
+function rememberCurrentPage(): void {
+  rememberRoute({ fullPath: route.fullPath, meta: { ...route.meta } }, window.scrollY)
 }
 
 async function installUpdate(): Promise<void> {
@@ -62,31 +48,22 @@ async function installUpdate(): Promise<void> {
   if (!applied) notify('暂时无法更新，请稍后再试。', { tone: 'error' })
 }
 
-watch(() => route.fullPath, async () => {
-  await nextTick()
-  watchLargeTitle()
-})
 watch(immersiveMode, (active) => setCriticalActivity('active-learning', active), { immediate: true })
 onMounted(() => {
-  watchLargeTitle()
-  window.addEventListener('scroll', rememberCurrentScroll, { passive: true })
-  window.addEventListener('pagehide', rememberCurrentScroll)
+  window.addEventListener('pagehide', rememberCurrentPage)
 })
 onBeforeUnmount(() => {
-  titleObserver?.disconnect()
-  window.cancelAnimationFrame(scrollFrame)
-  window.removeEventListener('scroll', rememberCurrentScroll)
-  window.removeEventListener('pagehide', rememberCurrentScroll)
+  window.removeEventListener('pagehide', rememberCurrentPage)
   setCriticalActivity('active-learning', false)
 })
 </script>
 
 <template>
-  <div class="app-shell selection-lookup-scope" :class="[`app-shell-${shellMode}`, { 'app-shell-immersive': immersiveMode }]">
+  <div class="app-shell selection-lookup-scope" :class="[`app-shell-${shellMode}`, `app-shell-tab-${route.meta.tab}`, { 'app-shell-immersive': immersiveMode }]">
     <a v-if="!immersiveMode" class="skip-link" href="#main-content">跳转到主内容</a>
 
-    <header v-if="!immersiveMode && shellMode !== 'contextual'" class="topbar topbar-compact" :class="{ 'is-collapsed': compactTitleVisible }">
-      <span aria-hidden="true">{{ title }}</span>
+    <header v-if="!immersiveMode && shellMode !== 'contextual'" class="topbar topbar-compact">
+      <h1>{{ largeTitle }}</h1>
     </header>
 
     <div v-if="!immersiveMode && !online" class="app-system-banner app-system-banner-offline" role="status">
@@ -114,6 +91,7 @@ onBeforeUnmount(() => {
             :href="href"
             class="sidebar-nav-item"
             :class="{ 'router-link-active': isActive, 'router-link-exact-active': isExactActive }"
+            @pointerdown="prefetchAppTab(tab.id)"
             @click="navigateTab(tab.id, $event)"
           >
             <component :is="tab.icon" :size="21" :stroke-width="isActive ? 2.35 : 1.8" aria-hidden="true" />
@@ -124,11 +102,14 @@ onBeforeUnmount(() => {
     </aside>
 
     <main id="main-content" class="content-area" :class="{ 'content-area-immersive': immersiveMode }">
-      <div v-if="rootPage && !immersiveMode" ref="largeTitleElement" class="app-large-title">
+      <div v-if="rootPage && !immersiveMode" class="app-large-title">
         <h1>{{ largeTitle }}</h1>
       </div>
       <RouterView v-slot="{ Component, route: activeRoute }">
-        <Transition :name="navigationTransition">
+        <Transition
+          :name="navigationTransition"
+          :css="navigationTransition !== 'page-none'"
+        >
           <component v-if="Component && immersiveMode" :is="Component" :key="activeRoute.fullPath" />
           <KeepAlive v-else :include="keepAliveViews">
             <component v-if="Component" :is="Component" :key="activeRoute.path" />
@@ -143,6 +124,7 @@ onBeforeUnmount(() => {
           :href="href"
           class="nav-item"
           :class="{ 'router-link-active': isActive, 'router-link-exact-active': isExactActive }"
+          @pointerdown="prefetchAppTab(tab.id)"
           @click="navigateTab(tab.id, $event)"
         >
           <component :is="tab.icon" :size="22" :stroke-width="isActive ? 2.4 : 1.8" aria-hidden="true" />

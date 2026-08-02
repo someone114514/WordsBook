@@ -4,7 +4,7 @@ import { registerSW } from 'virtual:pwa-register'
 import './style.css'
 import './native.css'
 import App from './App.vue'
-import { router } from './app/router'
+import { prefetchAllAppTabs, router } from './app/router'
 import { startCloudSessionRecovery } from './modules/sync/cloudAuthService'
 import { STUDY_DATA_CHANGED_EVENT } from './modules/review/studyDataRevision'
 import { scheduleTodayPlanPrewarm } from './modules/review/reviewService'
@@ -62,7 +62,18 @@ await initializePersonalizedReviewScheduler().catch(() => undefined)
 const app = createApp(App)
 app.use(createPinia())
 app.use(router)
-app.mount('#app')
+void router.isReady().then(() => {
+  app.mount('#app')
+
+  const requestIdle = (window as Window & {
+    requestIdleCallback?: (callback: IdleRequestCallback, options?: IdleRequestOptions) => number
+  }).requestIdleCallback
+  if (requestIdle) {
+    requestIdle(() => { void prefetchAllAppTabs() }, { timeout: 1_500 })
+  } else {
+    globalThis.setTimeout(() => { void prefetchAllAppTabs() }, 0)
+  }
+}).catch(() => undefined)
 
 scheduleTodayPlanPrewarm()
 window.addEventListener(STUDY_DATA_CHANGED_EVENT, () => {

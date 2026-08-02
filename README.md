@@ -50,5 +50,4 @@ npm run dict:build
 
 Detailed notes:
 
-- Implementation: `docs/IMPLEMENTATION.md`
 - GitHub Pages + mobile packaging: `docs/DEPLOY_GITHUB_MOBILE.md`

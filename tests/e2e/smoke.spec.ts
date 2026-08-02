@@ -100,7 +100,7 @@ test('installs the core dictionary and completes lookup to daily review', async 
   await expect(wordCard.getByText('学习中', { exact: true })).toBeVisible()
   await expect(wordCard.getByRole('button', { name: '已加入学习', exact: true })).toHaveClass(/added/)
   await expect(wordCard.getByRole('button', { name: '已加入学习', exact: true })).toHaveCSS('background-color', 'rgb(241, 245, 249)')
-  await expect(wordCard.getByRole('button', { name: '加入其他词表', exact: true })).toBeVisible()
+  await expect(wordCard.getByRole('button', { name: '更多', exact: true })).toBeVisible()
 
   await page.reload()
   await expect(search).toBeEnabled()
@@ -151,7 +151,7 @@ test('imports a list and completes the four-grade daily queue without an AI key'
   const createListDialog = page.getByRole('dialog', { name: '新建词表' })
   await createListDialog.getByLabel('词表名称').fill('E2E 学习表')
   await createListDialog.getByRole('button', { name: '创建词表' }).click()
-  await page.getByRole('link', { name: '管理词表', exact: true }).last().click()
+  await page.locator('.list-row-group .list-row-link').last().click()
   await page.getByRole('button', { name: '导入', exact: true }).click()
   await page.getByText('查看 JSON 范例').click()
   await expect(page.getByText(/"words"/)).toBeVisible()
@@ -170,6 +170,7 @@ test('imports a list and completes the four-grade daily queue without an AI key'
   await page.getByRole('button', { name: '显示释义' }).click()
   await expect(page.getByRole('button', { name: '移除' })).toBeVisible()
   await expect(page.locator('.review-answer-inline')).toBeVisible()
+  await page.locator('.review-ai-details > summary').click()
   await expect(page.getByRole('button', { name: 'AI 优化释义' })).toBeDisabled()
   await expect(page.getByText('配置 DeepSeek Key 后可用')).toBeVisible()
   await expect(page.locator('.review-memory-grid')).toHaveCount(0)
@@ -198,7 +199,7 @@ test('keeps the started queue stable, applies list changes, and adds another gro
   const createListDialog = page.getByRole('dialog', { name: '新建词表' })
   await createListDialog.getByLabel('词表名称').fill('稳定队列表')
   await createListDialog.getByRole('button', { name: '创建词表' }).click()
-  await page.getByRole('link', { name: '管理词表', exact: true }).last().click()
+  await page.locator('.list-row-group .list-row-link').last().click()
   await page.getByRole('button', { name: '导入', exact: true }).click()
   await page.getByPlaceholder(/粘贴 JSON/).fill(JSON.stringify({ words: [
     { word: 'stableone', meaning: '稳定一' },
@@ -224,7 +225,7 @@ test('keeps the started queue stable, applies list changes, and adds another gro
 
   await page.getByRole('link', { name: '词表' }).click()
   const restoredDetailImport = page.getByRole('button', { name: '导入', exact: true })
-  const rootManageList = page.getByRole('link', { name: '管理词表', exact: true }).last()
+  const rootManageList = page.locator('.list-row-group .list-row-link').last()
   await expect(restoredDetailImport.or(rootManageList)).toBeVisible()
   if (await restoredDetailImport.isVisible()) {
     await page.getByRole('link', { name: '词表' }).click()

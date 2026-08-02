@@ -17,6 +17,13 @@ test-results
 playwright-report
 backup/
 
+# Generated development and agent artifacts
+dev-dist/
+ui-shots/
+.codex/
+.openai/
+*.pid
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

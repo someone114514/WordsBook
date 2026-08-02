@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onActivated, onBeforeUnmount, ref, watch } from 'vue'
-import { Plus } from 'lucide-vue-next'
+import { ChevronRight, Plus } from 'lucide-vue-next'
 import { notify } from '../app/feedback'
 import { setCriticalActivity } from '../app/useAppLifecycle'
 import AppActionSheet from '../components/AppActionSheet.vue'
@@ -49,30 +49,40 @@ onBeforeUnmount(() => setCriticalActivity('create-list-form', false))
 
 <template>
   <main class="page-shell lists-overview">
-    <section class="panel create-list-panel">
-      <div class="section-heading">
-        <div><h2>我的词表</h2><p class="muted">按主题整理单词，并决定哪些词表参与每日学习。</p></div>
-        <button class="btn btn-primary" type="button" @click="createListOpen = true"><Plus :size="19" aria-hidden="true" />新建词表</button>
+    <section class="lists-toolbar">
+      <div>
+        <h2>学习词表</h2>
+        <p class="muted">{{ learningLists.filter(item => item.studyEnabled).length }} 个参与今日学习</p>
       </div>
-      <p v-if="message" class="success" role="status">{{ message }}</p>
+      <button class="btn btn-primary lists-create-action" type="button" aria-label="新建词表" @click="createListOpen = true"><Plus :size="18" aria-hidden="true" />新建</button>
     </section>
+    <p v-if="message" class="success" role="status">{{ message }}</p>
 
-    <section class="panel">
-      <div class="section-heading"><div><h2>学习词表</h2><p class="muted">{{ learningLists.filter(item => item.studyEnabled).length }} 个参与今日队列</p></div></div>
-      <div v-if="learningLists.length" class="list-card-grid">
-        <article v-for="list in learningLists" :key="list.listId" class="list-overview-card">
-          <header class="list-card-heading">
-            <strong>{{ list.name }}</strong>
-            <span :class="['list-status-chip', { active: list.studyEnabled }]">{{ list.studyEnabled ? '参与学习' : '已暂停' }}</span>
-          </header>
-          <div class="list-count"><strong>{{ list.wordCount }}</strong><span>个单词</span></div>
-          <p v-if="list.description" class="list-card-description">{{ list.description }}</p>
-          <RouterLink class="btn" :to="`/lists/${encodeURIComponent(list.listId)}`">管理词表</RouterLink>
-        </article>
+    <section class="lists-section" aria-label="学习词表">
+      <div v-if="learningLists.length" class="list-row-group">
+        <RouterLink
+          v-for="list in learningLists"
+          :key="list.listId"
+          class="list-row-link"
+          :aria-label="`管理词表：${list.name}`"
+          :to="`/lists/${encodeURIComponent(list.listId)}`"
+        >
+          <span class="list-row-main">
+            <span class="list-row-heading">
+              <strong>{{ list.name }}</strong>
+              <span :class="['list-status-chip', { active: list.studyEnabled }]">{{ list.studyEnabled ? '参与学习' : '已暂停' }}</span>
+            </span>
+            <small>{{ list.description || '管理单词与学习状态' }}</small>
+          </span>
+          <span class="list-row-trailing"><strong>{{ list.wordCount }}</strong><small>个单词</small><ChevronRight :size="18" aria-hidden="true" /></span>
+        </RouterLink>
       </div>
-      <div v-else class="empty-state compact"><p>输入名称创建词表，或从查词页加入单词。</p><RouterLink class="btn" to="/lookup">去查词</RouterLink></div>
+      <div v-else class="empty-state compact"><p>还没有学习词表。</p><RouterLink class="btn" to="/lookup">去查词</RouterLink></div>
     </section>
-    <section v-if="savedList" class="panel"><div class="section-heading"><div><h2>仅保存</h2><p class="muted">不参与每日学习</p></div><RouterLink class="btn" :to="`/lists/${encodeURIComponent(savedList.listId)}`">查看 {{ savedList.wordCount }} 词</RouterLink></div></section>
+    <RouterLink v-if="savedList" class="list-row-link list-row-saved" :to="`/lists/${encodeURIComponent(savedList.listId)}`" aria-label="查看仅保存单词">
+      <span class="list-row-main"><strong>仅保存</strong><small>不参与每日学习</small></span>
+      <span class="list-row-trailing"><strong>{{ savedList.wordCount }}</strong><small>个单词</small><ChevronRight :size="18" aria-hidden="true" /></span>
+    </RouterLink>
 
     <AppActionSheet :open="createListOpen" title="新建词表" @close="createListOpen = false">
       <form id="create-list-form" class="sheet-form" @submit.prevent="create">

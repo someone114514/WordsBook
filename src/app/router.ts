@@ -1,15 +1,29 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import SettingsView from '../views/SettingsView.vue'
 import {
   APP_TAB_ROOTS,
   coldStartRoot,
-  getSavedRootScroll,
   getSavedTabLocation,
   isAppTab,
   navigationTransition,
+  rememberRoute,
   tabForPath,
   type AppTab,
 } from './appNavigation'
+
+const appTabLoaders = {
+  lookup: () => import('../views/LookupView.vue'),
+  review: () => import('../views/ReviewView.vue'),
+  lists: () => import('../views/StudyListsView.vue'),
+  settings: () => import('../views/SettingsView.vue'),
+} satisfies Record<AppTab, () => Promise<unknown>>
+
+export function prefetchAppTab(tab: AppTab): void {
+  void appTabLoaders[tab]().catch(() => undefined)
+}
+
+export async function prefetchAllAppTabs(): Promise<void> {
+  await Promise.allSettled(Object.values(appTabLoaders).map((load) => load()))
+}
 
 declare module 'vue-router' {
   interface RouteMeta {
@@ -33,12 +47,12 @@ export const router = createRouter({
     { path: '/', redirect: () => coldStartRoot() },
     {
       path: '/lookup',
-      component: () => import('../views/LookupView.vue'),
+      component: appTabLoaders.lookup,
       meta: { title: '查词', largeTitle: '查词', shell: 'tab', tab: 'lookup', level: 'root' },
     },
     {
       path: '/review',
-      component: () => import('../views/ReviewView.vue'),
+      component: appTabLoaders.review,
       meta: { title: '学习', largeTitle: '今日学习', shell: 'tab', tab: 'review', level: 'root' },
     },
     {
@@ -64,7 +78,7 @@ export const router = createRouter({
     { path: '/wordbook', redirect: '/review' },
     {
       path: '/lists',
-      component: () => import('../views/StudyListsView.vue'),
+      component: appTabLoaders.lists,
       meta: { title: '词表', largeTitle: '词表', shell: 'tab', tab: 'lists', level: 'root' },
     },
     {
@@ -74,22 +88,33 @@ export const router = createRouter({
     },
     {
       path: '/settings',
-      component: SettingsView,
+      component: appTabLoaders.settings,
       meta: { title: '设置', largeTitle: '设置', shell: 'tab', tab: 'settings', level: 'root' },
     },
   ],
-  scrollBehavior(to, _from, savedPosition) {
-    if (savedPosition) return savedPosition
+  async scrollBehavior(to, _from, savedPosition) {
     const tab = isAppTab(to.meta.tab) ? to.meta.tab : tabForPath(to.path)
-    if (to.meta.level === 'root') return { top: getSavedRootScroll(tab) }
     const saved = getSavedTabLocation(tab)
-    return saved.route === to.fullPath ? { top: saved.scrollY } : { top: 0 }
+    const target = savedPosition ?? (saved.route === to.fullPath ? { top: saved.scrollY } : { top: 0 })
+    const targetTop = 'top' in target ? Number(target.top ?? 0) : 0
+    if (targetTop > 0) {
+      for (let frame = 0; frame < 12; frame += 1) {
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+        const maximumScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight)
+        if (maximumScroll + 4 >= targetTop) break
+      }
+    }
+    return target
   },
 })
 
 router.beforeEach((to, from) => {
+  if (from.meta.level && typeof window !== 'undefined') {
+    rememberRoute({ fullPath: from.fullPath, meta: { ...from.meta } }, window.scrollY)
+  }
   if (initialNavigation) {
     initialNavigation = false
+    navigationTransition.value = 'page-none'
     if (to.meta.level === 'immersive') return APP_TAB_ROOTS[to.meta.tab]
   }
   if (browserHistoryNavigation) {
@@ -98,9 +123,13 @@ router.beforeEach((to, from) => {
   } else if (to.meta.level === 'immersive' || from.meta.level === 'immersive') {
     navigationTransition.value = 'page-zoom'
   } else if (to.meta.tab !== from.meta.tab) {
-    navigationTransition.value = 'page-tab'
+    navigationTransition.value = 'page-none'
   } else if (to.meta.level === 'detail') {
     navigationTransition.value = 'page-forward'
+  } else if (from.meta.level === 'detail') {
+    navigationTransition.value = 'page-back'
+  } else {
+    navigationTransition.value = 'page-none'
   }
 })
 

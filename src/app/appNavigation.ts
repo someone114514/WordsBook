@@ -2,7 +2,7 @@ import { ref } from 'vue'
 import type { RouteLocationNormalizedLoaded, Router } from 'vue-router'
 
 export type AppTab = 'lookup' | 'review' | 'lists' | 'settings'
-export type AppNavigationTransition = 'page-tab' | 'page-forward' | 'page-back' | 'page-zoom'
+export type AppNavigationTransition = 'page-none' | 'page-forward' | 'page-back' | 'page-zoom'
 
 interface StoredTabLocation {
   route: string
@@ -15,13 +15,13 @@ interface SessionNavigationState {
 }
 
 interface PersistentNavigationState {
-  version: 1
+  version: 2
   lastTab: AppTab
-  rootScroll: Record<AppTab, number>
 }
 
 const SESSION_KEY = 'wordsbook:navigation:session:v1'
-const PERSISTENT_KEY = 'wordsbook:navigation:persistent:v1'
+const PERSISTENT_KEY = 'wordsbook:navigation:persistent:v2'
+const LEGACY_PERSISTENT_KEY = 'wordsbook:navigation:persistent:v1'
 
 export const APP_TAB_ROOTS: Record<AppTab, string> = {
   lookup: '/lookup',
@@ -30,7 +30,7 @@ export const APP_TAB_ROOTS: Record<AppTab, string> = {
   settings: '/settings',
 }
 
-export const navigationTransition = ref<AppNavigationTransition>('page-tab')
+export const navigationTransition = ref<AppNavigationTransition>('page-none')
 
 function defaultSessionState(): SessionNavigationState {
   return {
@@ -46,9 +46,8 @@ function defaultSessionState(): SessionNavigationState {
 
 function defaultPersistentState(): PersistentNavigationState {
   return {
-    version: 1,
+    version: 2,
     lastTab: 'lookup',
-    rootScroll: { lookup: 0, review: 0, lists: 0, settings: 0 },
   }
 }
 
@@ -93,13 +92,13 @@ export function readSessionNavigationState(storage = typeof sessionStorage === '
 
 export function readPersistentNavigationState(storage = typeof localStorage === 'undefined' ? undefined : localStorage): PersistentNavigationState {
   const fallback = defaultPersistentState()
-  const parsed = safeParse<Partial<PersistentNavigationState>>(storage, PERSISTENT_KEY, fallback)
-  if (parsed.version !== 1 || !isAppTab(parsed.lastTab)) return fallback
-  fallback.lastTab = parsed.lastTab
-  for (const tab of Object.keys(APP_TAB_ROOTS) as AppTab[]) {
-    const scroll = parsed.rootScroll?.[tab]
-    if (Number.isFinite(scroll)) fallback.rootScroll[tab] = Math.max(0, Number(scroll))
+  if (storage?.getItem(PERSISTENT_KEY)) {
+    const parsed = safeParse<Partial<PersistentNavigationState>>(storage, PERSISTENT_KEY, fallback)
+    if (parsed.version === 2 && isAppTab(parsed.lastTab)) return { version: 2, lastTab: parsed.lastTab }
   }
+
+  const legacy = safeParse<{ version?: number; lastTab?: unknown }>(storage, LEGACY_PERSISTENT_KEY, {})
+  if (legacy.version === 1 && isAppTab(legacy.lastTab)) fallback.lastTab = legacy.lastTab
   return fallback
 }
 
@@ -117,12 +116,9 @@ export function rememberRoute(route: Pick<RouteLocationNormalizedLoaded, 'fullPa
   const session = readSessionNavigationState()
   session.tabs[tab] = { route: route.fullPath, scrollY: Math.max(0, scrollY) }
   saveSessionState(session)
-  if (route.meta.level === 'root') {
-    const persistent = readPersistentNavigationState()
-    persistent.lastTab = tab
-    persistent.rootScroll[tab] = Math.max(0, scrollY)
-    savePersistentState(persistent)
-  }
+  const persistent = readPersistentNavigationState()
+  persistent.lastTab = tab
+  savePersistentState(persistent)
 }
 
 export function coldStartRoot(): string {
@@ -134,12 +130,7 @@ export function getSavedTabLocation(tab: AppTab): StoredTabLocation {
   return readSessionNavigationState().tabs[tab]
 }
 
-export function getSavedRootScroll(tab: AppTab): number {
-  return readPersistentNavigationState().rootScroll[tab]
-}
-
 export async function navigateToTab(router: Router, route: RouteLocationNormalizedLoaded, tab: AppTab): Promise<void> {
-  rememberRoute(route, window.scrollY)
   const currentTab = isAppTab(route.meta.tab) ? route.meta.tab : tabForPath(route.path)
   if (currentTab === tab) {
     if (route.meta.level !== 'root') {
@@ -151,10 +142,9 @@ export async function navigateToTab(router: Router, route: RouteLocationNormaliz
     rememberRoute(route, 0)
     return
   }
-  navigationTransition.value = 'page-tab'
+  navigationTransition.value = 'page-none'
   const saved = getSavedTabLocation(tab)
   await router.replace(validRouteForTab(tab, saved.route) ? saved.route : APP_TAB_ROOTS[tab])
-  requestAnimationFrame(() => window.scrollTo({ top: saved.scrollY, behavior: 'auto' }))
 }
 
 export async function contextualBack(router: Router, route: RouteLocationNormalizedLoaded): Promise<void> {

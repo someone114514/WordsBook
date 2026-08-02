@@ -35,11 +35,11 @@ describe('native tab navigation state', () => {
 
     rememberRoute(route('/settings', 'settings'), 320)
     expect(coldStartRoot()).toBe('/settings')
-    expect(readPersistentNavigationState().rootScroll.settings).toBe(320)
+    expect(readPersistentNavigationState()).toEqual({ version: 2, lastTab: 'settings' })
 
     rememberRoute(route('/lists/example', 'lists', 'detail'), 480)
     expect(getSavedTabLocation('lists')).toEqual({ route: '/lists/example', scrollY: 480 })
-    expect(coldStartRoot()).toBe('/settings')
+    expect(coldStartRoot()).toBe('/lists')
   })
 
   it('reselects a root tab by scrolling to top and a detail tab by replacing its root', async () => {
@@ -70,5 +70,16 @@ describe('native tab navigation state', () => {
     Object.defineProperty(window.history, 'state', { configurable: true, value: { back: '/lists' } })
     await contextualBack(router, route('/lists/example', 'lists', 'detail'))
     expect(router.back).toHaveBeenCalledOnce()
+  })
+
+  it('reads the last tab from legacy state without restoring persistent scroll', () => {
+    localStorage.setItem('wordsbook:navigation:persistent:v1', JSON.stringify({
+      version: 1,
+      lastTab: 'lists',
+      rootScroll: { lookup: 10, review: 20, lists: 600, settings: 40 },
+    }))
+
+    expect(readPersistentNavigationState()).toEqual({ version: 2, lastTab: 'lists' })
+    expect(coldStartRoot()).toBe('/lists')
   })
 })

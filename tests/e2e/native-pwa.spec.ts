@@ -20,13 +20,14 @@ test.describe('native PWA navigation and panels', () => {
     await expect(page.locator('#settings-section-ai')).toHaveAttribute('open', '')
   })
 
-  test('collapses a scrolling large title into the compact glass bar', async ({ page }) => {
+  test('keeps one compact title visible while scrolling', async ({ page }) => {
     await page.goto('/settings?section=dictionary')
-    await expect(page.locator('.app-large-title h1')).toHaveText('设置')
-    await expect(page.locator('.topbar-compact')).not.toHaveClass(/is-collapsed/)
+    await expect(page.locator('.app-large-title')).toBeHidden()
+    const topbar = page.locator('.topbar-compact')
+    await expect(topbar.getByRole('heading', { level: 1, name: '设置' })).toBeVisible()
+    const topBefore = await topbar.evaluate((element) => element.getBoundingClientRect().top)
     await page.evaluate(() => window.scrollTo(0, Math.min(document.body.scrollHeight, 900)))
-    await expect(page.locator('.topbar-compact')).toHaveClass(/is-collapsed/)
-    await expect(page.locator('.topbar-compact > span')).toHaveText('设置')
+    await expect.poll(() => topbar.evaluate((element) => element.getBoundingClientRect().top)).toBe(topBefore)
   })
 
   test('returns a cold immersive URL to the learning root', async ({ page }) => {
@@ -59,6 +60,108 @@ test.describe('native PWA navigation and panels', () => {
     expect(await page.evaluate(() => history.length)).toBe(historyBefore)
   })
 
+  test('switches all root tabs repeatedly without a document reload or overlapping pages', async ({ page }) => {
+    test.setTimeout(60_000)
+    const tabs = [
+      { label: '学习', path: '/review' },
+      { label: '词表', path: '/lists' },
+      { label: '设置', path: '/settings' },
+      { label: '查词', path: '/lookup' },
+    ]
+
+    const viewports = [
+      { width: 375, height: 812 },
+      { width: 390, height: 844 },
+      { width: 430, height: 932 },
+    ]
+    await page.setViewportSize(viewports[0])
+    await page.goto('/lookup')
+    await expect(page.locator('.bottom-nav')).toBeVisible()
+    await expect.poll(() => page.evaluate(() => {
+      const resources = performance.getEntriesByType('resource').map((entry) => entry.name)
+      return ['LookupView-', 'ReviewView-', 'StudyListsView-', 'SettingsView-']
+        .every((chunk) => resources.some((resource) => resource.includes(chunk)))
+    })).toBe(true)
+
+    for (const viewport of viewports) {
+      await page.setViewportSize(viewport)
+
+      const navBounds = await page.locator('.bottom-nav').evaluate((element) => {
+        const rect = element.getBoundingClientRect()
+        return { left: rect.left, right: rect.right, bottom: rect.bottom }
+      })
+      const latencies: number[] = []
+
+      for (let index = 0; index < 20; index += 1) {
+        const target = tabs[index % tabs.length]
+        const latency = await page.evaluate(async ({ label, path }) => {
+          const link = [...document.querySelectorAll<HTMLAnchorElement>('.bottom-nav .nav-item')]
+            .find((item) => item.textContent?.trim() === label)
+          if (!link) throw new Error(`Missing tab ${label}`)
+          const startedAt = performance.now()
+          let routeChangedAt = startedAt
+          link.click()
+          await new Promise<void>((resolve, reject) => {
+            const timeout = window.setTimeout(() => reject(new Error(`Tab did not reach ${path}`)), 1_000)
+            const check = () => {
+              if (location.pathname === path) {
+                routeChangedAt = performance.now()
+                requestAnimationFrame(() => requestAnimationFrame(() => {
+                  clearTimeout(timeout)
+                  resolve()
+                }))
+                return
+              }
+              requestAnimationFrame(check)
+            }
+            check()
+          })
+          return routeChangedAt - startedAt
+        }, target)
+        latencies.push(latency)
+
+        const state = await page.evaluate(() => {
+          const nav = document.querySelector<HTMLElement>('.bottom-nav')!.getBoundingClientRect()
+          const pages = [...document.querySelectorAll<HTMLElement>('.content-area > :not(.app-large-title)')]
+            .filter((element) => getComputedStyle(element).display !== 'none')
+          return {
+            bodyHasContent: (document.querySelector<HTMLElement>('.content-area')?.innerText.trim().length ?? 0) > 0,
+            noHorizontalOverflow: document.documentElement.scrollWidth <= window.innerWidth + 1,
+            pageCount: pages.length,
+            nav: { left: nav.left, right: nav.right, bottom: nav.bottom },
+          }
+        })
+        expect(state).toEqual({ bodyHasContent: true, noHorizontalOverflow: true, pageCount: 1, nav: navBounds })
+      }
+
+      expect(Math.max(...latencies)).toBeLessThan(100)
+      expect(await page.evaluate(() => performance.getEntriesByType('navigation').length)).toBe(1)
+    }
+  })
+
+  test('restores each tab scroll only within the current session', async ({ page }) => {
+    await page.goto('/settings?section=ai')
+    await expect(page.locator('#settings-section-ai')).toHaveAttribute('open', '')
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollHeight > window.innerHeight)).toBe(true)
+    await page.evaluate(() => {
+      const target = Math.min(420, Math.max(0, document.documentElement.scrollHeight - innerHeight))
+      window.scrollTo({ top: target })
+    })
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0)
+    const savedTop = await page.evaluate(() => window.scrollY)
+    expect(savedTop).toBeGreaterThan(0)
+
+    await page.locator('.bottom-nav').getByRole('link', { name: '查词' }).click()
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0)
+    await page.locator('.bottom-nav').getByRole('link', { name: '设置' }).click()
+    await expect.poll(() => page.evaluate((top) => Math.abs(window.scrollY - top), savedTop)).toBeLessThanOrEqual(4)
+
+    await page.evaluate(() => sessionStorage.clear())
+    await page.goto('/')
+    await expect(page).toHaveURL(/\/settings/)
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0)
+  })
+
   test('creates a list in an accessible action sheet and reselects its tab to return from detail', async ({ page }) => {
     await page.goto('/lists')
     await page.getByRole('button', { name: '新建词表' }).click()
@@ -71,8 +174,7 @@ test.describe('native PWA navigation and panels', () => {
 
     await dialog.getByRole('button', { name: '创建词表' }).click()
     await expect(page.getByText('原生流程测试', { exact: true })).toBeVisible()
-    const card = page.locator('.list-overview-card').filter({ hasText: '原生流程测试' })
-    await card.getByRole('link', { name: '管理词表' }).click()
+    await page.getByRole('link', { name: '管理词表：原生流程测试' }).click()
     await expect(page).toHaveURL(/\/lists\/.+/)
     await page.getByRole('button', { name: '设置', exact: true }).click()
     await page.getByRole('button', { name: '删除词表' }).click()

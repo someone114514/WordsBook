@@ -677,37 +677,46 @@ function parseLines(raw: string): string[] {
                         <span v-else-if="isSaved(entry.entryId)" class="chip chip-secondary">仅保存</span>
                       </div>
                     </div>
-                    <p class="muted">{{ entry.phonetic || '无音标' }}</p>
-                    <p class="muted">词性: {{ entry.posList.join(' / ') || '-' }}</p>
+                    <p class="muted lookup-entry-meta">
+                      <span>{{ entry.phonetic || '无音标' }}</span>
+                      <span v-if="entry.posList.length">{{ entry.posList.join(' / ') }}</span>
+                    </p>
 
-                    <ul>
-                      <li v-for="sense in parseLines(entry.sensesJson)" :key="sense">{{ sense }}</li>
+                    <ul class="lookup-primary-senses">
+                      <li v-for="sense in parseLines(entry.sensesJson).slice(0, 2)" :key="sense">{{ sense }}</li>
                     </ul>
 
-                    <div
-                      v-if="parseLines(entry.synonymsJson ?? '[]').length || parseLines(entry.antonymsJson ?? '[]').length"
-                      class="lexical-relations"
-                      aria-label="词义关系"
+                    <details
+                      v-if="parseLines(entry.sensesJson).length > 2 || parseLines(entry.synonymsJson ?? '[]').length || parseLines(entry.antonymsJson ?? '[]').length || parseLines(entry.examplesJson).length"
+                      class="lookup-entry-details"
                     >
-                      <div v-if="parseLines(entry.synonymsJson ?? '[]').length" class="lexical-relation-row">
-                        <strong>近义词</strong>
-                        <ul class="lexical-relation-list">
-                          <li v-for="synonym in parseLines(entry.synonymsJson ?? '[]')" :key="synonym">{{ synonym }}</li>
-                        </ul>
+                      <summary>更多释义与例句</summary>
+                      <ul v-if="parseLines(entry.sensesJson).length > 2">
+                        <li v-for="sense in parseLines(entry.sensesJson).slice(2)" :key="sense">{{ sense }}</li>
+                      </ul>
+                      <div
+                        v-if="parseLines(entry.synonymsJson ?? '[]').length || parseLines(entry.antonymsJson ?? '[]').length"
+                        class="lexical-relations"
+                        aria-label="词义关系"
+                      >
+                        <div v-if="parseLines(entry.synonymsJson ?? '[]').length" class="lexical-relation-row">
+                          <strong>近义词</strong>
+                          <ul class="lexical-relation-list">
+                            <li v-for="synonym in parseLines(entry.synonymsJson ?? '[]')" :key="synonym">{{ synonym }}</li>
+                          </ul>
+                        </div>
+                        <div v-if="parseLines(entry.antonymsJson ?? '[]').length" class="lexical-relation-row">
+                          <strong>反义词</strong>
+                          <ul class="lexical-relation-list">
+                            <li v-for="antonym in parseLines(entry.antonymsJson ?? '[]')" :key="antonym">{{ antonym }}</li>
+                          </ul>
+                        </div>
                       </div>
-                      <div v-if="parseLines(entry.antonymsJson ?? '[]').length" class="lexical-relation-row">
-                        <strong>反义词</strong>
-                        <ul class="lexical-relation-list">
-                          <li v-for="antonym in parseLines(entry.antonymsJson ?? '[]')" :key="antonym">{{ antonym }}</li>
-                        </ul>
-                      </div>
-                    </div>
-
-                    <p v-for="example in parseLines(entry.examplesJson)" :key="example" class="example">{{ example }}</p>
+                      <p v-for="example in parseLines(entry.examplesJson)" :key="example" class="example">{{ example }}</p>
+                    </details>
 
                     <div class="actions">
                       <button class="btn" @click="onPlay(entry)">发音</button>
-                      <button v-if="entryStatusMap.has(entry.entryId)" class="btn lookup-relearn-action" type="button" :disabled="relearningEntryId === entry.entryId" @click="requestEntryAction('relearn', entry)">{{ relearningEntryId === entry.entryId ? '加入中…' : '重新学习' }}</button>
                       <button
                         :class="['btn', 'btn-primary', 'lookup-study-action', { added: isAdded(entry.entryId) }]"
                         type="button"
@@ -717,7 +726,7 @@ function parseLines(raw: string): string[] {
                       >
                         {{ addingEntryId === entry.entryId ? '加入中…' : isAdded(entry.entryId) ? '已加入学习' : '加入学习' }}
                       </button>
-                      <button class="btn btn-quiet" type="button" @click="toggleEntryManagement(entry)">{{ isAdded(entry.entryId) ? '加入其他词表' : '选择词表与更多' }}</button>
+                      <button class="btn btn-quiet" type="button" @click="toggleEntryManagement(entry)">更多</button>
                     </div>
                     <div v-if="manageEntryId === entry.entryId" class="lookup-add-panel">
                       <h4>{{ isAdded(entry.entryId) ? '加入其他词表' : '选择学习词表' }}</h4>
@@ -727,6 +736,7 @@ function parseLines(raw: string): string[] {
                       <button v-if="!isSaved(entry.entryId)" class="btn" type="button" @click="onAddWord(entry.entryId)">仅保存</button>
                       <button v-else class="btn btn-danger" :disabled="deletingEntryId === entry.entryId" type="button" @click="requestEntryAction('remove-saved', entry)">{{ deletingEntryId === entry.entryId ? '处理中…' : '取消仅保存' }}</button>
                       <template v-if="entryStatusMap.has(entry.entryId)">
+                        <button class="btn lookup-relearn-action" type="button" :disabled="relearningEntryId === entry.entryId" @click="requestEntryAction('relearn', entry)">{{ relearningEntryId === entry.entryId ? '加入中…' : '重新学习' }}</button>
                         <hr><p class="muted">不可撤销的高级操作</p>
                         <button class="btn btn-danger" :disabled="clearingHistoryEntryId === entry.entryId" type="button" @click="requestEntryAction('clear-history', entry)">{{ clearingHistoryEntryId === entry.entryId ? '清空中…' : '彻底清空学习记录' }}</button>
                       </template>

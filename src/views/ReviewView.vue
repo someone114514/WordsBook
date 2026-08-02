@@ -3,6 +3,7 @@ import dayjs from 'dayjs'
 import { liveQuery } from 'dexie'
 import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { describeLearningError } from '../app/userFacingErrors'
 import { db } from '../db/database'
 import type { DailyLearningSession, ReadingSession, StudyPlan } from '../types/models'
 import { getTodayPlanStaleWhileRevalidate, STUDY_PLAN_REFRESHED_EVENT } from '../modules/review/reviewService'
@@ -62,7 +63,13 @@ const visibleQueueChanges = computed(() => queueChanges.value && !queueChanges.v
 const dismissedQueueChanges = computed(() => queueChanges.value?.dismissed
   ? queueChanges.value.addedWordIds.length + queueChanges.value.removedWordIds.length
   : 0)
+const todayTotal = computed(() => snapshot.value?.totalCards ?? plan.value?.queueWordIds.length ?? 0)
+const todayNew = computed(() => snapshot.value ? sessionNewCount.value : plan.value?.newCount ?? 0)
+const supportingMetricLabel = computed(() => snapshot.value ? '待重现' : '复习')
+const supportingMetricValue = computed(() => snapshot.value ? repeatCards.value : plan.value?.dueCount ?? 0)
+const primaryActionIsLookup = computed(() => hasLoaded.value && !session.value && total.value === 0)
 const buttonLabel = computed(() => {
+  if (primaryActionIsLookup.value) return '去查词'
   if (session.value?.status === 'completed') return '查看今日学习'
   return session.value ? '继续今日学习' : '开始今日学习'
 })
@@ -100,14 +107,14 @@ function subscribeToSession(sessionId: string) {
       session.value = fresh.session
     },
     error: (reason) => {
-      error.value = reason instanceof Error ? reason.message : String(reason)
+      error.value = describeLearningError(reason, 'overview')
     },
   })
 }
 
 async function load() {
   const token = ++loadToken
-  loading.value = true
+  loading.value = !hasLoaded.value
   error.value = ''
   stopSessionSubscription()
   try {
@@ -144,7 +151,7 @@ async function load() {
       queueChanges.value = null
     }
   } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : String(reason)
+    error.value = describeLearningError(reason, 'overview')
   } finally {
     if (token === loadToken) {
       loading.value = false
@@ -161,6 +168,10 @@ function onPlanRefreshed(event: Event) {
 }
 
 async function start() {
+  if (primaryActionIsLookup.value) {
+    await router.push('/lookup')
+    return
+  }
   await router.push('/review/session')
 }
 
@@ -218,53 +229,55 @@ onBeforeUnmount(() => {
       <p class="error" role="alert">{{ error }}</p><button class="btn btn-primary" type="button" @click="load">重试</button>
     </section>
 
-    <section class="panel study-hero" :aria-busy="loading">
+    <section class="study-hero" :aria-busy="loading">
       <div class="study-total">
         <span v-if="loading" class="study-number-skeleton study-number-skeleton-total" role="status" aria-label="剩余单词数量加载中" />
         <strong v-else>{{ total }}</strong>
         <span>剩余单词</span>
       </div>
-      <div :class="['study-metrics', { 'study-metrics-two': !snapshot }]">
-        <template v-if="!snapshot">
-          <div><span v-if="loading" class="study-number-skeleton" /><strong v-else>{{ plan?.dueCount ?? 0 }}</strong><span>复习</span></div>
-          <div><span v-if="loading" class="study-number-skeleton" /><strong v-else>{{ plan?.newCount ?? 0 }}</strong><span>新词</span></div>
-        </template>
-        <template v-else>
-          <div><span v-if="loading" class="study-number-skeleton" /><strong v-else>{{ snapshot.totalCards }}</strong><span>今日总量</span></div>
-          <div><span v-if="loading" class="study-number-skeleton" /><strong v-else>{{ sessionNewCount }}</strong><span>今日新词</span></div>
-          <div><span v-if="loading" class="study-number-skeleton" /><strong v-else>{{ repeatCards }}</strong><span>待重现</span></div>
-        </template>
+      <div class="study-metrics-inline" aria-label="今日学习概况">
+        <span><strong>{{ loading ? '—' : todayTotal }}</strong> 今日总量</span>
+        <span><strong>{{ loading ? '—' : todayNew }}</strong> 新词</span>
+        <span><strong>{{ loading ? '—' : supportingMetricValue }}</strong> {{ supportingMetricLabel }}</span>
       </div>
-      <p v-if="!loading && recoveryText" class="recovery-note">{{ recoveryText }}</p>
+      <details v-if="!loading && recoveryText" class="study-inline-disclosure">
+        <summary>恢复安排</summary>
+        <p>{{ recoveryText }}</p>
+      </details>
       <p v-if="!loading && refreshingPlan" class="study-plan-refresh" aria-live="polite">正在后台更新今日计划…</p>
-      <div v-if="session && !loading" class="study-queue-tools">
-        <button class="btn btn-quiet study-queue-replan" :disabled="changeBusy" type="button" title="按最新词表与新词额度重排未开始内容" @click="replanUnstarted">
+      <details v-if="session && !loading" class="study-more-actions">
+        <summary>更多操作</summary>
+        <button class="btn btn-quiet study-queue-replan" :disabled="changeBusy" type="button" @click="replanUnstarted">
           {{ changeBusy ? '重排中…' : '重排未开始内容' }}
         </button>
-        <span v-if="replanMessage" class="muted" role="status">{{ replanMessage }}</span>
-      </div>
+      </details>
+      <span v-if="replanMessage" class="muted study-replan-message" role="status">{{ replanMessage }}</span>
     </section>
 
     <template v-if="hasLoaded && !error">
 
-      <section v-if="visibleQueueChanges" class="panel queue-change-panel" aria-live="polite">
-        <div><strong>词表有 {{ visibleQueueChanges }} 个变化</strong><p class="muted">只更新变化，不会打乱当前进度。</p></div>
-        <div class="actions"><button class="btn btn-primary" :disabled="changeBusy" type="button" @click="applyChanges">更新今日队列</button><button class="btn btn-quiet" type="button" @click="dismissChanges">暂不</button></div>
+      <section v-if="visibleQueueChanges" class="queue-change-panel" aria-live="polite">
+        <strong>词表有 {{ visibleQueueChanges }} 项变化</strong>
+        <div class="actions"><button class="btn btn-text" :disabled="changeBusy" type="button" @click="applyChanges">更新</button><button class="btn btn-text muted" type="button" @click="dismissChanges">稍后</button></div>
       </section>
-      <button v-else-if="dismissedQueueChanges" class="btn btn-quiet queue-change-restore" type="button" @click="queueChanges = queueChanges ? { ...queueChanges, dismissed: false } : null">查看词表变化</button>
+      <button v-else-if="dismissedQueueChanges" class="btn btn-text queue-change-restore" type="button" @click="queueChanges = queueChanges ? { ...queueChanges, dismissed: false } : null">查看词表变化</button>
 
-      <section v-if="latestReading" class="panel reading-resume-panel">
-        <div><p class="eyebrow">{{ latestReading.errorCode ? '离线词汇预习' : '语境阅读' }}</p><h2>{{ latestReading.errorCode ? '离线词汇预习' : latestReading.title || '已生成的文章' }}</h2><p class="muted">{{ latestReading.dayKey }} · {{ latestReadingWordCount }} 个{{ latestReadingCountLabel }}</p></div>
-        <div class="actions"><RouterLink v-if="canResumeLatestReading" class="btn btn-primary" :to="{ path: '/review/reading', query: { session: `daily:${latestReading.dayKey}`, batch: latestReading.batchIndex } }">继续阅读</RouterLink><RouterLink class="btn" to="/review/reading/history">文章记录</RouterLink></div>
+      <section v-if="latestReading" class="reading-resume-panel">
+        <RouterLink class="reading-resume-row" :to="canResumeLatestReading ? { path: '/review/reading', query: { session: `daily:${latestReading.dayKey}`, batch: latestReading.batchIndex } } : '/review/reading/history'">
+          <span><small>{{ latestReading.errorCode ? '离线预习' : '语境阅读' }}</small><strong>{{ latestReading.errorCode ? '离线词汇预习' : latestReading.title || '已生成的文章' }}</strong><small>{{ latestReading.dayKey }} · {{ latestReadingWordCount }} 个{{ latestReadingCountLabel }}</small></span>
+          <span class="reading-resume-action">{{ canResumeLatestReading ? '继续' : '查看' }}</span>
+        </RouterLink>
+        <RouterLink class="btn btn-text reading-history-link" to="/review/reading/history">文章记录</RouterLink>
       </section>
 
-      <section v-if="!snapshot" class="panel">
-        <div class="section-heading"><div><p class="eyebrow">来源</p><h2>今日词表贡献</h2></div><RouterLink class="btn" to="/lists">管理词表</RouterLink></div>
+      <details v-if="!snapshot" class="study-source-disclosure">
+        <summary><span>今日来源</span><span>{{ plan?.listContributions?.length ? `${plan.listContributions.length} 个词表` : '暂无内容' }}</span></summary>
         <div v-if="plan?.listContributions?.length" class="contribution-list">
           <div v-for="item in plan.listContributions" :key="item.listId"><span>{{ item.name }}</span><strong>{{ item.count }} 词</strong></div>
         </div>
-        <div v-else class="empty-state compact"><p>还没有参与学习的单词。</p><RouterLink class="btn btn-primary" to="/lookup">去查词并加入学习</RouterLink></div>
-      </section>
+        <p v-else class="muted">还没有参与学习的单词。</p>
+        <RouterLink class="btn btn-text" to="/lists">管理词表</RouterLink>
+      </details>
     </template>
 
     <div class="study-primary-dock">

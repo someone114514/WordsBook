@@ -18,7 +18,7 @@ test.describe('live AI learning experience', () => {
     await page.goto('/lists')
     await page.getByLabel('词表名称').fill('Live AI 体验测试')
     await page.getByRole('button', { name: '创建', exact: true }).click()
-    await page.getByRole('link', { name: '管理词表', exact: true }).last().click()
+    await page.locator('.list-row-group .list-row-link').last().click()
     await page.getByRole('button', { name: '导入', exact: true }).click()
     await page.getByPlaceholder(/粘贴 JSON/).fill(JSON.stringify({
       words: [

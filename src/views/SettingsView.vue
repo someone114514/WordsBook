@@ -127,12 +127,12 @@ const fsrsStatusText = computed(() => {
   if (!status.eligible) {
     return `${status.effectiveReviewCount}/${status.requiredReviewCount} 条有效每日首次评分`
   }
-  if (!fsrsTrainingMode) return '数据已足够；进入兼容训练模式后将在本机训练并验证'
-  if (!status.runtimeAvailable) return '训练环境尚未就绪，请查看下方诊断信息'
-  return '浏览器能力满足；开始后将继续启动 Worker、训练、验证并安全保存'
+  if (!fsrsTrainingMode) return '数据已足够，可在本机训练并验证个性化参数'
+  if (!status.runtimeAvailable) return '训练环境尚未就绪'
+  return '训练环境已就绪'
 })
 
-async function selectSection(section: SettingsSection, scroll = false): Promise<void> {
+async function selectSection(section: SettingsSection, scroll = true): Promise<void> {
   openSection.value = section
   localStorage.setItem(SETTINGS_SECTION_KEY, section)
   if (route.query.section !== section) {
@@ -266,6 +266,10 @@ async function onOptimizeFsrs() {
     const target = new URL(window.location.href)
     target.searchParams.set('fsrs-training', '1')
     sessionStorage.setItem(FSRS_TRAINING_PENDING_KEY, '1')
+    fsrsMessageTone.value = 'info'
+    fsrsMessage.value = '正在进入本地训练环境…'
+    await nextTick()
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
     window.location.assign(target.toString())
     return
   }
@@ -697,7 +701,7 @@ async function onRunCloudSync(mode: CloudSyncMode) {
     </Transition>
 
     <details id="settings-section-dictionary" class="settings-group" :open="openSection === 'dictionary'">
-      <summary class="settings-group-summary" @click.prevent="selectSection('dictionary')">
+      <summary class="settings-group-summary" @click.prevent="selectSection('dictionary', true)">
         <span class="settings-group-title"><span class="settings-group-icon"><BookOpen :size="20" aria-hidden="true" /></span><span><strong>词典与学习</strong><small>离线词典、发音与每日目标</small></span></span>
         <ChevronDown class="settings-group-chevron" :size="20" aria-hidden="true" />
       </summary>
@@ -804,55 +808,59 @@ async function onRunCloudSync(mode: CloudSyncMode) {
     </details>
 
     <details id="settings-section-fsrs" class="settings-group" :open="openSection === 'fsrs'">
-      <summary class="settings-group-summary" @click.prevent="selectSection('fsrs')">
-        <span class="settings-group-title"><span class="settings-group-icon"><BrainCircuit :size="20" aria-hidden="true" /></span><span><strong>FSRS 个性化</strong><small>长期记忆模型与训练状态</small></span></span>
+      <summary class="settings-group-summary" @click.prevent="selectSection('fsrs', true)">
+        <span class="settings-group-title"><span class="settings-group-icon"><BrainCircuit :size="20" aria-hidden="true" /></span><span><strong>FSRS 个性化</strong><small>长期复习与训练</small></span></span>
         <ChevronDown class="settings-group-chevron" :size="20" aria-hidden="true" />
       </summary>
       <div class="settings-group-content">
     <article class="result-section settings-card">
-      <div class="sync-heading">
-        <div><p class="eyebrow">长期记忆模型</p><h2>FSRS 个性化</h2></div>
+      <div class="fsrs-summary-row">
         <span :class="['sync-status-badge', { connected: fsrsStatus?.active, loading: fsrsBusy }]">{{ fsrsBusy ? '训练中' : fsrsStatus?.active ? '已启用' : '默认参数' }}</span>
-      </div>
-      <p class="muted">{{ fsrsStatusText }}</p>
-      <div v-if="fsrsStatus" class="study-metrics">
-        <div><span>有效评分</span><strong>{{ fsrsStatus.effectiveReviewCount }}</strong></div>
-        <div><span>可训练样本</span><strong>{{ fsrsStatus.trainableItemCount }}</strong></div>
-        <div><span>目标保持率</span><strong>90%</strong></div>
-      </div>
-      <div v-if="fsrsStatus?.record?.defaultMetrics && fsrsStatus.record.candidateMetrics" class="sync-panel">
-        <strong>最近一次留出集验证</strong>
-        <p class="muted">
-          默认 Log loss {{ fsrsStatus.record.defaultMetrics.logLoss.toFixed(4) }} / RMSE {{ fsrsStatus.record.defaultMetrics.rmseBins.toFixed(4) }}
-          · 候选 Log loss {{ fsrsStatus.record.candidateMetrics.logLoss.toFixed(4) }} / RMSE {{ fsrsStatus.record.candidateMetrics.rmseBins.toFixed(4) }}
-        </p>
+        <p class="muted">{{ fsrsStatusText }}</p>
       </div>
       <div v-if="fsrsBusy" class="sync-progress" role="status" aria-live="polite"><span class="sync-spinner" aria-hidden="true" /><span>{{ fsrsProgress || '正在训练与验证…' }}</span></div>
-      <div v-if="fsrsStatus?.eligible && (!fsrsStatus.runtimeAvailable || fsrsTrainingMode)" class="sync-panel fsrs-runtime-panel">
-        <strong>{{ fsrsStatus.runtimeAvailable ? '浏览器能力满足' : '训练环境诊断' }}</strong>
-        <p v-if="fsrsRuntimeHint" class="muted">{{ fsrsRuntimeHint }}</p>
-        <p class="muted">浏览器隔离：{{ fsrsStatus.diagnostics.crossOriginIsolated ? '可用' : '不可用' }} · 共享内存：{{ fsrsStatus.diagnostics.sharedArrayBuffer ? '可用' : '不可用' }} · Worker：{{ fsrsBusy ? '运行中' : '开始训练后启动' }}</p>
-        <div class="actions">
-          <button class="btn btn-quiet" type="button" @click="copyFsrsDiagnostics">复制诊断</button>
-          <button v-if="fsrsTrainingMode && !fsrsBusy" class="btn btn-quiet" type="button" @click="leaveFsrsTrainingMode">退出训练模式</button>
-        </div>
-      </div>
       <p v-if="fsrsMessage" :class="['sync-message', `sync-message-${fsrsMessageTone}`]" :role="fsrsMessageTone === 'error' ? 'alert' : 'status'">{{ fsrsMessage }}</p>
-      <details v-if="fsrsTechnicalDetails" class="technical-details">
-        <summary>查看技术详情</summary>
-        <pre>{{ fsrsTechnicalDetails }}</pre>
-        <button class="btn btn-quiet" type="button" @click="copyFsrsDiagnostics">复制技术详情</button>
-      </details>
       <button class="btn btn-primary" type="button" :disabled="fsrsBusy || !fsrsStatus?.eligible || (fsrsTrainingMode && !fsrsStatus.runtimeAvailable)" @click="onOptimizeFsrs">
-        {{ !fsrsTrainingMode ? '进入兼容训练模式' : fsrsStatus?.active ? '重新训练并验证' : '训练个性化参数' }}
+        {{ !fsrsTrainingMode ? '训练个性化复习' : fsrsStatus?.active ? '重新训练并验证' : '开始训练' }}
       </button>
-      <p class="muted settings-hint">只使用每词每天第一次有效无提示评分；至少 400 条后才开放。候选参数必须在历史留出集的 Log loss 与 RMSE 均优于默认值才会启用，否则继续使用默认/当前参数。</p>
+      <details class="settings-advanced-details">
+        <summary>算法与诊断</summary>
+        <div class="settings-advanced-content">
+          <div v-if="fsrsStatus" class="fsrs-metrics-list">
+            <div><span>有效评分</span><strong>{{ fsrsStatus.effectiveReviewCount }}</strong></div>
+            <div><span>可训练样本</span><strong>{{ fsrsStatus.trainableItemCount }}</strong></div>
+            <div><span>目标保持率</span><strong>90%</strong></div>
+          </div>
+          <div v-if="fsrsStatus?.record?.defaultMetrics && fsrsStatus.record.candidateMetrics" class="sync-panel">
+            <strong>最近一次验证</strong>
+            <p class="muted">
+              默认 Log loss {{ fsrsStatus.record.defaultMetrics.logLoss.toFixed(4) }} / RMSE {{ fsrsStatus.record.defaultMetrics.rmseBins.toFixed(4) }}
+              · 候选 Log loss {{ fsrsStatus.record.candidateMetrics.logLoss.toFixed(4) }} / RMSE {{ fsrsStatus.record.candidateMetrics.rmseBins.toFixed(4) }}
+            </p>
+          </div>
+          <div v-if="fsrsStatus?.eligible && (!fsrsStatus.runtimeAvailable || fsrsTrainingMode)" class="sync-panel fsrs-runtime-panel">
+            <strong>{{ fsrsStatus.runtimeAvailable ? '训练环境可用' : '训练环境诊断' }}</strong>
+            <p v-if="fsrsRuntimeHint" class="muted">{{ fsrsRuntimeHint }}</p>
+            <p class="muted">隔离 {{ fsrsStatus.diagnostics.crossOriginIsolated ? '可用' : '不可用' }} · 共享内存 {{ fsrsStatus.diagnostics.sharedArrayBuffer ? '可用' : '不可用' }} · 训练组件 {{ fsrsBusy ? '运行中' : '待启动' }}</p>
+            <div class="actions">
+              <button class="btn btn-quiet" type="button" @click="copyFsrsDiagnostics">复制诊断</button>
+              <button v-if="fsrsTrainingMode && !fsrsBusy" class="btn btn-quiet" type="button" @click="leaveFsrsTrainingMode">退出训练模式</button>
+            </div>
+          </div>
+          <p class="muted settings-hint">只使用每个单词每天第一次有效、无提示的评分；至少 400 条后开放。候选参数验证优于当前参数时才会启用。</p>
+          <details v-if="fsrsTechnicalDetails" class="technical-details">
+            <summary>技术详情</summary>
+            <pre>{{ fsrsTechnicalDetails }}</pre>
+            <button class="btn btn-quiet" type="button" @click="copyFsrsDiagnostics">复制技术详情</button>
+          </details>
+        </div>
+      </details>
     </article>
       </div>
     </details>
 
     <details id="settings-section-ai" class="settings-group" :open="openSection === 'ai'">
-      <summary class="settings-group-summary" @click.prevent="selectSection('ai')">
+      <summary class="settings-group-summary" @click.prevent="selectSection('ai', true)">
         <span class="settings-group-title"><span class="settings-group-icon"><Sparkles :size="20" aria-hidden="true" /></span><span><strong>AI 与语境</strong><small>DeepSeek、释义语言与文章难度</small></span></span>
         <ChevronDown class="settings-group-chevron" :size="20" aria-hidden="true" />
       </summary>
@@ -932,7 +940,7 @@ async function onRunCloudSync(mode: CloudSyncMode) {
     </details>
 
     <details id="settings-section-sync" class="settings-group" :open="openSection === 'sync'">
-      <summary class="settings-group-summary" @click.prevent="selectSection('sync')">
+      <summary class="settings-group-summary" @click.prevent="selectSection('sync', true)">
         <span class="settings-group-title"><span class="settings-group-icon"><Cloud :size="20" aria-hidden="true" /></span><span><strong>同步与安全</strong><small>账号、云端同步与敏感数据</small></span></span>
         <ChevronDown class="settings-group-chevron" :size="20" aria-hidden="true" />
       </summary>
@@ -1019,7 +1027,7 @@ async function onRunCloudSync(mode: CloudSyncMode) {
     </details>
 
     <details id="settings-section-data" class="settings-group" :open="openSection === 'data'">
-      <summary class="settings-group-summary" @click.prevent="selectSection('data')">
+      <summary class="settings-group-summary" @click.prevent="selectSection('data', true)">
         <span class="settings-group-title"><span class="settings-group-icon"><DatabaseBackup :size="20" aria-hidden="true" /></span><span><strong>数据与关于</strong><small>备份、恢复与版本信息</small></span></span>
         <ChevronDown class="settings-group-chevron" :size="20" aria-hidden="true" />
       </summary>

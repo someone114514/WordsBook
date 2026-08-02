@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { CircleCheck, CircleX, Info, X } from 'lucide-vue-next'
+import { useRoute } from 'vue-router'
 import { useAppFeedback } from '../app/feedback'
 
 const { toast, dismissToast } = useAppFeedback()
+const route = useRoute()
 </script>
 
 <template>
@@ -12,7 +14,7 @@ const { toast, dismissToast } = useAppFeedback()
         v-if="toast"
         :key="toast.id"
         class="app-toast"
-        :class="`app-toast-${toast.tone}`"
+        :class="[`app-toast-${toast.tone}`, `app-toast-tab-${route.meta.tab}`, `app-toast-shell-${route.meta.shell}`]"
         :role="toast.tone === 'error' ? 'alert' : 'status'"
         :aria-live="toast.tone === 'error' ? 'assertive' : 'polite'"
       >

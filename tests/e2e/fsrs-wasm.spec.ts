@@ -51,8 +51,9 @@ test('runs the real FSRS WASM optimizer and returns 21 finite parameters', async
     }, { once: true })
   })
 
+  await page.locator('.settings-advanced-details > summary').click()
   await expect(page.getByText('有效评分').locator('..').getByText('500')).toBeVisible({ timeout: 20_000 })
-  await page.getByRole('button', { name: '训练个性化参数' }).click()
+  await page.getByRole('button', { name: /开始训练|重新训练并验证/ }).click()
   const completed = page.getByText(/候选参数.*(已启用|已安全保留当前调度参数)/)
   const failed = page.locator('.sync-message-error')
   await expect(completed.or(failed)).toBeVisible({ timeout: 150_000 })

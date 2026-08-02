@@ -8,6 +8,51 @@ async function disableMotion(page: import('@playwright/test').Page): Promise<voi
   await page.addStyleTag({ content: '*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}.app-toast,.app-system-banner{display:none!important}' })
 }
 
+async function seedOneStudyWord(page: import('@playwright/test').Page): Promise<void> {
+  await page.evaluate(async () => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('wordsbook-db')
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction(['dictionaryEntries', 'wordbook', 'studyListItems'], 'readwrite')
+      const now = new Date().toISOString()
+      transaction.objectStore('dictionaryEntries').put({
+        entryId: 'e2e:native-shell',
+        headword: 'native',
+        headwordLower: 'native',
+        phonetic: '/ˈneɪtɪv/',
+        posList: ['adj.'],
+        sensesJson: JSON.stringify(['原生的']),
+        examplesJson: '[]',
+        usageJson: '[]',
+      })
+      transaction.objectStore('wordbook').put({
+        wordId: 'e2e-native-shell',
+        entryId: 'e2e:native-shell',
+        headword: 'native',
+        headwordLower: 'native',
+        integrityStatus: 'ready',
+        addedAt: now,
+        note: '',
+        tags: [],
+        archived: 0,
+      })
+      transaction.objectStore('studyListItems').put({
+        membershipId: 'system:legacy:e2e-native-shell',
+        listId: 'system:legacy',
+        wordId: 'e2e-native-shell',
+        learningEnabled: 1,
+        addedAt: now,
+      })
+      transaction.oncomplete = () => { database.close(); resolve() }
+      transaction.onerror = () => reject(transaction.error)
+      transaction.onabort = () => reject(transaction.error)
+    })
+  })
+}
+
 test('uses a touch tab bar on compact screens without overflow', async ({ page }) => {
   await page.setViewportSize(compact)
   await page.goto('/review')
@@ -64,6 +109,9 @@ test('switches to a sidebar on regular screens', async ({ page }) => {
 test('keeps immersive learning free of global chrome', async ({ page }) => {
   await page.setViewportSize(compact)
   await page.goto('/review')
+  await expect(page.locator('.bottom-nav')).toBeVisible()
+  await seedOneStudyWord(page)
+  await page.reload()
   await page.getByRole('button', { name: '开始今日学习' }).click()
   await expect(page.locator('.bottom-nav')).toHaveCount(0)
   await expect(page.locator('.app-sidebar')).toHaveCount(0)
@@ -82,6 +130,8 @@ for (const path of ['/lookup', '/review', '/lists', '/settings']) {
 }
 
 test('matches compact core-screen visual baselines', async ({ page }) => {
+  test.skip(process.platform !== 'win32', 'Visual baselines are maintained on the Windows reference environment')
+
   test.setTimeout(75_000)
   await page.setViewportSize(compact)
   await page.goto('/lookup')
@@ -108,6 +158,8 @@ test('matches compact core-screen visual baselines', async ({ page }) => {
 })
 
 test('matches the regular-width sidebar baseline', async ({ page }) => {
+  test.skip(process.platform !== 'win32', 'Visual baselines are maintained on the Windows reference environment')
+
   await page.setViewportSize(regular)
   await page.goto('/review')
   await disableMotion(page)

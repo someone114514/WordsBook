@@ -2,6 +2,7 @@
 import { liveQuery } from 'dexie'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { describeLearningError } from '../app/userFacingErrors'
 import { Ellipsis, Volume2, X } from 'lucide-vue-next'
 import type { DailyQueueSnapshot } from '../modules/review/dailyQueueService'
 import type { ReviewCard, ReviewRating } from '../types/models'
@@ -183,7 +184,7 @@ async function initialize() {
     void prewarmRoundContent()
     await loadCurrentCard()
   } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : String(reason)
+    error.value = describeLearningError(reason, 'session')
   } finally {
     loading.value = false
   }
@@ -199,7 +200,7 @@ function scheduleQueueWakeup(nextAvailableAt?: string) {
       snapshot.value = await loadDailyQueueSnapshot(snapshot.value.session.sessionId)
       await loadCurrentCard()
     } catch (reason) {
-      error.value = reason instanceof Error ? reason.message : String(reason)
+      error.value = describeLearningError(reason, 'session')
     }
   }, delay)
 }
@@ -219,12 +220,12 @@ function subscribeToSession(sessionId: string) {
         && (fresh.current?.itemId !== previousItemId || incomingRevision !== currentRevision)
       ) {
         void loadCurrentCard().catch((reason) => {
-          error.value = reason instanceof Error ? reason.message : String(reason)
+          error.value = describeLearningError(reason, 'session')
         })
       }
     },
     error: (reason) => {
-      error.value = reason instanceof Error ? reason.message : String(reason)
+      error.value = describeLearningError(reason, 'session')
     },
   })
 }
@@ -349,7 +350,7 @@ async function onGrade(rating: ReviewRating) {
     }
     await loadCurrentCard()
   } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : String(reason)
+    error.value = describeLearningError(reason, 'session')
   } finally {
     grading.value = false
   }
@@ -390,7 +391,7 @@ async function optimizeCurrentDefinition() {
     aiDefinitionMessage.value = result.created ? '已创建 AI 词条并更新释义' : '已更新，可在查词页回退'
   } catch (reason) {
     aiDefinitionMessageTone.value = 'error'
-    aiDefinitionMessage.value = reason instanceof Error ? reason.message : 'AI 优化失败，请稍后重试'
+    aiDefinitionMessage.value = describeLearningError(reason, 'ai-definition')
   } finally {
     aiDefinitionBusy.value = false
   }
@@ -442,7 +443,7 @@ async function addMore(count: number) {
     showMoreSheet.value = false
     await loadCurrentCard()
   } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : String(reason)
+    error.value = describeLearningError(reason, 'session')
   } finally { actionBusy.value = false }
 }
 
@@ -502,42 +503,51 @@ async function enterArticle() {
               </li>
             </ul>
             <ul v-else><li v-for="sense in parseJsonArray(card.entry.sensesJson)" :key="sense">{{ sense }}</li></ul>
-            <div
-              v-if="parseJsonArray(card.entry.synonymsJson ?? '[]').length || parseJsonArray(card.entry.antonymsJson ?? '[]').length"
-              class="lexical-relations review-lexical-relations"
-              aria-label="词义关系"
+            <details
+              v-if="parseJsonArray(card.entry.synonymsJson ?? '[]').length || parseJsonArray(card.entry.antonymsJson ?? '[]').length || parseJsonArray(card.entry.examplesJson).length"
+              class="review-supporting-details"
             >
-              <div v-if="parseJsonArray(card.entry.synonymsJson ?? '[]').length" class="lexical-relation-row">
-                <strong>近义词</strong>
-                <ul class="lexical-relation-list">
-                  <li v-for="synonym in parseJsonArray(card.entry.synonymsJson ?? '[]')" :key="synonym">{{ synonym }}</li>
-                </ul>
+              <summary>更多词义与例句</summary>
+              <div
+                v-if="parseJsonArray(card.entry.synonymsJson ?? '[]').length || parseJsonArray(card.entry.antonymsJson ?? '[]').length"
+                class="lexical-relations review-lexical-relations"
+                aria-label="词义关系"
+              >
+                <div v-if="parseJsonArray(card.entry.synonymsJson ?? '[]').length" class="lexical-relation-row">
+                  <strong>近义词</strong>
+                  <ul class="lexical-relation-list">
+                    <li v-for="synonym in parseJsonArray(card.entry.synonymsJson ?? '[]')" :key="synonym">{{ synonym }}</li>
+                  </ul>
+                </div>
+                <div v-if="parseJsonArray(card.entry.antonymsJson ?? '[]').length" class="lexical-relation-row">
+                  <strong>反义词</strong>
+                  <ul class="lexical-relation-list">
+                    <li v-for="antonym in parseJsonArray(card.entry.antonymsJson ?? '[]')" :key="antonym">{{ antonym }}</li>
+                  </ul>
+                </div>
               </div>
-              <div v-if="parseJsonArray(card.entry.antonymsJson ?? '[]').length" class="lexical-relation-row">
-                <strong>反义词</strong>
-                <ul class="lexical-relation-list">
-                  <li v-for="antonym in parseJsonArray(card.entry.antonymsJson ?? '[]')" :key="antonym">{{ antonym }}</li>
-                </ul>
-              </div>
-            </div>
-            <details v-if="parseJsonArray(card.entry.examplesJson).length" class="review-examples">
-              <summary>例句</summary>
               <p v-for="example in parseJsonArray(card.entry.examplesJson)" :key="example" class="example">{{ example }}</p>
             </details>
-            <p class="review-rating-guide">“勉强想起”只用于看答案前确实想起、但很费力的情况；完全没想起请选择“没想起”。</p>
+            <details class="review-rating-help">
+              <summary>如何选择评分</summary>
+              <p class="review-rating-guide">“勉强想起”只用于看答案前确实想起、但很费力的情况；完全没想起请选择“没想起”。</p>
+            </details>
             <p v-if="card.note" class="example">{{ card.note }}</p>
-            <div class="review-ai-definition">
-              <button
-                class="btn btn-quiet review-ai-definition-btn"
-                :disabled="aiDefinitionBusy || !deepseekApiKey.trim()"
-                type="button"
-                @click="optimizeCurrentDefinition"
-              >
-                {{ aiDefinitionBusy ? 'AI 处理中…' : 'AI 优化释义' }}
-              </button>
-              <p v-if="!deepseekApiKey.trim() && !aiDefinitionMessage" class="muted review-ai-definition-hint">配置 DeepSeek Key 后可用</p>
-              <p v-if="aiDefinitionMessage" :class="aiDefinitionMessageTone === 'error' ? 'error' : 'success'" class="review-ai-definition-message" role="status">{{ aiDefinitionMessage }}</p>
-            </div>
+            <details class="review-ai-details">
+              <summary>释义工具</summary>
+              <div class="review-ai-definition">
+                <button
+                  class="btn btn-quiet review-ai-definition-btn"
+                  :disabled="aiDefinitionBusy || !deepseekApiKey.trim()"
+                  type="button"
+                  @click="optimizeCurrentDefinition"
+                >
+                  {{ aiDefinitionBusy ? 'AI 处理中…' : 'AI 优化释义' }}
+                </button>
+                <p v-if="!deepseekApiKey.trim() && !aiDefinitionMessage" class="muted review-ai-definition-hint">配置 DeepSeek Key 后可用</p>
+                <p v-if="aiDefinitionMessage" :class="aiDefinitionMessageTone === 'error' ? 'error' : 'success'" class="review-ai-definition-message" role="status">{{ aiDefinitionMessage }}</p>
+              </div>
+            </details>
           </aside>
         </div>
       </section>
