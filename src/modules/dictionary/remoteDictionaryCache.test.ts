@@ -14,7 +14,12 @@ it('reuses the manifest for consecutive lookups without changing matches', async
   const fetchMock = vi.fn(async (url: string) => new Response(url.endsWith('manifest.json')
     ? JSON.stringify({ buckets: [{ prefix: 'a', path: 'a.jsonl', sha256: '', contentSha256: hash }] })
     : content))
-  vi.stubGlobal('crypto', webcrypto)
+  vi.stubGlobal('crypto', {
+    subtle: {
+      digest: (algorithm: string, data: ArrayBuffer) =>
+        webcrypto.subtle.digest(algorithm, Buffer.from(new Uint8Array(data))),
+    },
+  })
   vi.stubGlobal('fetch', fetchMock)
   vi.stubGlobal('caches', { open: async () => ({ match: async () => undefined, put: async () => {} }) })
   const { lookupRemoteDictionary } = await import('./remoteDictionaryCache')
