@@ -136,6 +136,7 @@ export interface SettingItem {
 }
 
 export interface AppSettings {
+  uiLanguage: 'en' | 'zh-CN'
   autoPronunciation: boolean
   speechRate: number
   ttsEngine: 'auto' | 'browser' | 'youdao' | 'google' | 'dictionaryapi'

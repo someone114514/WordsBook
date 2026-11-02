@@ -1,3 +1,4 @@
+import { t } from '../../i18n'
 import { db } from '../../db/database'
 import type { DictionaryEntry, WordListImportReport } from '../../types/models'
 import { buildPrefixTokens, toLemmaCandidates } from '../dictionary/search'
@@ -60,14 +61,14 @@ export function parseWordListText(raw: string): ImportRow[] {
     try {
       parsed = JSON.parse(normalizedRaw)
     } catch (error) {
-      throw new Error(`JSON 格式错误：${error instanceof Error ? error.message : '无法解析'}`)
+      throw new Error(t("JSON 格式错误：{0}", [error instanceof Error ? error.message : t("无法解析")]))
     }
     const container = Array.isArray(parsed)
       ? parsed
       : parsed && typeof parsed === 'object'
         ? ((parsed as Record<string, unknown>).words ?? (parsed as Record<string, unknown>).items ?? [parsed])
         : []
-    if (!Array.isArray(container)) throw new Error('JSON 需要是数组，或包含 words/items 数组')
+    if (!Array.isArray(container)) throw new Error(t("JSON 需要是数组，或包含 words/items 数组"))
     return container.map((value) => {
       if (typeof value === 'string') return { word: value, meaning: '', note: '', tags: [] }
       if (!value || typeof value !== 'object') return { word: '', meaning: '', note: '', tags: [] }

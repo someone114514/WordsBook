@@ -1,5 +1,9 @@
 import { expect, test } from '@playwright/test'
 
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('wordsbook:onboarding-completed:v1', '1'))
+})
+
 async function seedTrainingEvidence(page: import('@playwright/test').Page): Promise<void> {
   await page.evaluate(async () => {
     const database = await new Promise<IDBDatabase>((resolve, reject) => {

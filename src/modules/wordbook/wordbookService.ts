@@ -1,4 +1,5 @@
-﻿import { db } from '../../db/database'
+import { t } from '../../i18n'
+import { db } from '../../db/database'
 import type {
   AddToWordbookResult,
   DailyLearningSession,
@@ -63,7 +64,7 @@ export async function listWordbookItems(): Promise<WordbookWithEntry[]> {
 
 export async function addToWordbook(entryId: string): Promise<AddToWordbookResult> {
   const sourceEntry = await db.dictionaryEntries.get(entryId)
-  if (!sourceEntry) throw new Error('词条不存在，请重新查词后再加入')
+  if (!sourceEntry) throw new Error(t("词条不存在，请重新查词后再加入"))
   const existing = await db.wordbook.where('entryId').equals(entryId).first()
     ?? await db.wordbook.where('headwordLower').equals(sourceEntry.headwordLower).first()
   if (existing) {
@@ -149,7 +150,7 @@ export async function addToWordbook(entryId: string): Promise<AddToWordbookResul
  */
 export async function resetWordForRelearning(wordId: string, listId?: string, at = new Date()): Promise<void> {
   const item = await db.wordbook.get(wordId)
-  if (!item) throw new Error('单词不存在')
+  if (!item) throw new Error(t("单词不存在"))
   await ensureSystemStudyLists()
   if (listId) await addWordToStudyList(listId, wordId, 'lookup')
 
@@ -159,7 +160,7 @@ export async function resetWordForRelearning(wordId: string, listId?: string, at
   ])
   const listMap = new Map(lists.map((list) => [list.listId, list]))
   const learningMemberships = memberships.filter((membership) => listMap.get(membership.listId)?.systemType !== 'lookup')
-  if (!learningMemberships.length) throw new Error('请先选择一个学习词表')
+  if (!learningMemberships.length) throw new Error(t("请先选择一个学习词表"))
   const now = at.toISOString()
   const refreshedMemberships = learningMemberships.map((membership) => ({
     ...membership,
@@ -182,7 +183,7 @@ export async function resetWordForRelearning(wordId: string, listId?: string, at
 /** Destructive escape hatch; callers must obtain a second explicit confirmation. */
 export async function clearWordLearningHistory(wordId: string, listId?: string, at = new Date()): Promise<void> {
   const item = await db.wordbook.get(wordId)
-  if (!item) throw new Error('单词不存在')
+  if (!item) throw new Error(t("单词不存在"))
   await ensureSystemStudyLists()
   if (listId) await addWordToStudyList(listId, wordId, 'lookup')
 
@@ -197,7 +198,7 @@ export async function clearWordLearningHistory(wordId: string, listId?: string, 
   ])
   const listMap = new Map(lists.map((list) => [list.listId, list]))
   const learningMemberships = memberships.filter((membership) => listMap.get(membership.listId)?.systemType !== 'lookup')
-  if (!learningMemberships.length) throw new Error('请先选择一个学习词表')
+  if (!learningMemberships.length) throw new Error(t("请先选择一个学习词表"))
 
   const now = at.toISOString()
   const refreshedMemberships = learningMemberships.map((membership) => ({

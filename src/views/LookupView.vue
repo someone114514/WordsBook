@@ -1,4 +1,5 @@
 ﻿<script setup lang="ts">
+import { t, studyListName } from '../i18n'
 import { computed, onActivated, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRoute } from 'vue-router'
@@ -69,10 +70,10 @@ const groupedMatches = computed(() => {
   }
 
   return [
-    { title: '精确匹配', entries: lookupResult.value.exactMatches },
-    { title: '词形还原', entries: lookupResult.value.lemmaMatches },
-    { title: '前缀候选', entries: lookupResult.value.prefixMatches },
-    { title: '模糊匹配', entries: lookupResult.value.fuzzyMatches },
+    { title: t("精确匹配"), entries: lookupResult.value.exactMatches },
+    { title: t("词形还原"), entries: lookupResult.value.lemmaMatches },
+    { title: t("前缀候选"), entries: lookupResult.value.prefixMatches },
+    { title: t("模糊匹配"), entries: lookupResult.value.fuzzyMatches },
   ].filter((section) => section.entries.length > 0)
 })
 
@@ -96,13 +97,13 @@ const totalMatchCount = computed(() =>
 const disableResultMotion = computed(() => totalMatchCount.value > RESULT_MOTION_THRESHOLD)
 const dictionarySummary = computed(() => {
   if (installing.value) {
-    return progress.value?.message ?? '正在安装高频核心词库'
+    return progress.value?.message ?? t("正在安装高频核心词库")
   }
   if (!installedMeta.value) {
-    return '词库未安装'
+    return t("词库未安装")
   }
 
-  return `词库 ${installedMeta.value.entryCount.toLocaleString()} 条`
+  return t("词库 {0} 条", [installedMeta.value.entryCount.toLocaleString()])
 })
 const dictionaryProgress = computed(() => Math.round((progress.value?.ratio ?? 0) * 100))
 const selectionReturnTo = computed(() => {
@@ -110,27 +111,27 @@ const selectionReturnTo = computed(() => {
   return value.startsWith('/') && !value.startsWith('//') && !value.startsWith('/lookup') ? value : ''
 })
 const selectionReturnLabel = computed(() => selectionReturnTo.value.startsWith('/review/reading')
-  ? '返回文章'
-  : selectionReturnTo.value.startsWith('/review') ? '返回学习' : '返回原页面')
+  ? t("返回文章")
+  : selectionReturnTo.value.startsWith('/review') ? t("返回学习") : t("返回原页面"))
 const pendingActionCopy = computed(() => {
   const action = pendingAction.value
   if (!action) return { title: '', consequence: '', label: '', destructive: false }
   if (action.kind === 'relearn') return {
-    title: `重新学习「${action.entry.headword}」？`,
-    consequence: '这个词会加入今日重学。历史评分和长期记忆状态会保留。',
-    label: '加入今日重学',
+    title: t("重新学习「{0}」？", [action.entry.headword]),
+    consequence: t("这个词会加入今日重学。历史评分和长期记忆状态会保留。"),
+    label: t("加入今日重学"),
     destructive: false,
   }
   if (action.kind === 'remove-saved') return {
-    title: `取消保存「${action.entry.headword}」？`,
-    consequence: '仅从“已保存”中移除，学习词表归属和复习记录不会改变。',
-    label: '取消保存',
+    title: t("取消保存「{0}」？", [action.entry.headword]),
+    consequence: t("仅从“已保存”中移除，学习词表归属和复习记录不会改变。"),
+    label: t("取消保存"),
     destructive: true,
   }
   return {
-    title: `清空「${action.entry.headword}」的学习记录？`,
-    consequence: 'FSRS 状态、复习历史与语境练习记录会被永久清除；词条和词表归属会保留，并作为新词重新学习。此操作不可撤销。',
-    label: '彻底清空并重新学习',
+    title: t("清空「{0}」的学习记录？", [action.entry.headword]),
+    consequence: t("FSRS 状态、复习历史与语境练习记录会被永久清除；词条和词表归属会保留，并作为新词重新学习。此操作不可撤销。"),
+    label: t("彻底清空并重新学习"),
     destructive: true,
   }
 })
@@ -156,7 +157,7 @@ const flowState = computed(() => {
 function getAiConfig() {
   const apiKey = settings.value.deepseekApiKey.trim()
   if (!apiKey) {
-    throw new Error('请先在设置页填写 Deepseek API Key')
+    throw new Error(t("请先在设置页填写 Deepseek API Key"))
   }
 
   return {
@@ -250,6 +251,12 @@ watch(query, () => {
   scheduleLookup(query.value.trim())
 })
 
+watch(() => route.query.q, (value) => {
+  if (route.path === '/lookup' && typeof value === 'string' && value.trim()) {
+    query.value = value.trim()
+  }
+})
+
 onMounted(async () => {
   if (typeof route.query.q === 'string' && route.query.q.trim()) query.value = route.query.q.trim()
   await Promise.all([dictionaryStore.refreshInstalledMeta(), settingsStore.initialize()])
@@ -336,18 +343,18 @@ async function onAddWord(entryId: string) {
     listIds: [...new Set([...(previous?.listIds ?? []), 'system:lookup'])],
   })
   messageType.value = 'success'
-  message.value = result.alreadyExists ? '已保存在“仅保存”中' : '已保存，不会进入每日学习'
+  message.value = result.alreadyExists ? t("已保存在“仅保存”中") : t("已保存，不会进入每日学习")
 }
 
 async function onAddToStudyList(entry: DictionaryEntry) {
   if (!selectedStudyListId.value) {
     messageType.value = 'error'
-    message.value = '请先在“词表”页创建学习词表'
+    message.value = t("请先在“词表”页创建学习词表")
     return
   }
   if (isInSelectedStudyList(entry.entryId)) {
     messageType.value = 'success'
-    message.value = '这个单词已在所选词表中'
+    message.value = t("这个单词已在所选词表中")
     return
   }
   addingEntryId.value = entry.entryId
@@ -360,13 +367,13 @@ async function onAddToStudyList(entry: DictionaryEntry) {
     })
     window.localStorage.setItem('wordsbook:last-study-list', selectedStudyListId.value)
     messageType.value = 'success'
-    const listName = studyLists.value.find((list) => list.listId === selectedStudyListId.value)?.name ?? '学习词表'
-    message.value = `已加入「${listName}」· 将进入每日队列`
-    notify(`已加入「${listName}」。`, { tone: 'success' })
+    const listName = studyLists.value.find((list) => list.listId === selectedStudyListId.value)?.name ?? t("学习词表")
+    message.value = t("已加入「{0}」· 将进入每日队列", [listName])
+    notify(t("已加入「{0}」。", [listName]), { tone: 'success' })
     manageEntryId.value = ''
   } catch (error) {
     messageType.value = 'error'
-    message.value = error instanceof Error ? `加入失败：${error.message}` : '加入失败，请重试'
+    message.value = error instanceof Error ? t("加入失败：{0}", [error.message]) : t("加入失败，请重试")
   } finally {
     addingEntryId.value = null
   }
@@ -378,7 +385,7 @@ async function onRelearn(entry: DictionaryEntry) {
   const hasLearningList = status.listIds.some((id) => id !== 'system:lookup')
   if (!hasLearningList && !selectedStudyListId.value) {
     messageType.value = 'error'
-    message.value = '请先选择一个学习词表'
+    message.value = t("请先选择一个学习词表")
     manageEntryId.value = entry.entryId
     return
   }
@@ -392,12 +399,12 @@ async function onRelearn(entry: DictionaryEntry) {
       })
     }
     messageType.value = 'success'
-    message.value = '已加入今日重学，当前学习页会自动刷新'
-    notify(`「${entry.headword}」已加入今日重学。`, { tone: 'success' })
+    message.value = t("已加入今日重学，当前学习页会自动刷新")
+    notify(t("「{0}」已加入今日重学。", [entry.headword]), { tone: 'success' })
     manageEntryId.value = ''
   } catch (error) {
     messageType.value = 'error'
-    message.value = error instanceof Error ? error.message : '重新学习失败，请重试'
+    message.value = error instanceof Error ? error.message : t("重新学习失败，请重试")
   } finally {
     relearningEntryId.value = null
   }
@@ -409,19 +416,19 @@ async function onClearLearningHistory(entry: DictionaryEntry) {
   const hasLearningList = status.listIds.some((id) => id !== 'system:lookup')
   if (!hasLearningList && !selectedStudyListId.value) {
     messageType.value = 'error'
-    message.value = '请先选择一个学习词表'
+    message.value = t("请先选择一个学习词表")
     return
   }
   clearingHistoryEntryId.value = entry.entryId
   try {
     await clearWordLearningHistory(status.wordId, hasLearningList ? undefined : selectedStudyListId.value)
     messageType.value = 'success'
-    message.value = '学习记录已清空，已作为新词加入今日学习'
-    notify(`「${entry.headword}」已作为新词重新加入学习。`, { tone: 'success' })
+    message.value = t("学习记录已清空，已作为新词加入今日学习")
+    notify(t("「{0}」已作为新词重新加入学习。", [entry.headword]), { tone: 'success' })
     manageEntryId.value = ''
   } catch (error) {
     messageType.value = 'error'
-    message.value = error instanceof Error ? error.message : '清空学习记录失败，请重试'
+    message.value = error instanceof Error ? error.message : t("清空学习记录失败，请重试")
   } finally {
     clearingHistoryEntryId.value = null
   }
@@ -442,11 +449,11 @@ async function onRemoveWord(entry: DictionaryEntry) {
     else nextStatusMap.delete(entry.entryId)
     entryStatusMap.value = nextStatusMap
     messageType.value = 'success'
-    message.value = '已取消仅保存'
-    notify(`已取消保存「${entry.headword}」。`, { tone: 'success' })
+    message.value = t("已取消仅保存")
+    notify(t("已取消保存「{0}」。", [entry.headword]), { tone: 'success' })
   } catch (error) {
     messageType.value = 'error'
-    message.value = error instanceof Error ? error.message : '取消保存失败，请重试'
+    message.value = error instanceof Error ? error.message : t("取消保存失败，请重试")
   } finally {
     deletingEntryId.value = null
   }
@@ -477,7 +484,7 @@ async function onPlay(entry: DictionaryEntry) {
   })
   if (!result.success) {
     messageType.value = 'error'
-    message.value = '发音失败：当前设备语音服务不可用'
+    message.value = t("发音失败：当前设备语音服务不可用")
   }
 }
 
@@ -486,14 +493,14 @@ async function onPasteQuery() {
     const text = (await navigator.clipboard.readText()).trim()
     if (!text) {
       messageType.value = 'error'
-      message.value = '剪贴板为空'
+      message.value = t("剪贴板为空")
       return
     }
     query.value = text
     searchInputRef.value?.focus()
   } catch {
     messageType.value = 'error'
-    message.value = '读取剪贴板失败，请手动粘贴'
+    message.value = t("读取剪贴板失败，请手动粘贴")
   }
 }
 
@@ -523,7 +530,7 @@ async function onAiEnhance(entry: DictionaryEntry, mode: 'add' | 'replace') {
     })
 
     messageType.value = 'success'
-    message.value = mode === 'replace' ? '已替换为 AI 释义（可回退）' : '已追加 AI 释义（可回退）'
+    message.value = mode === 'replace' ? t("已替换为 AI 释义（可回退）") : t("已追加 AI 释义（可回退）")
     await runLookupNow(query.value.trim())
   } catch (error) {
     messageType.value = 'error'
@@ -540,7 +547,7 @@ async function onAiRollback(entry: DictionaryEntry) {
   try {
     const rolledBack = await rollbackAiOverride(entry.entryId)
     messageType.value = 'success'
-    message.value = rolledBack ? '已回退到上一个版本' : '没有可回退的 AI 修改'
+    message.value = rolledBack ? t("已回退到上一个版本") : t("没有可回退的 AI 修改")
     await runLookupNow(query.value.trim())
   } finally {
     aiBusyAction.value = null
@@ -551,7 +558,7 @@ async function onAiCreateFromQuery() {
   const raw = query.value.trim()
   if (!raw) {
     messageType.value = 'error'
-    message.value = '请先输入单词'
+    message.value = t("请先输入单词")
     return
   }
 
@@ -571,7 +578,7 @@ async function onAiCreateFromQuery() {
     })
 
     messageType.value = 'success'
-    message.value = 'AI 词条已加入本地词典'
+    message.value = t("AI 词条已加入本地词典")
     await runLookupNow(raw)
   } catch (error) {
     messageType.value = 'error'
@@ -599,21 +606,21 @@ function parseLines(raw: string): string[] {
 <template>
   <section class="panel lookup-panel">
     <aside v-if="selectionReturnTo" class="reading-return-banner">
-      <span>查词前的页面与学习进度已保留</span>
+      <span>{{ t("查词前的页面与学习进度已保留") }}</span>
       <button class="btn" type="button" @click="$router.push(selectionReturnTo)">{{ selectionReturnLabel }}</button>
     </aside>
     <section v-if="!installedMeta" class="dictionary-setup" aria-live="polite">
       <template v-if="installing">
-        <h2>正在安装核心词典</h2>
-        <p>{{ progress?.message || '正在准备词典文件' }}</p>
+        <h2>{{ t("正在安装核心词典") }}</h2>
+        <p>{{ progress?.message || t("正在准备词典文件") }}</p>
         <progress :value="progress?.ratio ?? 0" max="1" />
         <span>{{ dictionaryProgress }}%</span>
       </template>
       <template v-else>
-        <h2>词典尚未就绪</h2>
+        <h2>{{ t("词典尚未就绪") }}</h2>
         <p v-if="lastError" class="error" role="alert">{{ lastError }}</p>
-        <p v-else>安装高频核心词典后即可查词。</p>
-        <button class="btn btn-primary" type="button" @click="retryDictionaryInstall">安装核心词典</button>
+        <p v-else>{{ t("安装高频核心词典后即可查词。") }}</p>
+        <button class="btn btn-primary" type="button" @click="retryDictionaryInstall">{{ t("安装核心词典") }}</button>
       </template>
     </section>
     <Transition name="soft-fade-slide">
@@ -631,21 +638,21 @@ function parseLines(raw: string): string[] {
       <div class="lookup-canvas-body">
         <Transition name="soft-fade-slide" mode="out-in">
           <div v-if="flowState === 'idle'" key="idle" class="lookup-stage lookup-stage-idle">
-            <p class="lookup-stage-center-text">请在下方查询单词，回车即可录入</p>
+            <p class="lookup-stage-center-text">{{ t("请在下方查询单词，回车即可录入") }}</p>
           </div>
 
           <div v-else-if="flowState === 'loading'" key="loading" class="lookup-stage lookup-stage-idle">
-            <p class="lookup-stage-center-text">检索中...</p>
+            <p class="lookup-stage-center-text">{{ t("检索中...") }}</p>
           </div>
 
           <div v-else-if="flowState === 'empty'" key="empty" class="lookup-stage lookup-stage-empty">
-            <p class="lookup-stage-center-text">没有找到结果</p>
+            <p class="lookup-stage-center-text">{{ t("没有找到结果") }}</p>
             <div class="actions">
               <button class="btn btn-quiet" :disabled="aiBusyNoResult || !canUseAi" @click="onAiCreateFromQuery">
-                {{ aiBusyNoResult ? 'AI 查询中...' : 'AI 查询并加入词典' }}
+                {{ aiBusyNoResult ? t("AI 查询中...") : t("AI 查询并加入词典") }}
               </button>
             </div>
-            <p v-if="!canUseAi" class="muted">在设置页填写 Deepseek API Key 后可启用 AI 查询。</p>
+            <p v-if="!canUseAi" class="muted">{{ t("在设置页填写 Deepseek API Key 后可启用 AI 查询。") }}</p>
           </div>
 
           <div v-else key="results" class="lookup-results-scroll">
@@ -662,7 +669,7 @@ function parseLines(raw: string): string[] {
                     class="btn btn-quiet section-toggle"
                     @click="toggleSection(section.title)"
                   >
-                    {{ section.expanded ? '收起' : `显示更多（+${section.hiddenCount}）` }}
+                    {{ section.expanded ? t("收起") : t("显示更多（+{0}）", [section.hiddenCount]) }}
                   </button>
                 </div>
 
@@ -672,13 +679,13 @@ function parseLines(raw: string): string[] {
                       <h3>{{ entry.headword }}</h3>
                       <div class="entry-badges">
                         <span v-if="entry.dictionaryName" class="chip chip-secondary">{{ entry.dictionaryName }}</span>
-                        <span v-if="entry.aiEnhanced" class="chip">AI {{ entry.aiEnhanceMode === 'replace' ? '替换' : '增强' }}</span>
-                        <span v-if="isAdded(entry.entryId)" class="chip">学习中</span>
-                        <span v-else-if="isSaved(entry.entryId)" class="chip chip-secondary">仅保存</span>
+                        <span v-if="entry.aiEnhanced" class="chip">AI {{ entry.aiEnhanceMode === 'replace' ? t("替换") : t("增强") }}</span>
+                        <span v-if="isAdded(entry.entryId)" class="chip">{{ t("学习中") }}</span>
+                        <span v-else-if="isSaved(entry.entryId)" class="chip chip-secondary">{{ t("仅保存") }}</span>
                       </div>
                     </div>
                     <p class="muted lookup-entry-meta">
-                      <span>{{ entry.phonetic || '无音标' }}</span>
+                      <span>{{ entry.phonetic || t("无音标") }}</span>
                       <span v-if="entry.posList.length">{{ entry.posList.join(' / ') }}</span>
                     </p>
 
@@ -690,23 +697,23 @@ function parseLines(raw: string): string[] {
                       v-if="parseLines(entry.sensesJson).length > 2 || parseLines(entry.synonymsJson ?? '[]').length || parseLines(entry.antonymsJson ?? '[]').length || parseLines(entry.examplesJson).length"
                       class="lookup-entry-details"
                     >
-                      <summary>更多释义与例句</summary>
+                      <summary>{{ t("更多释义与例句") }}</summary>
                       <ul v-if="parseLines(entry.sensesJson).length > 2">
                         <li v-for="sense in parseLines(entry.sensesJson).slice(2)" :key="sense">{{ sense }}</li>
                       </ul>
                       <div
                         v-if="parseLines(entry.synonymsJson ?? '[]').length || parseLines(entry.antonymsJson ?? '[]').length"
                         class="lexical-relations"
-                        aria-label="词义关系"
+                        :aria-label="t('词义关系')"
                       >
                         <div v-if="parseLines(entry.synonymsJson ?? '[]').length" class="lexical-relation-row">
-                          <strong>近义词</strong>
+                          <strong>{{ t("近义词") }}</strong>
                           <ul class="lexical-relation-list">
                             <li v-for="synonym in parseLines(entry.synonymsJson ?? '[]')" :key="synonym">{{ synonym }}</li>
                           </ul>
                         </div>
                         <div v-if="parseLines(entry.antonymsJson ?? '[]').length" class="lexical-relation-row">
-                          <strong>反义词</strong>
+                          <strong>{{ t("反义词") }}</strong>
                           <ul class="lexical-relation-list">
                             <li v-for="antonym in parseLines(entry.antonymsJson ?? '[]')" :key="antonym">{{ antonym }}</li>
                           </ul>
@@ -716,7 +723,7 @@ function parseLines(raw: string): string[] {
                     </details>
 
                     <div class="actions">
-                      <button class="btn" @click="onPlay(entry)">发音</button>
+                      <button class="btn" @click="onPlay(entry)">{{ t("发音") }}</button>
                       <button
                         :class="['btn', 'btn-primary', 'lookup-study-action', { added: isAdded(entry.entryId) }]"
                         type="button"
@@ -724,50 +731,50 @@ function parseLines(raw: string): string[] {
                         :aria-pressed="isAdded(entry.entryId)"
                         @click="isAdded(entry.entryId) ? toggleEntryManagement(entry) : onAddToStudyList(entry)"
                       >
-                        {{ addingEntryId === entry.entryId ? '加入中…' : isAdded(entry.entryId) ? '已加入学习' : '加入学习' }}
+                        {{ addingEntryId === entry.entryId ? t("加入中…") : isAdded(entry.entryId) ? t("已加入学习") : t("加入学习") }}
                       </button>
-                      <button class="btn btn-quiet" type="button" @click="toggleEntryManagement(entry)">更多</button>
+                      <button class="btn btn-quiet" type="button" @click="toggleEntryManagement(entry)">{{ t("更多") }}</button>
                     </div>
                     <div v-if="manageEntryId === entry.entryId" class="lookup-add-panel">
-                      <h4>{{ isAdded(entry.entryId) ? '加入其他词表' : '选择学习词表' }}</h4>
-                      <select v-if="studyLists.length" v-model="selectedStudyListId" class="inline-input" aria-label="选择学习词表"><option v-for="list in studyLists" :key="list.listId" :value="list.listId" :disabled="entryStatusMap.get(entry.entryId)?.listIds.includes(list.listId)">{{ list.name }}{{ entryStatusMap.get(entry.entryId)?.listIds.includes(list.listId) ? '（已加入）' : '' }}</option></select>
-                      <button class="btn btn-primary" :disabled="addingEntryId === entry.entryId || isInSelectedStudyList(entry.entryId)" type="button" @click="onAddToStudyList(entry)">{{ addingEntryId === entry.entryId ? '加入中…' : isInSelectedStudyList(entry.entryId) ? '已在此词表' : '确认加入' }}</button>
-                      <hr><p class="muted">只想留作参考，不安排复习？</p>
-                      <button v-if="!isSaved(entry.entryId)" class="btn" type="button" @click="onAddWord(entry.entryId)">仅保存</button>
-                      <button v-else class="btn btn-danger" :disabled="deletingEntryId === entry.entryId" type="button" @click="requestEntryAction('remove-saved', entry)">{{ deletingEntryId === entry.entryId ? '处理中…' : '取消仅保存' }}</button>
+                      <h4>{{ isAdded(entry.entryId) ? t("加入其他词表") : t("选择学习词表") }}</h4>
+                      <select v-if="studyLists.length" v-model="selectedStudyListId" class="inline-input" :aria-label="t('选择学习词表')"><option v-for="list in studyLists" :key="list.listId" :value="list.listId" :disabled="entryStatusMap.get(entry.entryId)?.listIds.includes(list.listId)">{{ studyListName(list) }}{{ entryStatusMap.get(entry.entryId)?.listIds.includes(list.listId) ? t("（已加入）") : '' }}</option></select>
+                      <button class="btn btn-primary" :disabled="addingEntryId === entry.entryId || isInSelectedStudyList(entry.entryId)" type="button" @click="onAddToStudyList(entry)">{{ addingEntryId === entry.entryId ? t("加入中…") : isInSelectedStudyList(entry.entryId) ? t("已在此词表") : t("确认加入") }}</button>
+                      <hr><p class="muted">{{ t("只想留作参考，不安排复习？") }}</p>
+                      <button v-if="!isSaved(entry.entryId)" class="btn" type="button" @click="onAddWord(entry.entryId)">{{ t("仅保存") }}</button>
+                      <button v-else class="btn btn-danger" :disabled="deletingEntryId === entry.entryId" type="button" @click="requestEntryAction('remove-saved', entry)">{{ deletingEntryId === entry.entryId ? t("处理中…") : t("取消仅保存") }}</button>
                       <template v-if="entryStatusMap.has(entry.entryId)">
-                        <button class="btn lookup-relearn-action" type="button" :disabled="relearningEntryId === entry.entryId" @click="requestEntryAction('relearn', entry)">{{ relearningEntryId === entry.entryId ? '加入中…' : '重新学习' }}</button>
-                        <hr><p class="muted">不可撤销的高级操作</p>
-                        <button class="btn btn-danger" :disabled="clearingHistoryEntryId === entry.entryId" type="button" @click="requestEntryAction('clear-history', entry)">{{ clearingHistoryEntryId === entry.entryId ? '清空中…' : '彻底清空学习记录' }}</button>
+                        <button class="btn lookup-relearn-action" type="button" :disabled="relearningEntryId === entry.entryId" @click="requestEntryAction('relearn', entry)">{{ relearningEntryId === entry.entryId ? t("加入中…") : t("重新学习") }}</button>
+                        <hr><p class="muted">{{ t("不可撤销的高级操作") }}</p>
+                        <button class="btn btn-danger" :disabled="clearingHistoryEntryId === entry.entryId" type="button" @click="requestEntryAction('clear-history', entry)">{{ clearingHistoryEntryId === entry.entryId ? t("清空中…") : t("彻底清空学习记录") }}</button>
                       </template>
                     </div>
 
                     <details class="ai-details">
-                      <summary>AI 词义增强</summary>
+                      <summary>{{ t("AI 词义增强") }}</summary>
                       <div class="actions actions-soft ai-actions">
                         <button
                           class="btn btn-quiet"
                           :disabled="!canUseAi || isAiActionBusy(entry.entryId, 'add')"
                           @click="onAiEnhance(entry, 'add')"
                         >
-                          {{ isAiActionBusy(entry.entryId, 'add') ? 'AI处理中...' : 'AI 追加释义' }}
+                          {{ isAiActionBusy(entry.entryId, 'add') ? t("AI处理中...") : t("AI 追加释义") }}
                         </button>
                         <button
                           class="btn btn-quiet"
                           :disabled="!canUseAi || isAiActionBusy(entry.entryId, 'replace')"
                           @click="onAiEnhance(entry, 'replace')"
                         >
-                          {{ isAiActionBusy(entry.entryId, 'replace') ? 'AI处理中...' : 'AI 替换释义' }}
+                          {{ isAiActionBusy(entry.entryId, 'replace') ? t("AI处理中...") : t("AI 替换释义") }}
                         </button>
                         <button
                           class="btn btn-quiet"
                           :disabled="!entry.aiEnhanced || isAiActionBusy(entry.entryId, 'rollback')"
                           @click="onAiRollback(entry)"
                         >
-                          {{ isAiActionBusy(entry.entryId, 'rollback') ? '回退中...' : '回退 AI' }}
+                          {{ isAiActionBusy(entry.entryId, 'rollback') ? t("回退中...") : t("回退 AI") }}
                         </button>
                       </div>
-                      <p v-if="!canUseAi" class="muted">在设置页填写 Deepseek API Key 后可启用 AI 增强。</p>
+                      <p v-if="!canUseAi" class="muted">{{ t("在设置页填写 Deepseek API Key 后可启用 AI 增强。") }}</p>
                     </details>
                   </div>
                 </TransitionGroup>
@@ -780,7 +787,7 @@ function parseLines(raw: string): string[] {
       <footer class="lookup-canvas-footer">
         <div class="entry-badges">
           <span class="chip chip-secondary">{{ dictionarySummary }}</span>
-          <span v-if="flowState === 'results'" class="chip">命中 {{ totalMatchCount }}</span>
+          <span v-if="flowState === 'results'" class="chip">{{ t("命中 {0}", [totalMatchCount]) }}</span>
         </div>
       </footer>
     </section>
@@ -788,14 +795,14 @@ function parseLines(raw: string): string[] {
     <form class="lookup-dock lookup-search-strip" @submit.prevent="onLookupSubmit">
       <label class="lookup-search-pill">
         <SearchIcon class="lookup-search-glyph" :size="18" :stroke-width="2" aria-hidden="true" />
-        <span class="sr-only">查词输入框</span>
+        <span class="sr-only">{{ t("查词输入框") }}</span>
         <input
           ref="searchInputRef"
           v-model="query"
           :disabled="!installedMeta || installing"
           class="search-input"
           type="text"
-          placeholder="查询单词"
+          :placeholder="t('查询单词')"
           autocomplete="off"
           autocapitalize="none"
           autocorrect="off"
@@ -807,15 +814,15 @@ function parseLines(raw: string): string[] {
           v-if="query"
           type="button"
           class="search-clear-btn"
-          aria-label="清空输入"
+          :aria-label="t('清空输入')"
           @click="onClearQuery"
         >
-          <X :size="17" aria-hidden="true" /><span class="sr-only">清空</span>
+          <X :size="17" aria-hidden="true" /><span class="sr-only">{{ t("清空") }}</span>
         </button>
       </label>
 
-      <button type="button" class="quick-action-btn quick-action-btn-soft" @click="onPasteQuery"><ClipboardPaste :size="18" aria-hidden="true" /><span>粘贴</span></button>
-      <button type="submit" class="sr-only">查询</button>
+      <button type="button" class="quick-action-btn quick-action-btn-soft" @click="onPasteQuery"><ClipboardPaste :size="18" aria-hidden="true" /><span>{{ t("粘贴") }}</span></button>
+      <button type="submit" class="sr-only">{{ t("查询") }}</button>
     </form>
 
     <AppActionSheet
@@ -826,9 +833,9 @@ function parseLines(raw: string): string[] {
     >
       <p>{{ pendingActionCopy.consequence }}</p>
       <template #actions>
-        <button class="btn" type="button" :disabled="confirmationBusy" @click="pendingAction = null">取消</button>
+        <button class="btn" type="button" :disabled="confirmationBusy" @click="pendingAction = null">{{ t("取消") }}</button>
         <button :class="['btn', pendingActionCopy.destructive ? 'btn-danger' : 'btn-primary']" type="button" :disabled="confirmationBusy" @click="confirmEntryAction">
-          {{ confirmationBusy ? '处理中…' : pendingActionCopy.label }}
+          {{ confirmationBusy ? t("处理中…") : pendingActionCopy.label }}
         </button>
       </template>
     </AppActionSheet>

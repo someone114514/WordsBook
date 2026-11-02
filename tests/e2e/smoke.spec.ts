@@ -1,5 +1,9 @@
 ﻿import { expect, test } from '@playwright/test'
 
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('wordsbook:onboarding-completed:v1', '1'))
+})
+
 import type { Page } from '@playwright/test'
 
 async function finishLocalReading(page: Page): Promise<void> {

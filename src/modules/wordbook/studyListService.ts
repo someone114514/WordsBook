@@ -1,3 +1,4 @@
+import { t } from '../../i18n'
 import { db } from '../../db/database'
 import type {
   DictionaryEntry,
@@ -85,7 +86,7 @@ export async function listStudyLists(): Promise<ListRow[]> {
 
 export async function createStudyList(name: string, description = ''): Promise<StudyList> {
   const normalized = name.trim()
-  if (!normalized) throw new Error('请输入词表名称')
+  if (!normalized) throw new Error(t("请输入词表名称"))
   const now = new Date().toISOString()
   const list: StudyList = {
     listId: createId(),
@@ -107,7 +108,7 @@ export async function updateStudyList(
   patch: Partial<Pick<StudyList, 'name' | 'description' | 'studyEnabled'>>,
 ): Promise<StudyList> {
   const current = await db.studyLists.get(listId)
-  if (!current) throw new Error('词表不存在')
+  if (!current) throw new Error(t("词表不存在"))
   const next = { ...current, ...patch, updatedAt: new Date().toISOString() }
   await db.studyLists.put(next)
   await markPayloadChanged('studyLists', next, next.updatedAt)
@@ -119,7 +120,7 @@ export async function updateStudyList(
 export async function deleteStudyList(listId: string): Promise<void> {
   const list = await db.studyLists.get(listId)
   if (!list) return
-  if (list.systemType) throw new Error('系统词表不能删除')
+  if (list.systemType) throw new Error(t("系统词表不能删除"))
   const memberships = await db.studyListItems.where('listId').equals(listId).toArray()
   await db.transaction('rw', [db.studyLists, db.studyListItems], async () => {
     await db.studyListItems.where('listId').equals(listId).delete()

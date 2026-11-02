@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { db } from '../db/database'
@@ -31,26 +32,26 @@ let disposed = false
 const current = computed(() => questions.value[cursor.value])
 const currentAttempt = computed(() => current.value ? attempts.value[current.value.questionId] : undefined)
 const statusText = computed(() => content.value?.status === 'failed'
-  ? '语境练习生成失败'
+  ? t("语境练习生成失败")
   : content.value?.status === 'ready' || content.value?.status === 'completed'
-    ? '' : '正在准备语境练习…')
+    ? '' : t("正在准备语境练习…"))
 const questionKindLabel = computed(() => current.value?.type === 'meaning-in-context'
-  ? '英文释义辨析'
-  : current.value?.type === 'usage-discrimination' ? '四语境辨用法' : '本地主动回忆')
+  ? t("英文释义辨析")
+  : current.value?.type === 'usage-discrimination' ? t("四语境辨用法") : t("本地主动回忆"))
 const failureKind = computed(() => {
   switch (content.value?.errorCode) {
-    case 'contract-invalid': return '题目结构或词义绑定未通过校验'
-    case 'invalid-json': return 'AI 返回内容不是有效 JSON'
-    case 'timeout': return 'AI 请求超过总等待时间'
-    case 'network': return '当前设备无法连接 AI 服务'
+    case 'contract-invalid': return t("题目结构或词义绑定未通过校验")
+    case 'invalid-json': return t("AI 返回内容不是有效 JSON")
+    case 'timeout': return t("AI 请求超过总等待时间")
+    case 'network': return t("当前设备无法连接 AI 服务")
     case 'unauthorized':
-    case 'auth': return 'API Key 无效或无权访问当前模型'
-    case 'quota': return 'API 账户余额不足'
+    case 'auth': return t("API Key 无效或无权访问当前模型")
+    case 'quota': return t("API 账户余额不足")
     case 'rate-limited':
-    case 'rate-limit': return 'AI 服务请求频率受限'
-    case 'server': return 'AI 服务端暂时异常'
-    case 'missing-key': return '当前设备未配置 API Key'
-    default: return 'AI 生成未成功'
+    case 'rate-limit': return t("AI 服务请求频率受限")
+    case 'server': return t("AI 服务端暂时异常")
+    case 'missing-key': return t("当前设备未配置 API Key")
+    default: return t("AI 生成未成功")
   }
 })
 
@@ -68,7 +69,7 @@ async function refresh() {
   }
   content.value = await db.readingSessions.get(sessionId) ?? null
   if (!content.value) {
-    error.value = '语境练习记录不存在，可跳过后继续学习。'
+    error.value = t("语境练习记录不存在，可跳过后继续学习。")
     return
   }
   if (content.value.status === 'failed' || content.value.status === 'skipped') {
@@ -184,54 +185,54 @@ function refreshPracticeAfterResume(): void {
 <template>
   <main class="immersive-shell practice-session-page">
     <header class="immersive-header">
-      <div class="immersive-progress"><span>语境练习</span><strong>{{ questions.length ? `${cursor + 1} / ${questions.length}` : '准备中' }}</strong></div>
-      <button class="btn btn-quiet" type="button" :disabled="busy" @click="finish(true)">跳过</button>
+      <div class="immersive-progress"><span>{{ t("语境练习") }}</span><strong>{{ questions.length ? `${cursor + 1} / ${questions.length}` : t("准备中") }}</strong></div>
+      <button class="btn btn-quiet" type="button" :disabled="busy" @click="finish(true)">{{ t("跳过") }}</button>
     </header>
 
     <section v-if="!content || content.status === 'pending' || content.status === 'streaming'" class="immersive-card practice-loading" aria-live="polite">
       <div class="skeleton-lines" aria-hidden="true"><span/><span/><span/></div>
       <h1>{{ statusText }}</h1>
       <p v-if="error" class="error">{{ error }}</p>
-      <p v-else>任务已经保存；退出或刷新后会继续恢复。</p>
-      <button class="btn" type="button" :disabled="busy" @click="finish(true)">跳过本次</button>
+      <p v-else>{{ t("任务已经保存；退出或刷新后会继续恢复。") }}</p>
+      <button class="btn" type="button" :disabled="busy" @click="finish(true)">{{ t("跳过本次") }}</button>
     </section>
 
     <section v-else-if="current" class="immersive-card practice-question-card">
       <p class="eyebrow">{{ questionKindLabel }}</p>
       <div v-if="content?.errorCode" class="practice-fallback-notice">
         <div>
-          <p class="muted">AI 增强当前未成功，已保留可完成的本地练习。</p>
+          <p class="muted">{{ t("AI 增强当前未成功，已保留可完成的本地练习。") }}</p>
           <small>{{ failureKind }}</small>
-          <details v-if="content.error"><summary>查看技术原因</summary><p>{{ content.error }}</p></details>
+          <details v-if="content.error"><summary>{{ t("查看技术原因") }}</summary><p>{{ content.error }}</p></details>
         </div>
-        <button class="btn btn-quiet" type="button" :disabled="busy" @click="retryAiPractice">重新生成 AI 练习</button>
+        <button class="btn btn-quiet" type="button" :disabled="busy" @click="retryAiPractice">{{ t("重新生成 AI 练习") }}</button>
       </div>
       <h1>{{ current.headword }}</h1>
       <p v-if="current.passage" class="practice-passage">{{ current.passage }}</p>
       <h2>{{ current.stem }}</h2>
       <div v-if="current.type === 'self-recall' && !selfRecallRevealed && !currentAttempt" class="context-choice-list">
-        <button class="btn btn-primary" type="button" @click="selfRecallRevealed = true">查看答案并自评</button>
+        <button class="btn btn-primary" type="button" @click="selfRecallRevealed = true">{{ t("查看答案并自评") }}</button>
       </div>
       <div v-else-if="current.type === 'self-recall' && !currentAttempt" class="local-recall-answer">
-        <div class="context-answer"><strong>核心义</strong><p>{{ current.sourceSense }}</p><ul><li v-for="clue in current.evidence.slice(1)" :key="clue">{{ clue }}</li></ul></div>
+        <div class="context-answer"><strong>{{ t("核心义") }}</strong><p>{{ current.sourceSense }}</p><ul><li v-for="clue in current.evidence.slice(1)" :key="clue">{{ clue }}</li></ul></div>
         <div class="context-choice-list">
-          <button class="btn btn-primary" type="button" :disabled="busy" @click="answer(0)">想起来了</button>
-          <button class="btn" type="button" :disabled="busy" @click="answer(1)">还没想起来</button>
-          <button class="btn btn-quiet" type="button" :disabled="busy" @click="answer()">不确定</button>
+          <button class="btn btn-primary" type="button" :disabled="busy" @click="answer(0)">{{ t("想起来了") }}</button>
+          <button class="btn" type="button" :disabled="busy" @click="answer(1)">{{ t("还没想起来") }}</button>
+          <button class="btn btn-quiet" type="button" :disabled="busy" @click="answer()">{{ t("不确定") }}</button>
         </div>
       </div>
       <div v-else-if="current.type !== 'self-recall'" class="context-choice-list">
         <button v-for="(option, index) in current.options" :key="option" class="btn" type="button" :disabled="busy || Boolean(currentAttempt)" @click="answer(index)">{{ String.fromCharCode(65 + index) }}. {{ option }}</button>
-        <button v-if="!currentAttempt" class="btn btn-quiet" type="button" :disabled="busy" @click="answer()">不确定</button>
+        <button v-if="!currentAttempt" class="btn btn-quiet" type="button" :disabled="busy" @click="answer()">{{ t("不确定") }}</button>
       </div>
       <div v-if="currentAttempt" :class="['context-answer', currentAttempt.result === 'correct' ? 'correct' : 'incorrect']">
-        <strong>{{ current.type === 'self-recall' ? '自评完成' : currentAttempt.result === 'correct' ? '回答正确' : currentAttempt.result === 'uncertain' ? '不确定' : '回答错误' }}</strong>
-        <p v-if="current.type !== 'self-recall'">答案：{{ current.options[current.correctIndex] }}</p>
+        <strong>{{ current.type === 'self-recall' ? t("自评完成") : currentAttempt.result === 'correct' ? t("回答正确") : currentAttempt.result === 'uncertain' ? t("不确定") : t("回答错误") }}</strong>
+        <p v-if="current.type !== 'self-recall'">{{ t("答案：{0}", [current.options[current.correctIndex]]) }}</p>
         <p>{{ current.explanation }}</p>
         <ul><li v-for="clue in current.evidence" :key="clue">{{ clue }}</li></ul>
-        <details v-if="current.rationalesAligned && current.distractorExplanations.some(Boolean)"><summary>查看选项辨析</summary><p v-for="(reason, index) in current.distractorExplanations" v-show="reason" :key="index">{{ String.fromCharCode(65 + index) }}. {{ reason }}</p></details>
+        <details v-if="current.rationalesAligned && current.distractorExplanations.some(Boolean)"><summary>{{ t("查看选项辨析") }}</summary><p v-for="(reason, index) in current.distractorExplanations" v-show="reason" :key="index">{{ String.fromCharCode(65 + index) }}. {{ reason }}</p></details>
       </div>
-      <button v-if="currentAttempt" class="btn btn-primary" type="button" @click="next">{{ cursor + 1 < questions.length ? '下一题' : '继续学习' }}</button>
+      <button v-if="currentAttempt" class="btn btn-primary" type="button" @click="next">{{ cursor + 1 < questions.length ? t("下一题") : t("继续学习") }}</button>
     </section>
   </main>
 </template>

@@ -1,3 +1,4 @@
+import { t } from '../../i18n'
 import dayjs from 'dayjs'
 import { db } from '../../db/database'
 import type {
@@ -237,7 +238,7 @@ function createInitialQueueItems(
 
 export async function previewDailyQueueChanges(sessionId: string, at = new Date()): Promise<DailyQueueChangePreview> {
   const session = await db.dailyLearningSessions.get(sessionId)
-  if (!session) throw new Error('今日学习会话不存在')
+  if (!session) throw new Error(t("今日学习会话不存在"))
   const revision = await getStudyQueueRevision()
   if (revision === (session.sourceRevision ?? revision)) {
     return { revision, eligibleWordIds: session.sourceEligibleWordIds ?? session.initialWordIds, addedWordIds: [], removedWordIds: [], dismissed: false }
@@ -396,7 +397,7 @@ async function invalidateChangedFutureContent(
  */
 export async function replanUnstartedDailyQueue(sessionId: string, at = new Date()): Promise<DailyQueueSnapshot> {
   const session = await db.dailyLearningSessions.get(sessionId)
-  if (!session) throw new Error('今日学习会话不存在')
+  if (!session) throw new Error(t("今日学习会话不存在"))
   if (session.status === 'completed') return loadDailyQueueSnapshot(sessionId)
 
   // V2 sessions are already split into stable learning units. Rebuilding their
@@ -605,7 +606,7 @@ function appendPlannedRounds(
 
 export async function applyDailyQueueChanges(sessionId: string, at = new Date()): Promise<DailyQueueSnapshot> {
   const session = await db.dailyLearningSessions.get(sessionId)
-  if (!session) throw new Error('今日学习会话不存在')
+  if (!session) throw new Error(t("今日学习会话不存在"))
   const preview = await previewDailyQueueChanges(sessionId, at)
   const now = at.toISOString()
   const removedSet = new Set(preview.removedWordIds)
@@ -685,7 +686,7 @@ export async function applyDailyQueueChanges(sessionId: string, at = new Date())
 
 export async function extendDailyQueue(sessionId: string, count: number, at = new Date()): Promise<DailyQueueSnapshot> {
   const session = await db.dailyLearningSessions.get(sessionId)
-  if (!session) throw new Error('今日学习会话不存在')
+  if (!session) throw new Error(t("今日学习会话不存在"))
   const wordIds = await buildAdditionalStudyWordIds(
     count,
     session.initialWordIds,
@@ -792,7 +793,7 @@ function selectCurrentItem(
 
 export async function loadDailyQueueSnapshot(sessionId: string, at = new Date()): Promise<DailyQueueSnapshot> {
   const session = await db.dailyLearningSessions.get(sessionId)
-  if (!session) throw new Error('今日学习会话不存在')
+  if (!session) throw new Error(t("今日学习会话不存在"))
   const [items, attempts] = await Promise.all([
     orderedItems(sessionId),
     db.dailyQueueAttempts.where('sessionId').equals(sessionId).sortBy('answeredAt'),
@@ -914,7 +915,7 @@ export async function requestWordRelearning(
   options: { commitCanonicalAgain?: boolean; treatAsNew?: boolean } = {},
 ): Promise<DailyQueueSnapshot> {
   const state = await db.reviewState.get(wordId)
-  if (!state) throw new Error('单词学习状态不存在')
+  if (!state) throw new Error(t("单词学习状态不存在"))
   const now = at.toISOString()
   const today = dayKey(at)
 
@@ -932,9 +933,9 @@ export async function requestWordRelearning(
     db.syncTombstones,
   ], async () => {
     const currentSession = await db.dailyLearningSessions.get(session!.sessionId)
-    if (!currentSession) throw new Error('今日学习会话不存在')
+    if (!currentSession) throw new Error(t("今日学习会话不存在"))
     const commandState = await db.reviewState.get(wordId)
-    if (!commandState) throw new Error('单词学习状态不存在')
+    if (!commandState) throw new Error(t("单词学习状态不存在"))
     await db.reviewState.put({
       ...commandState,
       suspendedAt: undefined,
@@ -1638,7 +1639,7 @@ async function advanceSessionIfCardsDone(sessionId: string, at = new Date()): Pr
 
 export async function resumeDailyCardsAfterPractice(sessionId: string, at = new Date()): Promise<DailyQueueSnapshot> {
   const session = await db.dailyLearningSessions.get(sessionId)
-  if (!session) throw new Error('今日学习会话不存在')
+  if (!session) throw new Error(t("今日学习会话不存在"))
   const roundIndex = session.pendingPracticeRoundIndex ?? session.activeRoundIndex
   const now = at.toISOString()
   const updated: DailyLearningSession = {
@@ -1660,7 +1661,7 @@ export async function resumeDailyCardsAfterPractice(sessionId: string, at = new 
 /** Resume cards after an interleaved article, starting a fresh dynamic round when needed. */
 export async function resumeDailyCardsAfterArticle(sessionId: string, at = new Date()): Promise<DailyQueueSnapshot> {
   const session = await db.dailyLearningSessions.get(sessionId)
-  if (!session) throw new Error('今日学习会话不存在')
+  if (!session) throw new Error(t("今日学习会话不存在"))
   const now = at.toISOString()
   if (session.engineVersion === ENGINE_VERSION) {
     const plannedBatch = parseReadingBatchesJson(session.readingBatchesJson)[session.activeReadingBatchIndex ?? 0] ?? []
@@ -1796,7 +1797,7 @@ export async function recordContextLearningEvidence(
     }
 
     const session = await db.dailyLearningSessions.get(dailySessionId)
-    if (!session || session.status !== 'active') throw new Error('今日学习会话已结束')
+    if (!session || session.status !== 'active') throw new Error(t("今日学习会话已结束"))
     const activityOrdinal = (session.activityOrdinal ?? 0) + 1
     await db.contextAttempts.put(attempt)
     await markPayloadChanged('contextAttempts', attempt, attempt.answeredAt)
@@ -1867,9 +1868,9 @@ export async function finishCardPhase(sessionId: string): Promise<DailyQueueSnap
   const pending = await db.dailyQueueItems.where('sessionId').equals(sessionId)
     .filter((item) => item.kind === 'card' && (item.status === 'pending' || item.status === 'active'))
     .count()
-  if (pending) throw new Error('当前队列还有未完成的单词')
+  if (pending) throw new Error(t("当前队列还有未完成的单词"))
   const session = await db.dailyLearningSessions.get(sessionId)
-  if (!session) throw new Error('今日学习会话不存在')
+  if (!session) throw new Error(t("今日学习会话不存在"))
   const now = new Date().toISOString()
   const alreadyFinishedArticle = session.articleStatus === 'completed' || session.articleStatus === 'skipped'
   const updated: DailyLearningSession = {
@@ -1961,13 +1962,13 @@ export async function answerDailyCard(
       db.dailyLearningSessions.get(sessionId),
       db.dailyQueueItems.get(itemId),
     ])
-    if (!session) throw new Error('今日学习会话不存在')
+    if (!session) throw new Error(t("今日学习会话不存在"))
     if (evidence.expectedSessionRevision !== undefined
       && evidence.expectedSessionRevision !== (session.sessionRevision ?? 0)) {
-      throw new Error('学习队列已在其他页面更新，请按最新卡片作答')
+      throw new Error(t("学习队列已在其他页面更新，请按最新卡片作答"))
     }
-    if (!item?.wordId || item.sessionId !== sessionId || item.kind !== 'card') throw new Error('队列卡片不存在')
-    if (item.status === 'completed' || item.status === 'skipped') throw new Error('这次活动已经提交')
+    if (!item?.wordId || item.sessionId !== sessionId || item.kind !== 'card') throw new Error(t("队列卡片不存在"))
+    if (item.status === 'completed' || item.status === 'skipped') throw new Error(t("这次活动已经提交"))
 
     const previousAttempts = await db.dailyQueueAttempts
       .where('[sessionId+wordId]')

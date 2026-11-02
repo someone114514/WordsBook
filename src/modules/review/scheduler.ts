@@ -1,3 +1,4 @@
+import { t } from '../../i18n'
 import {
   Rating,
   State,
@@ -151,9 +152,9 @@ export function replayReviewState(
 
 export function formatInterval(from: Date, due: Date): string {
   const days = Math.max(1, Math.round((due.getTime() - from.getTime()) / 86400000))
-  if (days === 1) return '明天'
-  if (days < 365) return `${days}天`
-  return `${Math.round(days / 365)}年`
+  if (days === 1) return t("明天")
+  if (days < 365) return t("{0}天", [days])
+  return t("{0}年", [Math.round(days / 365)])
 }
 
 export function getReviewRetrievability(state: ReviewState, at = new Date()): number {

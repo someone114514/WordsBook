@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n'
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { X } from 'lucide-vue-next'
 
@@ -101,7 +102,7 @@ onBeforeUnmount(() => {
             <slot name="header">
               <h2>{{ title }}</h2>
             </slot>
-            <button v-if="dismissible" class="app-icon-button" type="button" aria-label="关闭" @click="close">
+            <button v-if="dismissible" class="app-icon-button" type="button" :aria-label="t('关闭')" @click="close">
               <X :size="20" aria-hidden="true" />
             </button>
           </header>

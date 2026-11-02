@@ -1,5 +1,7 @@
+import { t } from './i18n'
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
+import { useSettingsStore } from './modules/settings/settingsStore'
 import { registerSW } from 'virtual:pwa-register'
 import './style.css'
 import './native.css'
@@ -49,10 +51,10 @@ const updateServiceWorker = registerSW({
   },
   onOfflineReady() {
     setOfflineReady(true)
-    notify('离线资源已准备好，断网后仍可查词和学习。', { tone: 'success' })
+    notify(t("离线资源已准备好，断网后仍可查词和学习。"), { tone: 'success' })
   },
   onRegisterError() {
-    notify('离线功能暂未启用，联网时仍可正常使用。', { tone: 'error' })
+    notify(t("离线功能暂未启用，联网时仍可正常使用。"), { tone: 'error' })
   },
 })
 configureServiceWorkerUpdate(updateServiceWorker)
@@ -61,6 +63,7 @@ await initializePersonalizedReviewScheduler().catch(() => undefined)
 
 const app = createApp(App)
 app.use(createPinia())
+await useSettingsStore().initialize()
 app.use(router)
 void router.isReady().then(() => {
   app.mount('#app')
@@ -97,7 +100,7 @@ window.addEventListener('wordsbook:network-restored', () => {
   void reconcileCurrentStudyDay()
   void resumePendingArticlePreload().catch(() => undefined)
   void resumePendingPracticePreload().catch(() => undefined)
-  notify('网络已恢复，正在更新学习状态。', { tone: 'success' })
+  notify(t("网络已恢复，正在更新学习状态。"), { tone: 'success' })
 })
 
 let midnightTimer = 0

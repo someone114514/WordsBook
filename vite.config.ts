@@ -41,7 +41,7 @@ export default defineConfig(() => {
           id: base,
           name: 'WordsBook',
           short_name: 'WordsBook',
-          lang: 'zh-CN',
+          lang: isGithubActions ? 'en' : 'zh-CN',
           description: 'Offline-first dictionary and spaced repetition word book.',
           theme_color: '#f2f2f7',
           background_color: '#f2f2f7',

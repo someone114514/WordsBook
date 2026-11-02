@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n'
 import { liveQuery } from 'dexie'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -64,10 +65,10 @@ const aiDefinitionMessage = ref('')
 const aiDefinitionMessageTone = ref<'success' | 'error'>('success')
 const preloadingRound = ref<string | null>(null)
 const intervals = ref<CardIntervalPreviewMap>({
-  again: { sameDay: '今日至少 1 分钟后再测', appliesToLongTerm: true },
-  hard: { sameDay: '今日至少 3 分钟后再测', appliesToLongTerm: true },
-  good: { sameDay: '本轮通过', appliesToLongTerm: true },
-  easy: { sameDay: '本轮通过', appliesToLongTerm: true },
+  again: { sameDay: t("今日至少 1 分钟后再测"), appliesToLongTerm: true },
+  hard: { sameDay: t("今日至少 3 分钟后再测"), appliesToLongTerm: true },
+  good: { sameDay: t("本轮通过"), appliesToLongTerm: true },
+  easy: { sameDay: t("本轮通过"), appliesToLongTerm: true },
 })
 let cardShownAt = Date.now()
 let liveSubscription: { unsubscribe(): void } | undefined
@@ -85,24 +86,24 @@ const progress = computed(() => {
   if (!snapshot.value?.totalCards) return 0
   return Math.min(100, Math.round(snapshot.value.completedCards / snapshot.value.totalCards * 100))
 })
-const queueLabel = computed(() => `剩余 ${new Set(snapshot.value?.items
+const queueLabel = computed(() => t("剩余 {0}", [new Set(snapshot.value?.items
   .filter((item) => item.kind === 'card' && item.wordId && (item.status === 'pending' || item.status === 'active'))
-  .map((item) => item.wordId)).size}`)
-const roundLabel = computed(() => `第 ${snapshot.value?.session.activeRoundIndex ?? 1} 组`)
+  .map((item) => item.wordId)).size]))
+const roundLabel = computed(() => t("第 {0} 组", [snapshot.value?.session.activeRoundIndex ?? 1]))
 const tomorrowPriorityCount = computed(() => snapshot.value?.items.filter((item) => item.tomorrowPriority).length ?? 0)
 const reasonLabel = computed(() => ({
-  initial: '先回想释义，再查看答案',
-  'new-repeat': '再次回忆',
-  'again-repeat': '重新回忆',
-  'hard-repeat': '再确认一次',
-  'context-retry': '文章错词',
-  reencounter: '重新学习 · 先理解，再主动回忆',
-  'list-change': '今日新增',
-  'extra-batch': '继续学习',
+  initial: t("先回想释义，再查看答案"),
+  'new-repeat': t("再次回忆"),
+  'again-repeat': t("重新回忆"),
+  'hard-repeat': t("再确认一次"),
+  'context-retry': t("文章错词"),
+  reencounter: t("重新学习 · 先理解，再主动回忆"),
+  'list-change': t("今日新增"),
+  'extra-batch': t("继续学习"),
 }[currentItem.value?.reason ?? 'initial']))
 const memoryStateLabel = computed(() => currentItem.value?.stage === 'retry'
-  ? '需稍后再测'
-  : currentItem.value?.stage === 'learn' ? '待首次提取' : '到期提取')
+  ? t("需稍后再测")
+  : currentItem.value?.stage === 'learn' ? t("待首次提取") : t("到期提取"))
 const displayedDefinitions = computed(() => card.value
   ? definitionLines(card.value.entry, articleLevel.value, definitionLanguage.value)
   : [])
@@ -118,10 +119,10 @@ const deferredPending = computed(() => Boolean(snapshot.value
 const waitMessage = computed(() => {
   if (snapshot.value?.nextAvailableAt) {
     const seconds = Math.max(1, Math.ceil((Date.parse(snapshot.value.nextAvailableAt) - Date.now()) / 1000))
-    return `这个词需要留出间隔，约 ${seconds} 秒后可再测。`
+    return t("这个词需要留出间隔，约 {0} 秒后可再测。", [seconds])
   }
-  if (snapshot.value?.waitingForActivities) return `还需间隔 ${snapshot.value.waitingForActivities} 个不同活动；系统会跨学习单元安排。`
-  return '正在寻找下一项合适的学习活动。'
+  if (snapshot.value?.waitingForActivities) return t("还需间隔 {0} 个不同活动；系统会跨学习单元安排。", [snapshot.value.waitingForActivities])
+  return t("正在寻找下一项合适的学习活动。")
 })
 
 async function loadCurrentCard() {
@@ -361,7 +362,7 @@ async function optimizeCurrentDefinition() {
   if (!current || aiDefinitionBusy.value) return
   if (!deepseekApiKey.value.trim()) {
     aiDefinitionMessageTone.value = 'error'
-    aiDefinitionMessage.value = '请先到设置页填写 DeepSeek API Key'
+    aiDefinitionMessage.value = t("请先到设置页填写 DeepSeek API Key")
     return
   }
 
@@ -388,7 +389,7 @@ async function optimizeCurrentDefinition() {
     })
     card.value = (await loadReviewCards([current.wordId]))[0] ?? current
     aiDefinitionMessageTone.value = 'success'
-    aiDefinitionMessage.value = result.created ? '已创建 AI 词条并更新释义' : '已更新，可在查词页回退'
+    aiDefinitionMessage.value = result.created ? t("已创建 AI 词条并更新释义") : t("已更新，可在查词页回退")
   } catch (reason) {
     aiDefinitionMessageTone.value = 'error'
     aiDefinitionMessage.value = describeLearningError(reason, 'ai-definition')
@@ -426,7 +427,7 @@ async function deleteCurrentWord() {
     await loadCurrentCard()
     showDeleteConfirmation.value = false
     showWordMenu.value = false
-    notify(`已彻底删除「${headword}」。`, { tone: 'success' })
+    notify(t("已彻底删除「{0}」。", [headword]), { tone: 'success' })
   } finally {
     actionBusy.value = false
   }
@@ -461,16 +462,16 @@ async function enterArticle() {
 <template>
   <section class="immersive-stage daily-queue-stage">
     <header class="immersive-header">
-      <button class="btn" type="button" @click="router.push('/review')"><X :size="18" aria-hidden="true" />退出</button>
-      <div class="immersive-progress"><span>今日学习 · {{ roundLabel }}</span><strong>{{ queueLabel }}</strong></div>
+      <button class="btn" type="button" @click="router.push('/review')"><X :size="18" aria-hidden="true" />{{ t("退出") }}</button>
+      <div class="immersive-progress"><span>{{ t("今日学习 · {0}", [roundLabel]) }}</span><strong>{{ queueLabel }}</strong></div>
       <span class="progress-chip">{{ progress }}%</span>
     </header>
     <div class="immersive-progress-bar"><span :style="{ width: `${progress}%` }" /></div>
 
-    <div v-if="loading" class="immersive-empty" aria-live="polite">正在恢复今日队列…</div>
+    <div v-if="loading" class="immersive-empty" aria-live="polite">{{ t("正在恢复今日队列…") }}</div>
     <div v-else-if="error" class="immersive-empty">
       <p class="error" role="alert">{{ error }}</p>
-      <button class="btn btn-primary" type="button" @click="initialize">重试</button>
+      <button class="btn btn-primary" type="button" @click="initialize">{{ t("重试") }}</button>
     </div>
 
     <article v-else-if="card && currentItem" class="review-card-stage">
@@ -480,16 +481,16 @@ async function enterArticle() {
         <div class="review-card-topline">
           <span class="immersive-caption">{{ reasonLabel }}</span>
           <span class="review-memory-confidence">{{ memoryStateLabel }}</span>
-          <button class="review-delete-mini" :disabled="actionBusy" type="button" aria-haspopup="dialog" @click="showWordMenu = true"><Ellipsis :size="17" aria-hidden="true" />移除</button>
+          <button class="review-delete-mini" :disabled="actionBusy" type="button" aria-haspopup="dialog" @click="showWordMenu = true"><Ellipsis :size="17" aria-hidden="true" />{{ t("移除") }}</button>
         </div>
         <div :class="['review-card-content', 'review-card-content-center', { 'review-card-content-revealed': revealMeaning }]">
           <div class="review-word-stack">
             <h1 class="review-word">{{ card.entry.headword }}</h1>
-            <p class="review-phonetic muted">{{ card.entry.phonetic || '暂无音标' }}</p>
-            <button class="btn review-play-inline" type="button" @click="play"><Volume2 :size="18" aria-hidden="true" />播放发音</button>
+            <p class="review-phonetic muted">{{ card.entry.phonetic || t("暂无音标") }}</p>
+            <button class="btn review-play-inline" type="button" @click="play"><Volume2 :size="18" aria-hidden="true" />{{ t("播放发音") }}</button>
           </div>
           <aside v-if="revealMeaning" class="review-answer-sheet review-answer-inline" aria-live="polite">
-            <p class="muted">{{ card.entry.posList.join(' / ') || '释义' }}</p>
+            <p class="muted">{{ card.entry.posList.join(' / ') || t("释义") }}</p>
             <ul v-if="displayedDefinitions.length" class="review-definition-list">
               <li v-for="line in displayedDefinitions" :key="line.senseId">
                 <div class="review-definition-primary">
@@ -497,7 +498,7 @@ async function enterArticle() {
                   <span>{{ line.primary }}</span>
                 </div>
                 <details v-if="line.secondary" class="review-secondary-definition">
-                  <summary>{{ englishDefinitionFirst ? '查看中文核心义' : '查看英文解释' }}</summary>
+                  <summary>{{ englishDefinitionFirst ? t("查看中文核心义") : t("查看英文解释") }}</summary>
                   <p>{{ line.secondary }}</p>
                 </details>
               </li>
@@ -507,20 +508,20 @@ async function enterArticle() {
               v-if="parseJsonArray(card.entry.synonymsJson ?? '[]').length || parseJsonArray(card.entry.antonymsJson ?? '[]').length || parseJsonArray(card.entry.examplesJson).length"
               class="review-supporting-details"
             >
-              <summary>更多词义与例句</summary>
+              <summary>{{ t("更多词义与例句") }}</summary>
               <div
                 v-if="parseJsonArray(card.entry.synonymsJson ?? '[]').length || parseJsonArray(card.entry.antonymsJson ?? '[]').length"
                 class="lexical-relations review-lexical-relations"
-                aria-label="词义关系"
+                :aria-label="t('词义关系')"
               >
                 <div v-if="parseJsonArray(card.entry.synonymsJson ?? '[]').length" class="lexical-relation-row">
-                  <strong>近义词</strong>
+                  <strong>{{ t("近义词") }}</strong>
                   <ul class="lexical-relation-list">
                     <li v-for="synonym in parseJsonArray(card.entry.synonymsJson ?? '[]')" :key="synonym">{{ synonym }}</li>
                   </ul>
                 </div>
                 <div v-if="parseJsonArray(card.entry.antonymsJson ?? '[]').length" class="lexical-relation-row">
-                  <strong>反义词</strong>
+                  <strong>{{ t("反义词") }}</strong>
                   <ul class="lexical-relation-list">
                     <li v-for="antonym in parseJsonArray(card.entry.antonymsJson ?? '[]')" :key="antonym">{{ antonym }}</li>
                   </ul>
@@ -529,12 +530,12 @@ async function enterArticle() {
               <p v-for="example in parseJsonArray(card.entry.examplesJson)" :key="example" class="example">{{ example }}</p>
             </details>
             <details class="review-rating-help">
-              <summary>如何选择评分</summary>
-              <p class="review-rating-guide">“勉强想起”只用于看答案前确实想起、但很费力的情况；完全没想起请选择“没想起”。</p>
+              <summary>{{ t("如何选择评分") }}</summary>
+              <p class="review-rating-guide">{{ t("“勉强想起”只用于看答案前确实想起、但很费力的情况；完全没想起请选择“没想起”。") }}</p>
             </details>
             <p v-if="card.note" class="example">{{ card.note }}</p>
             <details class="review-ai-details">
-              <summary>释义工具</summary>
+              <summary>{{ t("释义工具") }}</summary>
               <div class="review-ai-definition">
                 <button
                   class="btn btn-quiet review-ai-definition-btn"
@@ -542,9 +543,9 @@ async function enterArticle() {
                   type="button"
                   @click="optimizeCurrentDefinition"
                 >
-                  {{ aiDefinitionBusy ? 'AI 处理中…' : 'AI 优化释义' }}
+                  {{ aiDefinitionBusy ? t("AI 处理中…") : t("AI 优化释义") }}
                 </button>
-                <p v-if="!deepseekApiKey.trim() && !aiDefinitionMessage" class="muted review-ai-definition-hint">配置 DeepSeek Key 后可用</p>
+                <p v-if="!deepseekApiKey.trim() && !aiDefinitionMessage" class="muted review-ai-definition-hint">{{ t("配置 DeepSeek Key 后可用") }}</p>
                 <p v-if="aiDefinitionMessage" :class="aiDefinitionMessageTone === 'error' ? 'error' : 'success'" class="review-ai-definition-message" role="status">{{ aiDefinitionMessage }}</p>
               </div>
             </details>
@@ -554,43 +555,43 @@ async function enterArticle() {
     </article>
 
     <section v-else-if="deferredPending" class="immersive-empty queue-checkpoint" aria-live="polite">
-      <p class="eyebrow">间隔中</p>
-      <h1>先换一种活动</h1>
+      <p class="eyebrow">{{ t("间隔中") }}</p>
+      <h1>{{ t("先换一种活动") }}</h1>
       <p class="muted">{{ waitMessage }}</p>
-      <p class="muted">无需反复点击；到达时间后队列会自动刷新。</p>
-      <button class="btn btn-quiet" type="button" @click="router.push('/review')">暂时结束</button>
+      <p class="muted">{{ t("无需反复点击；到达时间后队列会自动刷新。") }}</p>
+      <button class="btn btn-quiet" type="button" @click="router.push('/review')">{{ t("暂时结束") }}</button>
     </section>
 
     <section v-else-if="atQueueCheckpoint" class="immersive-empty queue-checkpoint" aria-live="polite">
-      <p class="eyebrow">今日卡片</p>
-      <h1>{{ snapshot?.session.status === 'completed' ? '今天还想再学一点？' : '今日卡片已完成' }}</h1>
-      <p class="muted">可以继续进入文章，也可以再加一组到同一个队列。</p>
-      <p v-if="tomorrowPriorityCount" class="review-tomorrow-priority" role="status">{{ tomorrowPriorityCount }} 个单词今日尚未掌握，已安排明日优先复习。</p>
-      <p v-if="noMoreWords" class="muted">暂无更多可学单词。</p>
+      <p class="eyebrow">{{ t("今日卡片") }}</p>
+      <h1>{{ snapshot?.session.status === 'completed' ? t("今天还想再学一点？") : t("今日卡片已完成") }}</h1>
+      <p class="muted">{{ t("可以继续进入文章，也可以再加一组到同一个队列。") }}</p>
+      <p v-if="tomorrowPriorityCount" class="review-tomorrow-priority" role="status">{{ t("{0} 个单词今日尚未掌握，已安排明日优先复习。", [tomorrowPriorityCount]) }}</p>
+      <p v-if="noMoreWords" class="muted">{{ t("暂无更多可学单词。") }}</p>
       <div class="actions">
-        <button v-if="snapshot?.session.status !== 'completed'" class="btn btn-primary" type="button" @click="enterArticle">进入今日文章</button>
-        <button class="btn" :disabled="actionBusy || noMoreWords" type="button" @click="showMoreSheet = true">再学一组</button>
-        <button v-if="snapshot?.session.status === 'completed'" class="btn btn-quiet" type="button" @click="router.push('/review')">返回学习首页</button>
+        <button v-if="snapshot?.session.status !== 'completed'" class="btn btn-primary" type="button" @click="enterArticle">{{ t("进入今日文章") }}</button>
+        <button class="btn" :disabled="actionBusy || noMoreWords" type="button" @click="showMoreSheet = true">{{ t("再学一组") }}</button>
+        <button v-if="snapshot?.session.status === 'completed'" class="btn btn-quiet" type="button" @click="router.push('/review')">{{ t("返回学习首页") }}</button>
       </div>
     </section>
-    <div v-else class="immersive-empty">{{ cardLoading ? '正在读取下一张卡片…' : '正在恢复今日进度…' }}</div>
+    <div v-else class="immersive-empty">{{ cardLoading ? t("正在读取下一张卡片…") : t("正在恢复今日进度…") }}</div>
 
     <footer v-if="card && currentItem && card.wordId === currentItem.wordId" :class="['review-grade-dock', revealMeaning ? 'review-grade-dock-four' : 'review-reveal-dock']">
-      <button v-if="!revealMeaning" class="btn btn-primary review-reveal-action" :disabled="cardLoading || coachingVisible" type="button" @click="revealMeaning = true">显示释义</button>
+      <button v-if="!revealMeaning" class="btn btn-primary review-reveal-action" :disabled="cardLoading || coachingVisible" type="button" @click="revealMeaning = true">{{ t("显示释义") }}</button>
       <template v-else>
-        <button class="btn btn-danger review-action-btn" :disabled="grading || aiDefinitionBusy || cardLoading || coachingVisible" type="button" aria-label="没想起，按 Again 评分" @click="onGrade('again')">没想起 <small v-if="intervals.again.longTerm">长期 {{ intervals.again.longTerm }}</small><span class="review-grade-hint">{{ intervals.again.sameDay }}</span></button>
-        <button class="btn review-action-btn review-hard" :disabled="grading || aiDefinitionBusy || cardLoading || coachingVisible" type="button" aria-label="勉强想起，按 Hard 评分" @click="onGrade('hard')">勉强想起 <small v-if="intervals.hard.longTerm">长期 {{ intervals.hard.longTerm }}</small><span class="review-grade-hint">{{ intervals.hard.sameDay }}</span></button>
-        <button class="btn btn-primary review-action-btn" :disabled="grading || aiDefinitionBusy || cardLoading || coachingVisible" type="button" aria-label="记得，按 Good 评分" @click="onGrade('good')">记得 <small v-if="intervals.good.longTerm">长期 {{ intervals.good.longTerm }}</small><span class="review-grade-hint">{{ intervals.good.sameDay }}</span></button>
-        <button class="btn review-action-btn review-easy" :disabled="grading || aiDefinitionBusy || cardLoading || coachingVisible" type="button" aria-label="秒懂，按 Easy 评分" @click="onGrade('easy')">秒懂 <small v-if="intervals.easy.longTerm">长期 {{ intervals.easy.longTerm }}</small><span class="review-grade-hint">{{ intervals.easy.sameDay }}</span></button>
+        <button class="btn btn-danger review-action-btn" :disabled="grading || aiDefinitionBusy || cardLoading || coachingVisible" type="button" :aria-label="t('没想起，按 Again 评分')" @click="onGrade('again')">{{ t("没想起") }}<small v-if="intervals.again.longTerm">{{ t("长期 {0}", [intervals.again.longTerm]) }}</small><span class="review-grade-hint">{{ intervals.again.sameDay }}</span></button>
+        <button class="btn review-action-btn review-hard" :disabled="grading || aiDefinitionBusy || cardLoading || coachingVisible" type="button" :aria-label="t('勉强想起，按 Hard 评分')" @click="onGrade('hard')">{{ t("勉强想起") }}<small v-if="intervals.hard.longTerm">{{ t("长期 {0}", [intervals.hard.longTerm]) }}</small><span class="review-grade-hint">{{ intervals.hard.sameDay }}</span></button>
+        <button class="btn btn-primary review-action-btn" :disabled="grading || aiDefinitionBusy || cardLoading || coachingVisible" type="button" :aria-label="t('记得，按 Good 评分')" @click="onGrade('good')">{{ t("记得") }}<small v-if="intervals.good.longTerm">{{ t("长期 {0}", [intervals.good.longTerm]) }}</small><span class="review-grade-hint">{{ intervals.good.sameDay }}</span></button>
+        <button class="btn review-action-btn review-easy" :disabled="grading || aiDefinitionBusy || cardLoading || coachingVisible" type="button" :aria-label="t('秒懂，按 Easy 评分')" @click="onGrade('easy')">{{ t("秒懂") }}<small v-if="intervals.easy.longTerm">{{ t("长期 {0}", [intervals.easy.longTerm]) }}</small><span class="review-grade-hint">{{ intervals.easy.sameDay }}</span></button>
       </template>
     </footer>
 
-    <AppActionSheet :open="coachingVisible && Boolean(coachingCard)" aria-label="单词讲解" :dismissible="false">
+    <AppActionSheet :open="coachingVisible && Boolean(coachingCard)" :aria-label="t('单词讲解')" :dismissible="false">
       <template v-if="coachingCard">
         <div>
-          <p class="eyebrow">先讲解，再微复习</p>
+          <p class="eyebrow">{{ t("先讲解，再微复习") }}</p>
           <h2>{{ coachingCard.entry.headword }}</h2>
-          <p class="muted">{{ coachingCard.entry.phonetic || '暂无音标' }}</p>
+          <p class="muted">{{ coachingCard.entry.phonetic || t("暂无音标") }}</p>
         </div>
         <ul class="review-definition-list">
           <li v-for="line in coachingDefinitions" :key="line.senseId">
@@ -602,36 +603,36 @@ async function enterArticle() {
           </li>
         </ul>
         <p v-for="example in parseJsonArray(coachingCard.entry.examplesJson).slice(0, 2)" :key="example" class="example">{{ example }}</p>
-        <p class="muted">已经连续两次想不起来。本次不再立刻硬测，系统会在约 15 分钟后安排一次微复习。</p>
+        <p class="muted">{{ t("已经连续两次想不起来。本次不再立刻硬测，系统会在约 15 分钟后安排一次微复习。") }}</p>
         <div class="actions">
-          <button class="btn" type="button" @click="playEntryPronunciation(coachingCard.entry, { rate: speechRate, ttsEngine })">再听一次</button>
-          <button class="btn btn-primary" type="button" @click="coachingVisible = false; coachingCard = null">我已看懂，继续</button>
+          <button class="btn" type="button" @click="playEntryPronunciation(coachingCard.entry, { rate: speechRate, ttsEngine })">{{ t("再听一次") }}</button>
+          <button class="btn btn-primary" type="button" @click="coachingVisible = false; coachingCard = null">{{ t("我已看懂，继续") }}</button>
         </div>
       </template>
     </AppActionSheet>
 
-    <AppActionSheet :open="showWordMenu" title="单词操作" @close="showWordMenu = false">
-        <div><strong>{{ card?.entry.headword }}</strong><p class="muted">选择如何从今日学习中移除</p></div>
-        <button class="btn" :disabled="actionBusy" type="button" @click="pauseCurrentWord">暂停学习</button>
-        <button class="btn btn-danger" :disabled="actionBusy" type="button" @click="showWordMenu = false; showDeleteConfirmation = true">彻底删除</button>
-        <button class="btn btn-quiet" :disabled="actionBusy" type="button" @click="showWordMenu = false">取消</button>
+    <AppActionSheet :open="showWordMenu" :title="t('单词操作')" @close="showWordMenu = false">
+        <div><strong>{{ card?.entry.headword }}</strong><p class="muted">{{ t("选择如何从今日学习中移除") }}</p></div>
+        <button class="btn" :disabled="actionBusy" type="button" @click="pauseCurrentWord">{{ t("暂停学习") }}</button>
+        <button class="btn btn-danger" :disabled="actionBusy" type="button" @click="showWordMenu = false; showDeleteConfirmation = true">{{ t("彻底删除") }}</button>
+        <button class="btn btn-quiet" :disabled="actionBusy" type="button" @click="showWordMenu = false">{{ t("取消") }}</button>
     </AppActionSheet>
 
-    <AppActionSheet :open="showDeleteConfirmation" title="彻底删除这个词？" :dismissible="!actionBusy" @close="showDeleteConfirmation = false">
-      <p><strong>{{ card?.entry.headword }}</strong> 将从所有词表和学习队列中移除。</p>
-      <p class="muted">长期记忆状态、复习历史和语境练习记录也会永久删除，此操作不可撤销。</p>
+    <AppActionSheet :open="showDeleteConfirmation" :title="t('彻底删除这个词？')" :dismissible="!actionBusy" @close="showDeleteConfirmation = false">
+      <p><strong>{{ card?.entry.headword }}</strong>{{ t("将从所有词表和学习队列中移除。") }}</p>
+      <p class="muted">{{ t("长期记忆状态、复习历史和语境练习记录也会永久删除，此操作不可撤销。") }}</p>
       <template #actions>
-        <button class="btn" type="button" :disabled="actionBusy" @click="showDeleteConfirmation = false">取消</button>
-        <button class="btn btn-danger" type="button" :disabled="actionBusy" @click="deleteCurrentWord">{{ actionBusy ? '删除中…' : '彻底删除' }}</button>
+        <button class="btn" type="button" :disabled="actionBusy" @click="showDeleteConfirmation = false">{{ t("取消") }}</button>
+        <button class="btn btn-danger" type="button" :disabled="actionBusy" @click="deleteCurrentWord">{{ actionBusy ? t("删除中…") : t("彻底删除") }}</button>
       </template>
     </AppActionSheet>
 
-    <AppActionSheet :open="showMoreSheet" title="再学一组" @close="showMoreSheet = false">
-        <div><strong>再学一组</strong><p class="muted">继续加入当前队列，不会改变已经完成的进度。</p></div>
-        <div class="more-study-presets"><button class="btn btn-primary" :disabled="actionBusy" type="button" @click="addMore(5)">再学 5 个</button><button class="btn" :disabled="actionBusy" type="button" @click="addMore(10)">再学 10 个</button></div>
-        <label class="more-study-custom"><span>自定义数量</span><input v-model.number="customCount" class="inline-input" type="number" min="1" max="100" inputmode="numeric" /></label>
-        <button class="btn" :disabled="actionBusy || customCount < 1" type="button" @click="addMore(customCount)">加入队列</button>
-        <button class="btn btn-quiet" :disabled="actionBusy" type="button" @click="showMoreSheet = false">取消</button>
+    <AppActionSheet :open="showMoreSheet" :title="t('再学一组')" @close="showMoreSheet = false">
+        <div><strong>{{ t("再学一组") }}</strong><p class="muted">{{ t("继续加入当前队列，不会改变已经完成的进度。") }}</p></div>
+        <div class="more-study-presets"><button class="btn btn-primary" :disabled="actionBusy" type="button" @click="addMore(5)">{{ t("再学 5 个") }}</button><button class="btn" :disabled="actionBusy" type="button" @click="addMore(10)">{{ t("再学 10 个") }}</button></div>
+        <label class="more-study-custom"><span>{{ t("自定义数量") }}</span><input v-model.number="customCount" class="inline-input" type="number" min="1" max="100" inputmode="numeric" /></label>
+        <button class="btn" :disabled="actionBusy || customCount < 1" type="button" @click="addMore(customCount)">{{ t("加入队列") }}</button>
+        <button class="btn btn-quiet" :disabled="actionBusy" type="button" @click="showMoreSheet = false">{{ t("取消") }}</button>
     </AppActionSheet>
   </section>
 </template>

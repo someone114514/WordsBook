@@ -1,9 +1,11 @@
 ﻿<script setup lang="ts">
+import { t } from '../i18n'
 import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { BookOpenCheck, CloudOff, Download, LibraryBig, Search, Settings2, X } from 'lucide-vue-next'
 import GlobalSelectionLookup from '../components/GlobalSelectionLookup.vue'
 import AppToastHost from '../components/AppToastHost.vue'
+import GettingStarted from '../components/GettingStarted.vue'
 import { notify } from './feedback'
 import { navigateToTab, navigationTransition, rememberRoute, type AppTab } from './appNavigation'
 import { prefetchAppTab } from './router'
@@ -15,15 +17,16 @@ const lifecycle = useAppLifecycle()
 const { needRefresh, online } = lifecycle
 const appIconUrl = `${import.meta.env.BASE_URL}icons/icon-192.svg`
 
-const tabs = [
-  { id: 'lookup' as const, to: '/lookup', label: '查词', icon: Search },
-  { id: 'review' as const, to: '/review', label: '学习', icon: BookOpenCheck },
-  { id: 'lists' as const, to: '/lists', label: '词表', icon: LibraryBig },
-  { id: 'settings' as const, to: '/settings', label: '设置', icon: Settings2 },
-]
+const tabs = computed(() => [
+  { id: 'lookup' as const, to: '/lookup', label: t("查词"), icon: Search },
+  { id: 'review' as const, to: '/review', label: t("学习"), icon: BookOpenCheck },
+  { id: 'lists' as const, to: '/lists', label: t("词表"), icon: LibraryBig },
+  { id: 'settings' as const, to: '/settings', label: t("设置"), icon: Settings2 },
+])
 
-const title = computed(() => String(route.meta.title ?? 'WordsBook'))
-const largeTitle = computed(() => String(route.meta.largeTitle ?? title.value))
+const title = computed(() => t(String(route.meta.title ?? 'WordsBook')))
+const largeTitle = computed(() => t(String(route.meta.largeTitle ?? route.meta.title ?? 'WordsBook')))
+watch(title, (value) => { document.title = `WordsBook - ${value}` }, { immediate: true })
 const shellMode = computed(() => route.meta.shell ?? 'tab')
 const level = computed(() => route.meta.level ?? 'root')
 const rootPage = computed(() => level.value === 'root')
@@ -41,11 +44,11 @@ function rememberCurrentPage(): void {
 
 async function installUpdate(): Promise<void> {
   if (immersiveMode.value || lifecycle.updateBlocked.value) {
-    notify('完成当前任务后即可更新，学习进度不会丢失。')
+    notify(t("完成当前任务后即可更新，学习进度不会丢失。"))
     return
   }
   const applied = await lifecycle.applyServiceWorkerUpdate()
-  if (!applied) notify('暂时无法更新，请稍后再试。', { tone: 'error' })
+  if (!applied) notify(t("暂时无法更新，请稍后再试。"), { tone: 'error' })
 }
 
 watch(immersiveMode, (active) => setCriticalActivity('active-learning', active), { immediate: true })
@@ -60,7 +63,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="app-shell selection-lookup-scope" :class="[`app-shell-${shellMode}`, `app-shell-tab-${route.meta.tab}`, { 'app-shell-immersive': immersiveMode }]">
-    <a v-if="!immersiveMode" class="skip-link" href="#main-content">跳转到主内容</a>
+    <a v-if="!immersiveMode" class="skip-link" href="#main-content">{{ t("跳转到主内容") }}</a>
 
     <header v-if="!immersiveMode && shellMode !== 'contextual'" class="topbar topbar-compact">
       <h1>{{ largeTitle }}</h1>
@@ -68,24 +71,24 @@ onBeforeUnmount(() => {
 
     <div v-if="!immersiveMode && !online" class="app-system-banner app-system-banner-offline" role="status">
       <CloudOff :size="18" aria-hidden="true" />
-      <span>当前离线，已下载的词典与学习内容仍可使用。</span>
+      <span>{{ t("当前离线，已下载的词典与学习内容仍可使用。") }}</span>
     </div>
 
     <div v-if="!immersiveMode && needRefresh" class="app-system-banner app-system-banner-update" role="status">
       <Download :size="18" aria-hidden="true" />
-      <span>新版本已准备好</span>
-      <button type="button" class="btn btn-primary" @click="installUpdate">立即更新</button>
-      <button type="button" class="icon-button" aria-label="下次启动时更新" @click="lifecycle.deferServiceWorkerUpdate">
+      <span>{{ t("新版本已准备好") }}</span>
+      <button type="button" class="btn btn-primary" @click="installUpdate">{{ t("立即更新") }}</button>
+      <button type="button" class="icon-button" :aria-label="t('下次启动时更新')" @click="lifecycle.deferServiceWorkerUpdate">
         <X :size="18" aria-hidden="true" />
       </button>
     </div>
 
-    <aside v-if="!immersiveMode" class="app-sidebar" aria-label="WordsBook 主导航">
-      <RouterLink class="sidebar-brand" to="/lookup" aria-label="WordsBook 首页">
+    <aside v-if="!immersiveMode" class="app-sidebar" :aria-label="t('WordsBook 主导航')">
+      <RouterLink class="sidebar-brand" to="/lookup" :aria-label="t('WordsBook 首页')">
         <img class="sidebar-brand-mark" :src="appIconUrl" alt="" />
-        <span><strong>WordsBook</strong><small>每日语言学习</small></span>
+        <span><strong>WordsBook</strong><small>{{ t("每日语言学习") }}</small></span>
       </RouterLink>
-      <nav class="sidebar-nav" aria-label="主导航">
+      <nav class="sidebar-nav" :aria-label="t('主导航')">
         <RouterLink v-for="tab in tabs" :key="tab.to" :to="tab.to" custom v-slot="{ href, isActive, isExactActive }">
           <a
             :href="href"
@@ -105,6 +108,7 @@ onBeforeUnmount(() => {
       <div v-if="rootPage && !immersiveMode" class="app-large-title">
         <h1>{{ largeTitle }}</h1>
       </div>
+      <GettingStarted v-if="!immersiveMode" />
       <RouterView v-slot="{ Component, route: activeRoute }">
         <Transition
           :name="navigationTransition"
@@ -118,7 +122,7 @@ onBeforeUnmount(() => {
       </RouterView>
     </main>
 
-    <nav v-if="!immersiveMode" class="bottom-nav" aria-label="主导航">
+    <nav v-if="!immersiveMode" class="bottom-nav" :aria-label="t('主导航')">
       <RouterLink v-for="tab in tabs" :key="tab.to" :to="tab.to" custom v-slot="{ href, isActive, isExactActive }">
         <a
           :href="href"

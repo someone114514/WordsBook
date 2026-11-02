@@ -1,3 +1,4 @@
+import { t } from '../../i18n'
 import type { DictionaryEntry } from '../../types/models'
 import { normalizeWord, toLemmaCandidates } from './search'
 
@@ -14,10 +15,21 @@ interface BucketManifest {
   buckets: Array<{ prefix: string; path: string; count: number; size: number; sha256: string; contentSha256?: string }>
 }
 
-async function manifest(): Promise<BucketManifest> {
-  const response = await fetch(MANIFEST_URL)
-  if (!response.ok) throw new Error(`完整词典清单下载失败（HTTP ${response.status}）`)
-  return response.json() as Promise<BucketManifest>
+let manifestPromise: Promise<BucketManifest> | undefined
+
+function manifest(): Promise<BucketManifest> {
+  // Reuse the deployment's manifest across keystrokes and background downloads.
+  if (!manifestPromise) {
+    manifestPromise = (async () => {
+      const response = await fetch(MANIFEST_URL)
+      if (!response.ok) throw new Error(t("完整词典清单下载失败（HTTP {0}）", [response.status]))
+      return response.json() as Promise<BucketManifest>
+    })().catch((error: unknown) => {
+      manifestPromise = undefined
+      throw error
+    })
+  }
+  return manifestPromise
 }
 
 async function sha256(buffer: ArrayBuffer): Promise<string> {
@@ -40,10 +52,10 @@ async function bucketBuffer(url: string, expectedSha: string, expectedContentSha
     await cache.delete(url)
   }
   const response = await fetch(url, { cache: 'reload' })
-  if (!response.ok) throw new Error(`完整词典分桶下载失败（HTTP ${response.status}）`)
+  if (!response.ok) throw new Error(t("完整词典分桶下载失败（HTTP {0}）", [response.status]))
   const clone = response.clone()
   const buffer = await response.arrayBuffer()
-  if (!await matchesBucketHash(buffer, expectedSha, expectedContentSha)) throw new Error('完整词典分桶校验失败，请重试')
+  if (!await matchesBucketHash(buffer, expectedSha, expectedContentSha)) throw new Error(t("完整词典分桶校验失败，请重试"))
   await cache.put(url, clone)
   return buffer
 }
@@ -51,12 +63,12 @@ async function bucketBuffer(url: string, expectedSha: string, expectedContentSha
 async function decodeGzip(buffer: ArrayBuffer): Promise<string> {
   const bytes = new Uint8Array(buffer)
   if (bytes[0] !== 0x1f || bytes[1] !== 0x8b) return new TextDecoder().decode(buffer)
-  if (typeof DecompressionStream === 'undefined') throw new Error('当前浏览器不支持 gzip 词典包')
+  if (typeof DecompressionStream === 'undefined') throw new Error(t("当前浏览器不支持 gzip 词典包"))
   return new Response(new Blob([buffer]).stream().pipeThrough(new DecompressionStream('gzip'))).text()
 }
 
 function mapEntry(entry: DictionaryEntry): DictionaryEntry {
-  return { ...entry, dictionaryId: 'ecdict-full', dictionaryName: 'ECDICT 完整词典' }
+  return { ...entry, dictionaryId: 'ecdict-full', dictionaryName: t("ECDICT 完整词典") }
 }
 
 export async function lookupRemoteDictionary(query: string): Promise<{ exact: DictionaryEntry[]; lemma: DictionaryEntry[]; prefix: DictionaryEntry[] }> {

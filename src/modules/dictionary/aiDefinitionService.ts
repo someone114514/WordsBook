@@ -1,4 +1,5 @@
-﻿import { db } from '../../db/database'
+import { t } from '../../i18n'
+import { db } from '../../db/database'
 import type {
   AiDictionaryEntryDraft,
   AiOverrideRecord,
@@ -89,7 +90,7 @@ function normalizeList(input: unknown, fallback: string[] = []): string[] {
 
 function normalizeAiDraft(raw: unknown, fallbackWord: string): AiDictionaryEntryDraft {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    throw new GenerationRequestError('AI 返回结构无效', 'contract-invalid')
+    throw new GenerationRequestError(t("AI 返回结构无效"), 'contract-invalid')
   }
   const response = raw as AiStructuredResponse
   const headword = (response.headword || fallbackWord).trim() || fallbackWord
@@ -220,11 +221,11 @@ export async function fetchAiDictionaryDraft(options: {
 }): Promise<AiDictionaryEntryDraft> {
   const lexicalItem = options.word.trim().toLowerCase().replace(/\s+/g, ' ').replace(/[^a-z' -]/g, '')
   if (!normalizeWord(lexicalItem)) {
-    throw new Error('请输入有效单词')
+    throw new Error(t("请输入有效单词"))
   }
 
   if (!options.apiKey.trim()) {
-    throw new Error('请先在设置页填写 Deepseek API Key')
+    throw new Error(t("请先在设置页填写 Deepseek API Key"))
   }
 
   return runSerializedGeneration(async () => {
@@ -255,12 +256,12 @@ export async function enhanceOrCreateVocabularyEntry(options: {
   }
 
   const item = await db.wordbook.get(options.wordId)
-  if (!item) throw new Error('学习词不存在，请重新加入后再试')
+  if (!item) throw new Error(t("学习词不存在，请重新加入后再试"))
   const query = item.headword ?? item.entrySnapshot?.headword ?? options.draft.headword
   const targetEntryId = `ai:${normalizeWord(query)}`
   const owner = await db.wordbook.where('entryId').equals(targetEntryId).first()
   if (owner && owner.wordId !== item.wordId) {
-    throw new Error('同名 AI 词条已由其他学习词使用，请先合并重复词条')
+    throw new Error(t("同名 AI 词条已由其他学习词使用，请先合并重复词条"))
   }
   const entry = await createOrReplaceAiEntry({
     query,
@@ -298,7 +299,7 @@ export async function applyAiOverrideToEntry(options: {
     async () => {
       const entry = await db.dictionaryEntries.get(options.entryId)
       if (!entry) {
-        throw new Error('词条不存在')
+        throw new Error(t("词条不存在"))
       }
 
       const existingOverride = await db.aiOverrides.get(options.entryId)
@@ -360,7 +361,7 @@ export async function createOrReplaceAiEntry(options: {
 }): Promise<DictionaryEntry> {
   const normalized = normalizeWord(options.query)
   if (!normalized) {
-    throw new Error('请输入有效单词')
+    throw new Error(t("请输入有效单词"))
   }
 
   const entryId = `ai:${normalized}`

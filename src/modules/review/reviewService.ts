@@ -1,4 +1,5 @@
-﻿import dayjs from 'dayjs'
+import { t } from '../../i18n'
+import dayjs from 'dayjs'
 import { db } from '../../db/database'
 import type {
   ReviewCard,
@@ -671,8 +672,8 @@ export async function previewCardIntervals(
   const appliesToLongTerm = context.canonicalGradeCommitted !== true
   const preview = appliesToLongTerm ? previewFsrsReviews(state, reviewedAt) : undefined
   const repeatedFailure = (context.attemptNo ?? 1) >= 2
-  const failedAgainText = repeatedFailure ? '今日约 15 分钟后微复习' : '今日至少 1 分钟后再测'
-  const failedHardText = repeatedFailure ? '今日约 15 分钟后微复习' : '今日至少 3 分钟后再测'
+  const failedAgainText = repeatedFailure ? t("今日约 15 分钟后微复习") : t("今日至少 1 分钟后再测")
+  const failedHardText = repeatedFailure ? t("今日约 15 分钟后微复习") : t("今日至少 3 分钟后再测")
   return {
     again: {
       longTerm: preview ? formatInterval(reviewedAt, preview.again.card.due) : undefined,
@@ -686,12 +687,12 @@ export async function previewCardIntervals(
     },
     good: {
       longTerm: preview ? formatInterval(reviewedAt, preview.good.card.due) : undefined,
-      sameDay: '本轮通过',
+      sameDay: t("本轮通过"),
       appliesToLongTerm,
     },
     easy: {
       longTerm: preview ? formatInterval(reviewedAt, preview.easy.card.due) : undefined,
-      sameDay: '本轮通过',
+      sameDay: t("本轮通过"),
       appliesToLongTerm,
     },
   }

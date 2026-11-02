@@ -1,6 +1,10 @@
 import AxeBuilder from '@axe-core/playwright'
 import { expect, test } from '@playwright/test'
 
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('wordsbook:onboarding-completed:v1', '1'))
+})
+
 const compact = { width: 390, height: 844 }
 const regular = { width: 1440, height: 900 }
 

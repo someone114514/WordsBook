@@ -1,3 +1,4 @@
+import { t } from '../../i18n'
 import { db } from '../../db/database'
 import { getSupabaseClient } from './supabaseClient'
 
@@ -7,9 +8,9 @@ const accountKey = (userId: string) => `${ACTIVE_KEY}:${userId}`
 
 async function requireUser() {
   const client = getSupabaseClient()
-  if (!client) throw new Error('Supabase 尚未配置')
+  if (!client) throw new Error(t("Supabase 尚未配置"))
   const { data, error } = await client.auth.getUser()
-  if (error || !data.user) throw new Error('请先登录云同步账号')
+  if (error || !data.user) throw new Error(t("请先登录云同步账号"))
   return { client, user: data.user }
 }
 

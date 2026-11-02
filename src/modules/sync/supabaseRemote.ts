@@ -1,3 +1,4 @@
+import { t } from '../../i18n'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { SyncEntity } from '../../types/models'
 import type { CloudSyncRemote, SyncDataset, SyncDeletedRecord, SyncPayload, SyncRecord } from './syncTypes'
@@ -19,12 +20,12 @@ interface SyncTableRow {
 async function getCurrentUserId(client: SupabaseClient): Promise<string> {
   const { data, error } = await client.auth.getUser()
   if (error) {
-    throw new Error(`云同步登录已失效，请重新登录后再同步（${error.message}）`)
+    throw new Error(t("云同步登录已失效，请重新登录后再同步（{0}）", [error.message]))
   }
 
   const userId = data.user?.id
   if (!userId) {
-    throw new Error('请先登录云同步账号')
+    throw new Error(t("请先登录云同步账号"))
   }
 
   return userId

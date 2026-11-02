@@ -1,5 +1,9 @@
 import { expect, test } from '@playwright/test'
 
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('wordsbook:onboarding-completed:v1', '1'))
+})
+
 const liveKey = process.env.WORDSBOOK_LIVE_AI_KEY
 
 test.describe('live AI learning experience', () => {

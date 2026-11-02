@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t, studyListName } from '../i18n'
 import dayjs from 'dayjs'
 import { liveQuery } from 'dexie'
 import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref } from 'vue'
@@ -38,7 +39,7 @@ const canResumeLatestReading = computed(() => latestReading.value?.dayKey === da
 const latestReadingWordCount = computed(() => latestReading.value?.targetWordIds.length
   || latestReading.value?.sourceWordIds?.length
   || 0)
-const latestReadingCountLabel = computed(() => latestReading.value?.errorCode ? '预习词' : '目标词')
+const latestReadingCountLabel = computed(() => latestReading.value?.errorCode ? t("预习词") : t("目标词"))
 
 const sessionNewCount = computed(() => {
   const firstItems = new Map<string, boolean>()
@@ -65,29 +66,29 @@ const dismissedQueueChanges = computed(() => queueChanges.value?.dismissed
   : 0)
 const todayTotal = computed(() => snapshot.value?.totalCards ?? plan.value?.queueWordIds.length ?? 0)
 const todayNew = computed(() => snapshot.value ? sessionNewCount.value : plan.value?.newCount ?? 0)
-const supportingMetricLabel = computed(() => snapshot.value ? '待重现' : '复习')
+const supportingMetricLabel = computed(() => snapshot.value ? t("待重现") : t("复习"))
 const supportingMetricValue = computed(() => snapshot.value ? repeatCards.value : plan.value?.dueCount ?? 0)
 const primaryActionIsLookup = computed(() => hasLoaded.value && !session.value && total.value === 0)
 const buttonLabel = computed(() => {
-  if (primaryActionIsLookup.value) return '去查词'
-  if (session.value?.status === 'completed') return '查看今日学习'
-  return session.value ? '继续今日学习' : '开始今日学习'
+  if (primaryActionIsLookup.value) return t("去查词")
+  if (session.value?.status === 'completed') return t("查看今日学习")
+  return session.value ? t("继续今日学习") : t("开始今日学习")
 })
 const recoveryText = computed(() => {
   if (session.value?.recoveryMode) {
     const count = session.value.recoveryCalibrationCount ?? 0
     const accuracy = session.value.recoveryAccuracy
     const calibration = count
-      ? `已校准 ${count}/15${accuracy === undefined ? '' : `，首次提取正确率 ${Math.round(accuracy * 100)}%`}`
-      : '先用 15 个分层到期词校准'
-    return `恢复模式：今日包受上限保护，预计 ${session.value.recoveryDays ?? 3} 天消化；${calibration}。`
+      ? t("已校准 {0}/15{1}", [count, accuracy === undefined ? '' : t("，首次提取正确率 {0}%", [Math.round(accuracy * 100)])])
+      : t("先用 15 个分层到期词校准")
+    return t("恢复模式：今日包受上限保护，预计 {0} 天消化；{1}。", [session.value.recoveryDays ?? 3, calibration])
   }
   if (plan.value?.recoveryMode) {
-    return `恢复模式：共 ${plan.value.backlogDueCount ?? plan.value.dueCount} 个到期词，今日安排 ${plan.value.dueCount} 个，预计 ${plan.value.recoveryDays ?? 3} 天消化；先完成 15 词校准，暂缓新词。`
+    return t("恢复模式：共 {0} 个到期词，今日安排 {1} 个，预计 {2} 天消化；先完成 15 词校准，暂缓新词。", [plan.value.backlogDueCount ?? plan.value.dueCount, plan.value.dueCount, plan.value.recoveryDays ?? 3])
   }
   const days = plan.value?.daysSinceLastStudy ?? 0
   if (days < 2) return ''
-  return `间隔 ${days} 天，预计用 ${plan.value?.recoveryDays ?? 1} 天恢复；今天先处理最需要回忆的词。`
+  return t("间隔 {0} 天，预计用 {1} 天恢复；今天先处理最需要回忆的词。", [days, plan.value?.recoveryDays ?? 1])
 })
 
 function stopSessionSubscription() {
@@ -192,8 +193,8 @@ async function replanUnstarted() {
     session.value = updated.session
     queueChanges.value = await previewDailyQueueChanges(updated.session.sessionId)
     replanMessage.value = updated.attempts.length
-      ? '已按最新词表与新词额度重排未开始内容。'
-      : '已按最新新词额度重排今日学习。'
+      ? t("已按最新词表与新词额度重排未开始内容。")
+      : t("已按最新新词额度重排今日学习。")
   } finally {
     changeBusy.value = false
   }
@@ -226,29 +227,29 @@ onBeforeUnmount(() => {
 <template>
   <main class="page-shell study-home">
     <section v-if="error" class="panel empty-state">
-      <p class="error" role="alert">{{ error }}</p><button class="btn btn-primary" type="button" @click="load">重试</button>
+      <p class="error" role="alert">{{ error }}</p><button class="btn btn-primary" type="button" @click="load">{{ t("重试") }}</button>
     </section>
 
     <section class="study-hero" :aria-busy="loading">
       <div class="study-total">
-        <span v-if="loading" class="study-number-skeleton study-number-skeleton-total" role="status" aria-label="剩余单词数量加载中" />
+        <span v-if="loading" class="study-number-skeleton study-number-skeleton-total" role="status" :aria-label="t('剩余单词数量加载中')" />
         <strong v-else>{{ total }}</strong>
-        <span>剩余单词</span>
+        <span>{{ t("剩余单词") }}</span>
       </div>
-      <div class="study-metrics-inline" aria-label="今日学习概况">
-        <span><strong>{{ loading ? '—' : todayTotal }}</strong> 今日总量</span>
-        <span><strong>{{ loading ? '—' : todayNew }}</strong> 新词</span>
+      <div class="study-metrics-inline" :aria-label="t('今日学习概况')">
+        <span><strong>{{ loading ? '—' : todayTotal }}</strong>{{ t("今日总量") }}</span>
+        <span><strong>{{ loading ? '—' : todayNew }}</strong>{{ t("新词") }}</span>
         <span><strong>{{ loading ? '—' : supportingMetricValue }}</strong> {{ supportingMetricLabel }}</span>
       </div>
       <details v-if="!loading && recoveryText" class="study-inline-disclosure">
-        <summary>恢复安排</summary>
+        <summary>{{ t("恢复安排") }}</summary>
         <p>{{ recoveryText }}</p>
       </details>
-      <p v-if="!loading && refreshingPlan" class="study-plan-refresh" aria-live="polite">正在后台更新今日计划…</p>
+      <p v-if="!loading && refreshingPlan" class="study-plan-refresh" aria-live="polite">{{ t("正在后台更新今日计划…") }}</p>
       <details v-if="session && !loading" class="study-more-actions">
-        <summary>更多操作</summary>
+        <summary>{{ t("更多操作") }}</summary>
         <button class="btn btn-quiet study-queue-replan" :disabled="changeBusy" type="button" @click="replanUnstarted">
-          {{ changeBusy ? '重排中…' : '重排未开始内容' }}
+          {{ changeBusy ? t("重排中…") : t("重排未开始内容") }}
         </button>
       </details>
       <span v-if="replanMessage" class="muted study-replan-message" role="status">{{ replanMessage }}</span>
@@ -257,31 +258,31 @@ onBeforeUnmount(() => {
     <template v-if="hasLoaded && !error">
 
       <section v-if="visibleQueueChanges" class="queue-change-panel" aria-live="polite">
-        <strong>词表有 {{ visibleQueueChanges }} 项变化</strong>
-        <div class="actions"><button class="btn btn-text" :disabled="changeBusy" type="button" @click="applyChanges">更新</button><button class="btn btn-text muted" type="button" @click="dismissChanges">稍后</button></div>
+        <strong>{{ t("词表有 {0} 项变化", [visibleQueueChanges]) }}</strong>
+        <div class="actions"><button class="btn btn-text" :disabled="changeBusy" type="button" @click="applyChanges">{{ t("更新") }}</button><button class="btn btn-text muted" type="button" @click="dismissChanges">{{ t("稍后") }}</button></div>
       </section>
-      <button v-else-if="dismissedQueueChanges" class="btn btn-text queue-change-restore" type="button" @click="queueChanges = queueChanges ? { ...queueChanges, dismissed: false } : null">查看词表变化</button>
+      <button v-else-if="dismissedQueueChanges" class="btn btn-text queue-change-restore" type="button" @click="queueChanges = queueChanges ? { ...queueChanges, dismissed: false } : null">{{ t("查看词表变化") }}</button>
 
       <section v-if="latestReading" class="reading-resume-panel">
         <RouterLink class="reading-resume-row" :to="canResumeLatestReading ? { path: '/review/reading', query: { session: `daily:${latestReading.dayKey}`, batch: latestReading.batchIndex } } : '/review/reading/history'">
-          <span><small>{{ latestReading.errorCode ? '离线预习' : '语境阅读' }}</small><strong>{{ latestReading.errorCode ? '离线词汇预习' : latestReading.title || '已生成的文章' }}</strong><small>{{ latestReading.dayKey }} · {{ latestReadingWordCount }} 个{{ latestReadingCountLabel }}</small></span>
-          <span class="reading-resume-action">{{ canResumeLatestReading ? '继续' : '查看' }}</span>
+          <span><small>{{ latestReading.errorCode ? t("离线预习") : t("语境阅读") }}</small><strong>{{ latestReading.errorCode ? t("离线词汇预习") : latestReading.title || t("已生成的文章") }}</strong><small>{{ t("{0} · {1} 个{2}", [latestReading.dayKey, latestReadingWordCount, latestReadingCountLabel]) }}</small></span>
+          <span class="reading-resume-action">{{ canResumeLatestReading ? t("继续") : t("查看") }}</span>
         </RouterLink>
-        <RouterLink class="btn btn-text reading-history-link" to="/review/reading/history">文章记录</RouterLink>
+        <RouterLink class="btn btn-text reading-history-link" to="/review/reading/history">{{ t("文章记录") }}</RouterLink>
       </section>
 
       <details v-if="!snapshot" class="study-source-disclosure">
-        <summary><span>今日来源</span><span>{{ plan?.listContributions?.length ? `${plan.listContributions.length} 个词表` : '暂无内容' }}</span></summary>
+        <summary><span>{{ t("今日来源") }}</span><span>{{ plan?.listContributions?.length ? t("{0} 个词表", [plan.listContributions.length]) : t("暂无内容") }}</span></summary>
         <div v-if="plan?.listContributions?.length" class="contribution-list">
-          <div v-for="item in plan.listContributions" :key="item.listId"><span>{{ item.name }}</span><strong>{{ item.count }} 词</strong></div>
+          <div v-for="item in plan.listContributions" :key="item.listId"><span>{{ studyListName(item) }}</span><strong>{{ t("{0} 词", [item.count]) }}</strong></div>
         </div>
-        <p v-else class="muted">还没有参与学习的单词。</p>
-        <RouterLink class="btn btn-text" to="/lists">管理词表</RouterLink>
+        <p v-else class="muted">{{ t("还没有参与学习的单词。") }}</p>
+        <RouterLink class="btn btn-text" to="/lists">{{ t("管理词表") }}</RouterLink>
       </details>
     </template>
 
     <div class="study-primary-dock">
-      <button class="btn btn-primary study-primary" :disabled="!hasLoaded" type="button" @click="start">{{ hasLoaded ? buttonLabel : '正在准备今日学习…' }}</button>
+      <button class="btn btn-primary study-primary" :disabled="!hasLoaded" type="button" @click="start">{{ hasLoaded ? buttonLabel : t("正在准备今日学习…") }}</button>
     </div>
   </main>
 </template>

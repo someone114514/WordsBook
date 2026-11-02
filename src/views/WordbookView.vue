@@ -1,4 +1,5 @@
 ﻿<script setup lang="ts">
+import { t } from '../i18n'
 import { computed, onMounted, reactive, ref } from 'vue'
 import type { WordbookWithEntry } from '../types/models'
 import {
@@ -59,7 +60,7 @@ async function onSave(row: WordbookWithEntry) {
       tags,
     })
 
-    message.value = `已更新 ${row.entry.headword}`
+    message.value = t("已更新 {0}", [row.entry.headword])
     await loadRows()
   } finally {
     savingWordId.value = null
@@ -68,14 +69,14 @@ async function onSave(row: WordbookWithEntry) {
 
 async function onDelete(wordId: string) {
   const row = rows.value.find((item) => item.item.wordId === wordId)
-  if (!window.confirm(`确认删除 ${row?.entry.headword ?? '该单词'} 吗？`)) {
+  if (!window.confirm(t("确认删除 {0} 吗？", [row?.entry.headword ?? t("该单词")]))) {
     return
   }
 
   deletingWordId.value = wordId
   try {
     await removeWordFromWordbook(wordId)
-    message.value = '已删除单词'
+    message.value = t("已删除单词")
     await loadRows()
   } finally {
     deletingWordId.value = null
@@ -89,21 +90,21 @@ async function onDelete(wordId: string) {
       <p v-if="message" class="success" role="status" aria-live="polite">{{ message }}</p>
     </Transition>
 
-    <input v-model="query" class="search-input" type="text" placeholder="搜索单词本" />
+    <input v-model="query" class="search-input" type="text" :placeholder="t('搜索单词本')" />
 
     <Transition name="soft-fade-slide">
-      <p v-if="loading" class="muted">加载中...</p>
+      <p v-if="loading" class="muted">{{ t("加载中...") }}</p>
     </Transition>
 
     <Transition name="soft-fade-slide">
-      <p v-if="!loading && filteredRows.length === 0" class="muted">暂无数据</p>
+      <p v-if="!loading && filteredRows.length === 0" class="muted">{{ t("暂无数据") }}</p>
     </Transition>
 
     <TransitionGroup v-if="!loading && filteredRows.length > 0" name="soft-list" tag="div" class="entry-list">
       <div v-for="row in filteredRows" :key="row.item.wordId" class="entry-card">
         <div class="entry-header">
           <h3>{{ row.entry.headword }}</h3>
-          <span class="chip">周期 {{ row.reviewState?.cycle ?? 0 }}</span>
+          <span class="chip">{{ t("周期 {0}", [row.reviewState?.cycle ?? 0]) }}</span>
         </div>
 
         <ul>
@@ -114,23 +115,23 @@ async function onDelete(wordId: string) {
           v-model="noteDrafts[row.item.wordId]"
           class="inline-input"
           type="text"
-          placeholder="备注"
+          :placeholder="t('备注')"
           :disabled="isRowBusy(row.item.wordId)"
         />
         <input
           v-model="tagsDrafts[row.item.wordId]"
           class="inline-input"
           type="text"
-          placeholder="标签，逗号分隔"
+          :placeholder="t('标签，逗号分隔')"
           :disabled="isRowBusy(row.item.wordId)"
         />
 
         <div class="actions">
           <button class="btn" :disabled="isRowBusy(row.item.wordId)" @click="onSave(row)">
-            {{ savingWordId === row.item.wordId ? '保存中...' : '保存' }}
+            {{ savingWordId === row.item.wordId ? t("保存中...") : t("保存") }}
           </button>
           <button class="btn btn-danger" :disabled="isRowBusy(row.item.wordId)" @click="onDelete(row.item.wordId)">
-            {{ deletingWordId === row.item.wordId ? '删除中...' : '删除' }}
+            {{ deletingWordId === row.item.wordId ? t("删除中...") : t("删除") }}
           </button>
         </div>
       </div>

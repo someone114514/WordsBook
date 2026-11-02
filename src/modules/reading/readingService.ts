@@ -1,3 +1,4 @@
+import { t } from '../../i18n'
 import dayjs from 'dayjs'
 import { db } from '../../db/database'
 import type {
@@ -308,21 +309,21 @@ type ReadingPromptRow = {
 
 function validateResponse(response: AiReadingResponse, rows: ReadingPromptRow[]): asserts response is Required<AiReadingResponse> {
   if (!response.title || !response.translation || !Array.isArray(response.segments) || !Array.isArray(response.targets)) {
-    throw readingError('AI 返回的文章结构不完整', 'details-invalid')
+    throw readingError(t("AI 返回的文章结构不完整"), 'details-invalid')
   }
   const expected = new Set(rows.map((row) => row.wordId))
   const rowById = new Map(rows.map((row) => [row.wordId, row]))
   const visibleText = [response.title, response.translation, ...response.segments.map((segment) => segment.text)].join(' ')
-  if (/[0-9a-f]{8}-[0-9a-f-]{27,}/i.test(visibleText)) throw readingError('AI 文章包含了内部标识符，请重新生成', 'passage-invalid')
+  if (/[0-9a-f]{8}-[0-9a-f-]{27,}/i.test(visibleText)) throw readingError(t("AI 文章包含了内部标识符，请重新生成"), 'passage-invalid')
   const segmentIds = new Set(response.segments.map((segment) => segment.wordId).filter(Boolean))
   const targetIds = new Set(response.targets.map((target) => target.wordId))
   for (const wordId of expected) {
-    if (!segmentIds.has(wordId) || !targetIds.has(wordId)) throw readingError('AI 文章未覆盖全部目标词', 'passage-invalid')
+    if (!segmentIds.has(wordId) || !targetIds.has(wordId)) throw readingError(t("AI 文章未覆盖全部目标词"), 'passage-invalid')
   }
   for (const target of response.targets) {
     const row = rowById.get(target.wordId)
     if (!row || !isUsableHeadword(target.headword) || !targetUsesAllowedSense(target, row) || !hasDistinctChoices(target)) {
-      throw readingError('AI 测义选项不符合要求', 'details-invalid')
+      throw readingError(t("AI 测义选项不符合要求"), 'details-invalid')
     }
   }
 }
@@ -423,7 +424,7 @@ function buildFallbackDetails(
   return {
     title: 'Context Reading',
     targets: [],
-    translation: '题目校验未通过；本次保留英文正文并回到释义卡，不生成未经验证的选择题。',
+    translation: t("题目校验未通过；本次保留英文正文并回到释义卡，不生成未经验证的选择题。"),
   }
 }
 
@@ -549,11 +550,11 @@ export function sortTargetsByPassageOrder(targets: ReadingTarget[], passage: str
 }
 
 function apiError(status: number): ReadingGenerationError {
-  const messages: Record<number, string> = { 401: 'DeepSeek Key 无效，请到设置中更新', 402: 'DeepSeek 余额不足，请充值后重试', 429: '请求过多，请稍后重试' }
+  const messages: Record<number, string> = { 401: t("DeepSeek Key 无效，请到设置中更新"), 402: t("DeepSeek 余额不足，请充值后重试"), 429: t("请求过多，请稍后重试") }
   const code: ReadingErrorCode = status === 401 || status === 403
     ? 'unauthorized'
     : status === 402 ? 'quota' : status === 429 ? 'rate-limited' : status >= 500 ? 'server' : 'unknown'
-  return readingError(messages[status] ?? (status >= 500 ? 'DeepSeek 服务暂时不可用，请稍后重试' : `文章生成失败（HTTP ${status}）`), code)
+  return readingError(messages[status] ?? (status >= 500 ? t("DeepSeek 服务暂时不可用，请稍后重试") : t("文章生成失败（HTTP {0}）", [status])), code)
 }
 
 function buildSegments(paragraphs: string[], targets: ReadingTarget[], inflections: Record<string, string> = {}): ReadingSegment[] {
@@ -612,12 +613,12 @@ function buildLocalReadingFallback(
   return {
     ...session,
     status: 'ready',
-    title: '离线词汇预习',
+    title: t("离线词汇预习"),
     segmentsJson: JSON.stringify(buildSegments(paragraphs, markerTargets, inflections)),
     targetsJson: '[]',
     targetWordIds: [],
     omittedTargetWordIds: [],
-    translation: 'AI 当前不可用；此内容是本地词典例句与核心释义预习，不是生成文章，也不生成未经验证的选择题。',
+    translation: t("AI 当前不可用；此内容是本地词典例句与核心释义预习，不是生成文章，也不生成未经验证的选择题。"),
     error: reason instanceof Error ? reason.message : String(reason),
     errorCode: errorCodeOf(reason),
     updatedAt: new Date().toISOString(),
@@ -675,8 +676,8 @@ export async function requestArticle(
   externalSignal?: AbortSignal,
   timing?: { stallMs?: number; totalMs?: number },
 ): Promise<{ title: string; passage: string; targets: ReadingTarget[]; translation: string }> {
-  if (!settings.deepseekApiKey.trim()) throw readingError('请先在设置页填写 DeepSeek API Key', 'missing-key')
-  if (externalSignal?.aborted) throw readingError('已取消文章生成', 'cancelled')
+  if (!settings.deepseekApiKey.trim()) throw readingError(t("请先在设置页填写 DeepSeek API Key"), 'missing-key')
+  if (externalSignal?.aborted) throw readingError(t("已取消文章生成"), 'cancelled')
   const controller = new AbortController()
   const abortFromExternal = () => controller.abort()
   externalSignal?.addEventListener('abort', abortFromExternal, { once: true })
@@ -686,12 +687,12 @@ export async function requestArticle(
   const resetStall = () => {
     window.clearTimeout(stallTimer)
     stallTimer = window.setTimeout(() => {
-      timeoutMessage = receivedFirst ? '文章流已中断 20 秒，请重试' : '20 秒内未收到文章片段，请重试'
+      timeoutMessage = receivedFirst ? t("文章流已中断 20 秒，请重试") : t("20 秒内未收到文章片段，请重试")
       controller.abort()
     }, timing?.stallMs ?? 20_000)
   }
   const totalTimer = window.setTimeout(() => {
-    timeoutMessage = '文章生成超过 75 秒，已自动停止'
+    timeoutMessage = t("文章生成超过 75 秒，已自动停止")
     controller.abort()
   }, timing?.totalMs ?? 75_000)
   resetStall()
@@ -709,7 +710,7 @@ export async function requestArticle(
       signal: controller.signal,
     })
     if (!response.ok) throw apiError(response.status)
-    if (!response.body) throw readingError('浏览器无法读取流式响应', 'network')
+    if (!response.body) throw readingError(t("浏览器无法读取流式响应"), 'network')
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let sseBuffer = ''
@@ -769,19 +770,19 @@ export async function requestArticle(
     const finalObjects = drainJsonObjects(ndjsonBuffer)
     for (const objectText of finalObjects.objects) consumeLine(objectText)
     const passage = paragraphs.map((paragraph) => paragraph.trim()).filter(Boolean).join('\n\n')
-    if (!passage) throw readingError('AI 没有返回文章正文', 'passage-invalid')
+    if (!passage) throw readingError(t("AI 没有返回文章正文"), 'passage-invalid')
     return {
       title: title || 'Context Reading',
       passage,
       targets,
-      translation: translation || '译文生成未完成；英文正文已保留，可继续阅读。',
+      translation: translation || t("译文生成未完成；英文正文已保留，可继续阅读。"),
     }
   } catch (error) {
     if (timeoutMessage) throw readingError(timeoutMessage, 'timeout')
-    if (externalSignal?.aborted) throw readingError('已取消文章生成', 'cancelled')
+    if (externalSignal?.aborted) throw readingError(t("已取消文章生成"), 'cancelled')
     if (error instanceof ReadingGenerationError) throw error
-    if (error instanceof SyntaxError) throw readingError('文章流格式异常，请重试', 'details-invalid')
-    if (error instanceof TypeError) throw readingError('无法连接文章服务，请检查网络后重试', 'network')
+    if (error instanceof SyntaxError) throw readingError(t("文章流格式异常，请重试"), 'details-invalid')
+    if (error instanceof TypeError) throw readingError(t("无法连接文章服务，请检查网络后重试"), 'network')
     throw error
   } finally {
     window.clearTimeout(stallTimer)
@@ -827,7 +828,7 @@ Never expose word IDs inside sentence or translation. Do not omit a target.`,
     connectTimeoutMs: 10_000,
     totalTimeoutMs: 35_000,
   }) as { supplements?: unknown }
-  if (!Array.isArray(payload.supplements)) throw readingError('补充段落结构无效', 'contract-invalid')
+  if (!Array.isArray(payload.supplements)) throw readingError(t("补充段落结构无效"), 'contract-invalid')
   const expected = new Map(rows.map((row) => [row.wordId, row]))
   const seen = new Set<string>()
   return payload.supplements.flatMap((raw) => {
@@ -886,7 +887,7 @@ Never expose word IDs in user-visible fields. Do not omit a target.`,
     connectTimeoutMs: 10_000,
     totalTimeoutMs: 45_000,
   }) as { targets?: unknown }
-  if (!Array.isArray(payload.targets)) throw readingError('修复题目结构无效', 'contract-invalid')
+  if (!Array.isArray(payload.targets)) throw readingError(t("修复题目结构无效"), 'contract-invalid')
   const expected = new Map(rows.map((row) => [row.wordId, row]))
   const seen = new Set<string>()
   return payload.targets.flatMap((raw) => {
@@ -1032,7 +1033,7 @@ async function generateReadingSessionImpl(options: {
     }, 350)
   }
   try {
-    if (!validWordIds.length) throw readingError('今天的目标词资料不完整，请重新查词或安装词典后重试', 'passage-invalid')
+    if (!validWordIds.length) throw readingError(t("今天的目标词资料不完整，请重新查词或安装词典后重试"), 'passage-invalid')
     let article: Awaited<ReturnType<typeof requestArticle>> | undefined
     let articleError: unknown
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -1044,7 +1045,7 @@ async function generateReadingSessionImpl(options: {
           options.signal,
         )
         if (!promptRows.some((row) => passageIncludesHeadword(candidate.passage, row.headword, inflections))) {
-          throw readingError('正文没有覆盖任何目标词', 'passage-invalid')
+          throw readingError(t("正文没有覆盖任何目标词"), 'passage-invalid')
         }
         article = candidate
         break
@@ -1235,7 +1236,7 @@ export async function generateReadingSession(options: {
         if (options.onProgress) current.listeners.delete(options.onProgress)
         options.signal?.removeEventListener('abort', onAbort)
       }
-      const onAbort = () => { detach(); reject(readingError('已取消文章生成', 'cancelled')) }
+      const onAbort = () => { detach(); reject(readingError(t("已取消文章生成"), 'cancelled')) }
       if (options.signal!.aborted) return onAbort()
       options.signal!.addEventListener('abort', onAbort, { once: true })
       current.promise.then((result) => { detach(); resolve(result) }, (error) => { detach(); reject(error) })

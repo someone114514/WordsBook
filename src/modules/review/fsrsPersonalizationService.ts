@@ -1,3 +1,4 @@
+import { t } from '../../i18n'
 import { db } from '../../db/database'
 import type { ReviewLog, ReviewState } from '../../types/models'
 import { markRecordChanged } from '../sync/localSyncStore'
@@ -119,27 +120,27 @@ export function describeFsrsError(reason: unknown): FsrsErrorInfo {
   if (/napi_create_async_work|import function env:|emnapi|wasm-runtime/i.test(technicalDetails)) {
     return {
       code: 'runtime-version-mismatch',
-      message: '训练组件版本不兼容。请更新应用后重新打开；当前记忆参数和复习进度不受影响。',
+      message: t("训练组件版本不兼容。请更新应用后重新打开；当前记忆参数和复习进度不受影响。"),
       technicalDetails,
     }
   }
   if (/out of memory|memory access|allocation failed|oom/i.test(technicalDetails)) {
     return {
       code: 'memory-pressure',
-      message: '设备可用内存不足。请关闭其他页面后重试；当前参数会继续使用。',
+      message: t("设备可用内存不足。请关闭其他页面后重试；当前参数会继续使用。"),
       technicalDetails,
     }
   }
   if (/timeout|timed out/i.test(technicalDetails)) {
     return {
       code: 'timeout',
-      message: '训练等待时间过长。请保持应用在前台并关闭其他页面后重试。',
+      message: t("训练等待时间过长。请保持应用在前台并关闭其他页面后重试。"),
       technicalDetails,
     }
   }
   return {
     code: 'unknown',
-    message: '本次训练未完成。当前参数和复习进度均已保留，可以稍后重试。',
+    message: t("本次训练未完成。当前参数和复习进度均已保留，可以稍后重试。"),
     technicalDetails,
   }
 }
@@ -381,16 +382,16 @@ export async function optimizeFsrsParameters(
   const dataset = buildFsrsOptimizationDataset(logs)
   onProgress?.({ phase: 'preparing', current: 1, total: 1 })
   if (dataset.effectiveReviewCount < FSRS_PERSONALIZATION_MIN_REVIEWS) {
-    throw failure('samples-insufficient', `至少需要 ${FSRS_PERSONALIZATION_MIN_REVIEWS} 条有效的每日首次评分`)
+    throw failure('samples-insufficient', t("至少需要 {0} 条有效的每日首次评分", [FSRS_PERSONALIZATION_MIN_REVIEWS]))
   }
   if (dataset.items.length < MIN_HOLDOUT_ITEMS) {
-    throw failure('samples-insufficient', '有效评分已足够，但跨日复习序列仍太少，暂时无法可靠训练')
+    throw failure('samples-insufficient', t("有效评分已足够，但跨日复习序列仍太少，暂时无法可靠训练"))
   }
   const diagnostics = getFsrsRuntimeDiagnostics()
   if (!diagnostics.available) {
     throw failure('runtime-unavailable', diagnostics.reason === 'training-mode-required'
-      ? '请先进入移动兼容训练模式'
-      : '训练环境未成功启用浏览器隔离，请更新浏览器或重新进入训练模式')
+      ? t("请先进入移动兼容训练模式")
+      : t("训练环境未成功启用浏览器隔离，请更新浏览器或重新进入训练模式"))
   }
 
   onProgress?.({ phase: 'initializing', current: 0, total: 1 })
@@ -423,7 +424,7 @@ export async function optimizeFsrsParameters(
       mapped.code === 'runtime-version-mismatch' ? mapped.code : 'worker-initialization-failed',
       mapped.code === 'runtime-version-mismatch'
         ? mapped.message
-        : '训练组件未能启动。请重新打开应用后重试；当前参数会继续使用。',
+        : t("训练组件未能启动。请重新打开应用后重试；当前参数会继续使用。"),
       reason,
     )
   }
@@ -454,7 +455,7 @@ export async function optimizeFsrsParameters(
     parameters.length !== DEFAULT_FSRS_PARAMETERS.length
     || parameters.some((parameter) => !Number.isFinite(parameter))
   ) {
-    throw failure('validation-failed', '训练结果没有通过完整性检查，当前参数会继续使用。')
+    throw failure('validation-failed', t("训练结果没有通过完整性检查，当前参数会继续使用。"))
   }
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('wordsbook:fsrs-optimizer-result', {
@@ -467,7 +468,7 @@ export async function optimizeFsrsParameters(
   const candidateMetrics = new binding.FSRSBinding(parameters).evaluate(holdoutSet)
   onProgress?.({ phase: 'validating', current: 1, total: 1 })
   if (!metricsAreFinite(defaultMetrics) || !metricsAreFinite(candidateMetrics)) {
-    throw failure('validation-failed', '训练结果没有通过留出集验证，当前参数会继续使用。')
+    throw failure('validation-failed', t("训练结果没有通过留出集验证，当前参数会继续使用。"))
   }
   const previous = await loadRecord()
   const activate = candidateIsBetter(defaultMetrics, candidateMetrics)
@@ -484,7 +485,7 @@ export async function optimizeFsrsParameters(
   let rebuiltStates: ReviewState[] = []
   if (activate) {
     if (!configureReviewScheduler(parameters)) {
-      throw failure('validation-failed', '训练结果无法安全应用，当前参数会继续使用。')
+      throw failure('validation-failed', t("训练结果无法安全应用，当前参数会继续使用。"))
     }
     try {
       rebuiltStates = await rebuildReviewStates(dataset.canonicalLogsByWord, onProgress)
@@ -507,7 +508,7 @@ export async function optimizeFsrsParameters(
     })
   } catch (error) {
     if (activate) configureReviewScheduler(previous?.activeParameters)
-    throw failure('save-failed', '训练已完成，但保存失败。当前参数和复习状态没有改变，请稍后重试。', error)
+    throw failure('save-failed', t("训练已完成，但保存失败。当前参数和复习状态没有改变，请稍后重试。"), error)
   }
   if (activate) {
     invalidateStudyPlanCache()

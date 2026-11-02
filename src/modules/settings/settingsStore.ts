@@ -1,5 +1,6 @@
 ﻿import { defineStore } from 'pinia'
 import type { AppSettings } from '../../types/models'
+import { setUiLanguage } from '../../i18n'
 import { DEFAULT_SETTINGS, loadSettings, saveSettings } from './settingsService'
 
 interface SettingsState {
@@ -23,6 +24,7 @@ export const useSettingsStore = defineStore('settings', {
       if (!this.initializing) {
         this.initializing = (async () => {
           this.settings = await loadSettings()
+          setUiLanguage(this.settings.uiLanguage)
           this.loaded = true
         })().finally(() => {
           this.initializing = null
@@ -33,6 +35,7 @@ export const useSettingsStore = defineStore('settings', {
     },
     async update(patch: Partial<AppSettings>) {
       this.settings = await saveSettings(patch)
+      setUiLanguage(this.settings.uiLanguage)
       this.loaded = true
     },
   },

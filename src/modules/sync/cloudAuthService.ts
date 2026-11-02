@@ -1,3 +1,4 @@
+import { t } from '../../i18n'
 import type { User } from '@supabase/supabase-js'
 import { getSupabaseClient, isSupabaseConfigured } from './supabaseClient'
 
@@ -66,7 +67,7 @@ export async function getCloudAuthState(): Promise<CloudAuthState> {
 export async function signInCloud(email: string, password: string): Promise<CloudAuthState> {
   const client = getSupabaseClient()
   if (!client) {
-    throw new Error('未配置 Supabase URL 或 Publishable Key')
+    throw new Error(t("未配置 Supabase URL 或 Publishable Key"))
   }
 
   const { data, error } = await client.auth.signInWithPassword({
@@ -85,7 +86,7 @@ export async function signUpCloud(email: string, password: string): Promise<{
   confirmationRequired: boolean
 }> {
   const client = getSupabaseClient()
-  if (!client) throw new Error('未配置 Supabase URL 或 Publishable Key')
+  if (!client) throw new Error(t("未配置 Supabase URL 或 Publishable Key"))
   const { data, error } = await client.auth.signUp({ email, password })
   if (error) throw error
   return {

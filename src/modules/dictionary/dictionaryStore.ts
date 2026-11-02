@@ -1,4 +1,5 @@
-﻿import { defineStore } from 'pinia'
+import { t } from '../../i18n'
+import { defineStore } from 'pinia'
 import type { DictionaryMeta } from '../../types/models'
 import { getInstalledDictionaryMeta } from './dictionaryService'
 import { installDictionaryBundle, type InstallProgress } from './dictionaryInstaller'
@@ -63,7 +64,7 @@ export const useDictionaryStore = defineStore('dictionary', {
 
     async installDefaultDictionary() {
       this.installing = true
-      this.progress = { stage: 'fetch-manifest', ratio: 0, message: '正在准备高频核心词库' }
+      this.progress = { stage: 'fetch-manifest', ratio: 0, message: t("正在准备高频核心词库") }
       this.lastError = null
 
       try {

@@ -1,3 +1,4 @@
+import { t } from '../../i18n'
 import dayjs from 'dayjs'
 import { db } from '../../db/database'
 import type {
@@ -154,7 +155,7 @@ function anchorGeneratedQuestions(value: unknown, specs: PracticeSpec[]): unknow
         : ['', '', '', '']
       if (options.length === 4 && exactAnswerIndex < 0) {
         options[correctIndex] = spec.correctAnswer
-        if (hasAlignedExplanations) explanations[correctIndex] = '该选项与词典绑定的目标义项一致。'
+        if (hasAlignedExplanations) explanations[correctIndex] = t("该选项与词典绑定的目标义项一致。")
       }
       return {
         ...draft,
@@ -173,39 +174,39 @@ function anchorGeneratedQuestions(value: unknown, specs: PracticeSpec[]): unknow
 }
 
 function validateQuestions(value: unknown, specs: PracticeSpec[]): PracticeQuestion[] {
-  if (!value || typeof value !== 'object') throw new Error('语意练习结构不完整')
+  if (!value || typeof value !== 'object') throw new Error(t("语意练习结构不完整"))
   const rows = (value as { questions?: unknown }).questions
-  if (!Array.isArray(rows) || rows.length !== specs.length) throw new Error('语意练习数量不完整')
+  if (!Array.isArray(rows) || rows.length !== specs.length) throw new Error(t("语意练习数量不完整"))
   const specById = new Map(specs.map((spec) => [spec.questionId, spec]))
   const questions = rows as PracticeQuestion[]
   for (const question of questions) {
     const spec = specById.get(question.questionId)
-    if (!spec || question.focusWordId !== spec.focusWordId || question.type !== spec.type) throw new Error('语意练习目标不匹配')
-    if (question.headword.toLowerCase() !== spec.headword.toLowerCase()) throw new Error('语意练习词形不匹配')
+    if (!spec || question.focusWordId !== spec.focusWordId || question.type !== spec.type) throw new Error(t("语意练习目标不匹配"))
+    if (question.headword.toLowerCase() !== spec.headword.toLowerCase()) throw new Error(t("语意练习词形不匹配"))
     if (
       !question.sourceSense
       || normalizeAnswer(question.sourceSense) !== normalizeAnswer(spec.sourceSense)
       || !spec.allowedSenses.some((sense) => normalizeAnswer(sense) === normalizeAnswer(question.sourceSense))
-    ) throw new Error('语意练习使用了未授权词义')
+    ) throw new Error(t("语意练习使用了未授权词义"))
     if (
       !Array.isArray(question.options)
       || question.options.length !== 4
       || new Set(question.options.map(normalizeAnswer)).size !== 4
-    ) throw new Error('语意练习选项无效')
-    if (!Number.isInteger(question.correctIndex) || question.correctIndex < 0 || question.correctIndex > 3) throw new Error('语意练习答案无效')
+    ) throw new Error(t("语意练习选项无效"))
+    if (!Number.isInteger(question.correctIndex) || question.correctIndex < 0 || question.correctIndex > 3) throw new Error(t("语意练习答案无效"))
     if (normalizeAnswer(question.options[question.correctIndex] ?? '') !== normalizeAnswer(spec.correctAnswer)) {
-      throw new Error('语意练习正确答案未绑定到词典证据')
+      throw new Error(t("语意练习正确答案未绑定到词典证据"))
     }
-    if (!Array.isArray(question.evidence) || question.evidence.length < 2 || !question.explanation) throw new Error('语意练习解析不完整')
-    if (!Array.isArray(question.distractorExplanations) || question.distractorExplanations.length !== 4) throw new Error('语意练习选项解析结构无效')
+    if (!Array.isArray(question.evidence) || question.evidence.length < 2 || !question.explanation) throw new Error(t("语意练习解析不完整"))
+    if (!Array.isArray(question.distractorExplanations) || question.distractorExplanations.length !== 4) throw new Error(t("语意练习选项解析结构无效"))
     if (question.type === 'meaning-in-context' && (
       !question.passage
       || question.passage.split(/\s+/).length < 20
       || !containsWholeHeadword(question.passage, spec.headword)
-    )) throw new Error('语意练习短文过短或未覆盖目标词')
+    )) throw new Error(t("语意练习短文过短或未覆盖目标词"))
     if (question.type === 'usage-discrimination'
       && !question.options.every((option) => containsWholeHeadword(option, spec.headword))) {
-      throw new Error('用法辨析没有在每个选项中保留目标词')
+      throw new Error(t("用法辨析没有在每个选项中保留目标词"))
     }
   }
   return questions.map((question) => ({
@@ -249,18 +250,18 @@ function buildLocalRecallQuestions(specs: PracticeSpec[]): PracticeQuestion[] {
       sourceSense: spec.sourceSense,
       passage,
       stem: passage
-        ? '先补全句中的单词，再回想它在这里的含义。'
-        : '遮住答案，先主动回想这个词的核心含义。',
-      options: ['想起来了', '还没想起来'],
+        ? t("先补全句中的单词，再回想它在这里的含义。")
+        : t("遮住答案，先主动回想这个词的核心含义。"),
+      options: [t("想起来了"), t("还没想起来")],
       correctIndex: 0,
       evidence: [
-        `核心词义：${spec.sourceSense}`,
-        ...(spec.trustedExample ? [`词典例句：${spec.trustedExample}`] : []),
+        t("核心词义：{0}", [spec.sourceSense]),
+        ...(spec.trustedExample ? [t("词典例句：{0}", [spec.trustedExample])] : []),
       ],
-      explanation: `核心词义：${spec.sourceSense}`,
+      explanation: t("核心词义：{0}", [spec.sourceSense]),
       distractorExplanations: [
-        '已完成一次无提示主动提取。',
-        '先查看词义与例句；系统会把它加入稍后的延迟复习。',
+        t("已完成一次无提示主动提取。"),
+        t("先查看词义与例句；系统会把它加入稍后的延迟复习。"),
       ],
     }
   })
@@ -493,20 +494,20 @@ export async function scheduleRoundPractice(
 
 async function generateRoundPracticeImpl(sessionId: string): Promise<ReadingSession> {
   const session = await db.readingSessions.get(sessionId)
-  if (!session) throw new Error('语意练习任务不存在')
+  if (!session) throw new Error(t("语意练习任务不存在"))
   if (session.status === 'ready' || session.status === 'completed') return session
   let settings: Awaited<ReturnType<typeof loadSettings>>
   let specs: PracticeSpec[]
   try {
     settings = await loadSettings()
     const parsed = JSON.parse(session.practiceSpecJson ?? '[]') as unknown
-    if (!Array.isArray(parsed) || !parsed.length) throw new Error('语境练习规格为空')
+    if (!Array.isArray(parsed) || !parsed.length) throw new Error(t("语境练习规格为空"))
     specs = parsed as PracticeSpec[]
   } catch (error) {
     const failed: ReadingSession = {
       ...session,
       status: 'failed',
-      error: error instanceof Error ? error.message : '语境练习规格损坏',
+      error: error instanceof Error ? error.message : t("语境练习规格损坏"),
       errorCode: 'contract-invalid',
       updatedAt: new Date().toISOString(),
     }
@@ -517,7 +518,7 @@ async function generateRoundPracticeImpl(sessionId: string): Promise<ReadingSess
       ...session,
       status: 'ready' as const,
       questionsJson: JSON.stringify(buildLocalRecallQuestions(specs)),
-      error: '未配置 API Key，已切换为本地主动回忆',
+      error: t("未配置 API Key，已切换为本地主动回忆"),
       errorCode: 'missing-key' as const,
       updatedAt: new Date().toISOString(),
     }
@@ -564,7 +565,7 @@ async function generateRoundPracticeImpl(sessionId: string): Promise<ReadingSess
           .map((question) => shuffleQuestionOptions(question, `${sessionId}:${question.questionId}`))
       } catch (error) {
         throw new GenerationRequestError(
-          error instanceof Error ? error.message : '语意练习合同无效',
+          error instanceof Error ? error.message : t("语意练习合同无效"),
           'contract-invalid',
         )
       }
@@ -587,7 +588,7 @@ async function generateRoundPracticeImpl(sessionId: string): Promise<ReadingSess
     ...generating,
     status: 'ready',
     questionsJson: JSON.stringify(buildLocalRecallQuestions(specs)),
-    error: `AI 练习不可用，已切换为本地主动回忆：${lastError instanceof Error ? lastError.message : String(lastError)}`,
+    error: t("AI 练习不可用，已切换为本地主动回忆：{0}", [lastError instanceof Error ? lastError.message : String(lastError)]),
     errorCode: lastError instanceof GenerationRequestError ? lastError.code : 'contract-invalid',
     updatedAt: new Date().toISOString(),
   }
@@ -606,7 +607,7 @@ export function generateRoundPractice(sessionId: string): Promise<ReadingSession
 
 export async function retryRoundPractice(sessionId: string): Promise<ReadingSession> {
   const session = await db.readingSessions.get(sessionId)
-  if (!session) throw new Error('语意练习任务不存在')
+  if (!session) throw new Error(t("语意练习任务不存在"))
   const pending = { ...session, status: 'pending' as const, error: undefined, errorCode: undefined, updatedAt: new Date().toISOString() }
   await db.readingSessions.put(pending)
   await markPayloadChanged('readingSessions', pending, pending.updatedAt)

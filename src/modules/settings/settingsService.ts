@@ -1,9 +1,11 @@
 import { db } from '../../db/database'
 import type { AppSettings } from '../../types/models'
+import { DEFAULT_UI_LANGUAGE } from '../../i18n'
 import { markRecordChanged, markRecordDeleted } from '../sync/localSyncStore'
 import { markStudyDataChanged } from '../review/studyDataRevision'
 
 export const DEFAULT_SETTINGS: AppSettings = {
+  uiLanguage: DEFAULT_UI_LANGUAGE,
   autoPronunciation: true,
   speechRate: 1,
   ttsEngine: 'auto',
@@ -40,6 +42,9 @@ export async function loadSettings(): Promise<AppSettings> {
   output.deepseekApiKey = storedSecret?.value ?? ''
 
   for (const row of rows) {
+    if (row.key === 'uiLanguage' && (row.value === 'en' || row.value === 'zh-CN')) {
+      output.uiLanguage = row.value
+    }
     if (row.key === 'autoPronunciation' && typeof row.value === 'boolean') {
       // Older versions persisted the old false default whenever any setting was
       // saved. Treat it as the new true default until the user explicitly toggles it.

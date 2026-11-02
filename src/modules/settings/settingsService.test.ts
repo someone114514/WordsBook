@@ -10,6 +10,15 @@ describe('review settings', () => {
     await db.open()
   })
 
+  it('persists interface language and ignores unsupported imported languages', async () => {
+    await saveSettings({ uiLanguage: 'en' })
+    expect((await loadSettings()).uiLanguage).toBe('en')
+    await saveSettings({ uiLanguage: 'zh-CN' })
+    expect((await loadSettings()).uiLanguage).toBe('zh-CN')
+    await db.settings.put({ key: 'uiLanguage', value: 'unsupported' })
+    expect((await loadSettings()).uiLanguage).toBe('zh-CN')
+  })
+
   it('migrates the old silent default to autoplay while preserving a later explicit choice', async () => {
     await db.settings.put({ key: 'autoPronunciation', value: false })
     expect((await loadSettings()).autoPronunciation).toBe(true)

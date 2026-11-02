@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n'
 import { CircleCheck, CircleX, Info, X } from 'lucide-vue-next'
 import { useRoute } from 'vue-router'
 import { useAppFeedback } from '../app/feedback'
@@ -22,7 +23,7 @@ const route = useRoute()
         <CircleX v-else-if="toast.tone === 'error'" :size="20" aria-hidden="true" />
         <Info v-else :size="20" aria-hidden="true" />
         <span>{{ toast.message }}</span>
-        <button type="button" aria-label="关闭通知" @click="dismissToast(toast.id)">
+        <button type="button" :aria-label="t('关闭通知')" @click="dismissToast(toast.id)">
           <X :size="18" aria-hidden="true" />
         </button>
       </div>

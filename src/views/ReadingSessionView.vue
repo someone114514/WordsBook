@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n'
 import dayjs from 'dayjs'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -63,14 +64,14 @@ const currentTargetResult = computed(() => currentTarget.value ? results.value[c
 const hasRetainedPassage = computed(() => paragraphs.value.length > 0 || Boolean(session.value && session.value.segmentsJson !== '[]'))
 const isLocalFallback = computed(() => Boolean(session.value?.errorCode))
 const errorTitle = computed(() => {
-  if (generationErrorCode.value === 'missing-key' || error.value.includes('Key')) return '需要配置 DeepSeek Key'
-  if (generationErrorCode.value === 'details-invalid') return '正文已生成，题目还没准备好'
-  if (generationErrorCode.value === 'cancelled') return '文章生成已暂停'
-  return '文章暂时没有生成'
+  if (generationErrorCode.value === 'missing-key' || error.value.includes('Key')) return t("需要配置 DeepSeek Key")
+  if (generationErrorCode.value === 'details-invalid') return t("正文已生成，题目还没准备好")
+  if (generationErrorCode.value === 'cancelled') return t("文章生成已暂停")
+  return t("文章暂时没有生成")
 })
 const errorActionLabel = computed(() => generationErrorCode.value === 'details-invalid'
-  ? '继续准备题目'
-  : generationErrorCode.value === 'cancelled' ? '继续生成' : '重试')
+  ? t("继续准备题目")
+  : generationErrorCode.value === 'cancelled' ? t("继续生成") : t("重试"))
 
 function readingSessionId() {
   return `reading:${dayKey.value}:0:${batchIndex.value}`
@@ -158,7 +159,7 @@ async function loadBatch(force = false) {
     paragraphs.value = splitStoredPassage(session.value)
     generationErrorCode.value = session.value.errorCode
     if (session.value.status === 'failed') {
-      error.value = session.value.error || '文章生成失败，请重试'
+      error.value = session.value.error || t("文章生成失败，请重试")
       if (session.value.errorCode !== 'cancelled') await setArticleStatus(dailySessionId.value, 'failed')
       return
     }
@@ -381,7 +382,7 @@ async function skip() {
 async function cancel() {
   controller?.abort()
   await cancelReadingGeneration(readingSessionId())
-  error.value = '正文已保存，生成已暂停；点击继续准备题目即可恢复。'
+  error.value = t("正文已保存，生成已暂停；点击继续准备题目即可恢复。")
   generationErrorCode.value = 'cancelled'
   loading.value = false
 }
@@ -409,35 +410,35 @@ onBeforeUnmount(() => {
 <template>
   <section class="immersive-stage reading-stage">
     <header class="immersive-header">
-      <button class="btn" type="button" @click="skip">跳过</button>
-      <strong>今日文章 {{ batches.length ? `${batchIndex + 1}/${batches.length}` : '' }}</strong>
-      <span class="progress-chip">{{ batches[batchIndex]?.length ?? 0 }} 词</span>
+      <button class="btn" type="button" @click="skip">{{ t("跳过") }}</button>
+      <strong>{{ t("今日文章 {0}", [batches.length ? `${batchIndex + 1}/${batches.length}` : '']) }}</strong>
+      <span class="progress-chip">{{ t("{0} 词", [batches[batchIndex]?.length ?? 0]) }}</span>
     </header>
 
     <div v-if="staleArticle" class="immersive-empty article-stale-state">
-      <h1>文章需要更新</h1>
-      <p>新增词尚未包含在原文章中，可以重新生成，也可以继续阅读原文。</p>
-      <div class="action-row"><button class="btn btn-primary" type="button" @click="regenerateStaleArticle">重新准备</button><button class="btn" type="button" @click="continuePreviousArticle">继续原文</button><button v-if="noKey" class="btn" type="button" @click="router.push({ path: '/settings', query: { section: 'ai' } })">配置 DeepSeek Key</button></div>
+      <h1>{{ t("文章需要更新") }}</h1>
+      <p>{{ t("新增词尚未包含在原文章中，可以重新生成，也可以继续阅读原文。") }}</p>
+      <div class="action-row"><button class="btn btn-primary" type="button" @click="regenerateStaleArticle">{{ t("重新准备") }}</button><button class="btn" type="button" @click="continuePreviousArticle">{{ t("继续原文") }}</button><button v-if="noKey" class="btn" type="button" @click="router.push({ path: '/settings', query: { section: 'ai' } })">{{ t("配置 DeepSeek Key") }}</button></div>
     </div>
 
     <article v-else class="reading-card reading-card-stable" :aria-busy="loading">
-      <p v-if="usingPreviousArticle" class="reading-coverage-note">原文章未包含后来加入的单词</p>
-      <p v-else-if="session?.status === 'ready' && session?.errorCode" class="reading-coverage-note">AI 暂不可用；以下是离线词汇预习，不是生成文章。核心学习仍可继续。</p>
-      <p v-if="session?.omittedTargetWordIds?.length" class="reading-coverage-note">本篇已保留可用内容；{{ session.omittedTargetWordIds.length }} 个未自然覆盖的词将顺延到下一篇。</p>
-      <p v-if="session?.unquizzedTargetWordIds?.length" class="reading-coverage-note">另有 {{ session.unquizzedTargetWordIds.length }} 个词已在正文出现，但题目未通过校验；正文仍可正常阅读。</p>
+      <p v-if="usingPreviousArticle" class="reading-coverage-note">{{ t("原文章未包含后来加入的单词") }}</p>
+      <p v-else-if="session?.status === 'ready' && session?.errorCode" class="reading-coverage-note">{{ t("AI 暂不可用；以下是离线词汇预习，不是生成文章。核心学习仍可继续。") }}</p>
+      <p v-if="session?.omittedTargetWordIds?.length" class="reading-coverage-note">{{ t("本篇已保留可用内容；{0} 个未自然覆盖的词将顺延到下一篇。", [session.omittedTargetWordIds.length]) }}</p>
+      <p v-if="session?.unquizzedTargetWordIds?.length" class="reading-coverage-note">{{ t("另有 {0} 个词已在正文出现，但题目未通过校验；正文仍可正常阅读。", [session.unquizzedTargetWordIds.length]) }}</p>
       <div class="reading-title-row">
         <div>
-          <p class="eyebrow">{{ isLocalFallback ? '离线词汇预习' : generationPhase === 'article' ? '语境阅读' : '题目准备' }} · {{ level }}</p>
-          <h1>{{ isLocalFallback ? '离线词汇预习' : session?.title || '今日语境文章' }}</h1>
+          <p class="eyebrow">{{ isLocalFallback ? t("离线词汇预习") : generationPhase === 'article' ? t("语境阅读") : t("题目准备") }} · {{ level }}</p>
+          <h1>{{ isLocalFallback ? t("离线词汇预习") : session?.title || t("今日语境文章") }}</h1>
         </div>
-        <button v-if="loading" class="btn btn-quiet" type="button" @click="cancel">取消生成</button>
-        <button v-else-if="session" class="btn btn-quiet" type="button" @click="regenerate">重新准备</button>
+        <button v-if="loading" class="btn btn-quiet" type="button" @click="cancel">{{ t("取消生成") }}</button>
+        <button v-else-if="session" class="btn btn-quiet" type="button" @click="regenerate">{{ t("重新准备") }}</button>
       </div>
       <p class="reading-generation-status" aria-live="polite">
-        <template v-if="loading">{{ generationPhase === 'article' ? '正文流式生成中，完成后会在下方准备题目' : `正在准备测义题与翻译${generatedTargets ? ` · 已完成 ${generatedTargets} 题` : ''}` }}</template>
+        <template v-if="loading">{{ generationPhase === 'article' ? t("正文流式生成中，完成后会在下方准备题目") : t("正在准备测义题与翻译{0}", [generatedTargets ? t(" · 已完成 {0} 题", [generatedTargets]) : '']) }}</template>
         <template v-else-if="error">{{ errorTitle }}</template>
-        <template v-else-if="session">{{ parsed.targets.length ? '读完正文后开始测义' : isLocalFallback ? '本地预习不生成未经验证的选择题' : '正文已保留；本批没有通过校验的题目' }}</template>
-        <template v-else>正在恢复文章进度…</template>
+        <template v-else-if="session">{{ parsed.targets.length ? t("读完正文后开始测义") : isLocalFallback ? t("本地预习不生成未经验证的选择题") : t("正文已保留；本批没有通过校验的题目") }}</template>
+        <template v-else>{{ t("正在恢复文章进度…") }}</template>
       </p>
 
       <div class="reading-copy reading-copy-selectable reading-copy-stable">
@@ -452,51 +453,51 @@ onBeforeUnmount(() => {
       </div>
 
       <section v-if="loading" class="reading-question-placeholder" aria-live="polite">
-        <strong>{{ generationPhase === 'article' ? '题目区域已准备好' : '题目正在加载' }}</strong>
-        <span>正文位置保持不变，题目完成后会出现在这里</span>
+        <strong>{{ generationPhase === 'article' ? t("题目区域已准备好") : t("题目正在加载") }}</strong>
+        <span>{{ t("正文位置保持不变，题目完成后会出现在这里") }}</span>
         <div class="skeleton-lines" aria-hidden="true"><span/><span/><span/></div>
       </section>
 
       <section v-else-if="error" class="reading-generation-error" aria-live="polite">
         <h2>{{ errorTitle }}</h2>
         <p class="error" role="alert">{{ error }}</p>
-        <p v-if="hasRetainedPassage" class="muted">已保存正文，不会丢失；可以继续准备题目或重新生成正文。</p>
+        <p v-if="hasRetainedPassage" class="muted">{{ t("已保存正文，不会丢失；可以继续准备题目或重新生成正文。") }}</p>
         <div class="action-row">
           <button class="btn btn-primary" type="button" @click="loadBatch(false)">{{ errorActionLabel }}</button>
-          <button v-if="hasRetainedPassage" class="btn" type="button" @click="loadBatch(true)">重新生成正文</button>
-          <button class="btn" type="button" @click="skip">跳过并完成今日学习</button>
-          <button v-if="generationErrorCode === 'missing-key' || error.includes('Key')" class="btn" type="button" @click="router.push({ path: '/settings', query: { section: 'ai' } })">去设置</button>
+          <button v-if="hasRetainedPassage" class="btn" type="button" @click="loadBatch(true)">{{ t("重新生成正文") }}</button>
+          <button class="btn" type="button" @click="skip">{{ t("跳过并完成今日学习") }}</button>
+          <button v-if="generationErrorCode === 'missing-key' || error.includes('Key')" class="btn" type="button" @click="router.push({ path: '/settings', query: { section: 'ai' } })">{{ t("去设置") }}</button>
         </div>
       </section>
 
       <template v-else-if="session">
-        <button v-if="stage === 0" class="btn btn-primary" type="button" @click="revealTargets">{{ parsed.targets.length ? '我已读完，开始测义' : '我已读完，继续学习' }}</button>
+        <button v-if="stage === 0" class="btn btn-primary" type="button" @click="revealTargets">{{ parsed.targets.length ? t("我已读完，开始测义") : t("我已读完，继续学习") }}</button>
         <section v-if="stage === 1 && currentTarget" class="quiz-list quiz-list-single" aria-live="polite">
-          <div class="quiz-progress-row"><span>第 {{ quizCursor + 1 }} / {{ parsed.targets.length }} 题</span><progress :value="quizCursor + (currentTargetResult ? 1 : 0)" :max="parsed.targets.length" /></div>
+          <div class="quiz-progress-row"><span>{{ t("第 {0} / {1} 题", [quizCursor + 1, parsed.targets.length]) }}</span><progress :value="quizCursor + (currentTargetResult ? 1 : 0)" :max="parsed.targets.length" /></div>
           <article :key="currentTarget.wordId" class="entry-card context-question-card">
-            <h2>{{ currentTarget.headword }}<small v-if="currentTarget.surfaceForm">（文中：{{ currentTarget.surfaceForm }}）</small></h2>
+            <h2>{{ currentTarget.headword }}<small v-if="currentTarget.surfaceForm">{{ t("（文中：{0}）", [currentTarget.surfaceForm]) }}</small></h2>
             <div v-if="!currentTargetResult" class="context-choice-list">
               <button v-for="choice in currentTarget.choices" :key="choice" class="btn context-meaning-choice" type="button" @click="answer(currentTarget, choice)">{{ choice }}</button>
-              <button class="btn btn-quiet" type="button" @click="answer(currentTarget)">不确定</button>
+              <button class="btn btn-quiet" type="button" @click="answer(currentTarget)">{{ t("不确定") }}</button>
             </div>
             <template v-else>
-              <div :class="['context-answer', currentTargetResult === 'correct' ? 'correct' : 'incorrect']"><strong>{{ currentTargetResult === 'correct' ? '回答正确' : currentTargetResult === 'uncertain' ? '不确定' : '回答错误' }}</strong><p>答案：{{ currentTarget.contextualMeaning }}</p><p>{{ currentTarget.explanation }}</p></div>
-              <button class="btn btn-primary context-next-question" type="button" @click="nextQuestion">{{ quizCursor + 1 < parsed.targets.length ? '下一题' : '查看全部结果' }}</button>
+              <div :class="['context-answer', currentTargetResult === 'correct' ? 'correct' : 'incorrect']"><strong>{{ currentTargetResult === 'correct' ? t("回答正确") : currentTargetResult === 'uncertain' ? t("不确定") : t("回答错误") }}</strong><p>{{ t("答案：{0}", [currentTarget.contextualMeaning]) }}</p><p>{{ currentTarget.explanation }}</p></div>
+              <button class="btn btn-primary context-next-question" type="button" @click="nextQuestion">{{ quizCursor + 1 < parsed.targets.length ? t("下一题") : t("查看全部结果") }}</button>
             </template>
           </article>
         </section>
         <template v-if="stage === 2">
           <section v-if="currentResultTarget" class="quiz-result-carousel" aria-live="polite">
-            <div class="quiz-progress-row"><strong>答题结果</strong><span>{{ resultCursor + 1 }} / {{ parsed.targets.length }}</span></div>
+            <div class="quiz-progress-row"><strong>{{ t("答题结果") }}</strong><span>{{ resultCursor + 1 }} / {{ parsed.targets.length }}</span></div>
             <article class="entry-card context-result-card">
-              <h2>{{ currentResultTarget.headword }}<small v-if="currentResultTarget.surfaceForm">（文中：{{ currentResultTarget.surfaceForm }}）</small></h2>
-              <div :class="['context-answer', results[currentResultTarget.wordId] === 'correct' ? 'correct' : 'incorrect']"><strong>{{ results[currentResultTarget.wordId] === 'correct' ? '回答正确' : results[currentResultTarget.wordId] === 'uncertain' ? '不确定' : '回答错误' }}</strong><p>答案：{{ currentResultTarget.contextualMeaning }}</p><p>{{ currentResultTarget.explanation }}</p></div>
+              <h2>{{ currentResultTarget.headword }}<small v-if="currentResultTarget.surfaceForm">{{ t("（文中：{0}）", [currentResultTarget.surfaceForm]) }}</small></h2>
+              <div :class="['context-answer', results[currentResultTarget.wordId] === 'correct' ? 'correct' : 'incorrect']"><strong>{{ results[currentResultTarget.wordId] === 'correct' ? t("回答正确") : results[currentResultTarget.wordId] === 'uncertain' ? t("不确定") : t("回答错误") }}</strong><p>{{ t("答案：{0}", [currentResultTarget.contextualMeaning]) }}</p><p>{{ currentResultTarget.explanation }}</p></div>
             </article>
-            <div class="quiz-result-nav"><button class="btn" type="button" :disabled="resultCursor === 0" @click="moveResultCursor(-1)">上一题</button><button class="btn" type="button" :disabled="resultCursor + 1 >= parsed.targets.length" @click="moveResultCursor(1)">下一题</button></div>
+            <div class="quiz-result-nav"><button class="btn" type="button" :disabled="resultCursor === 0" @click="moveResultCursor(-1)">{{ t("上一题") }}</button><button class="btn" type="button" :disabled="resultCursor + 1 >= parsed.targets.length" @click="moveResultCursor(1)">{{ t("下一题") }}</button></div>
           </section>
-          <button class="btn" type="button" @click="toggleTranslation">{{ showTranslation ? '隐藏全文翻译' : '显示全文翻译' }}</button>
+          <button class="btn" type="button" @click="toggleTranslation">{{ showTranslation ? t("隐藏全文翻译") : t("显示全文翻译") }}</button>
           <p v-if="showTranslation" class="translation-panel">{{ session.translation }}</p>
-          <button class="btn btn-primary" type="button" @click="nextBatch">{{ isHistoryReview ? '返回文章记录' : '继续学习' }}</button>
+          <button class="btn btn-primary" type="button" @click="nextBatch">{{ isHistoryReview ? t("返回文章记录") : t("继续学习") }}</button>
         </template>
       </template>
     </article>

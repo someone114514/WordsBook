@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t, studyListName } from '../i18n'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { X } from 'lucide-vue-next'
@@ -32,14 +33,14 @@ let selectionTimer = 0
 let panelInteractionUntil = 0
 
 const summary = computed(() => {
-  if (!selectedEntry.value) return '本地词典暂无释义，可打开完整查词'
+  if (!selectedEntry.value) return t("本地词典暂无释义，可打开完整查词")
   const sense = parseSenseRecords(selectedEntry.value)[0]
-  if (!sense) return '已有本地词条'
+  if (!sense) return t("已有本地词条")
   const preferChinese = definitionLanguage.value === 'chinese-first'
     || (definitionLanguage.value === 'adaptive' && (articleLevel.value === 'A2' || articleLevel.value === 'B1'))
   return preferChinese
-    ? sense.glossZh || sense.definitionEn || '已有本地词条'
-    : sense.definitionEn || sense.glossZh || '已有本地词条'
+    ? sense.glossZh || sense.definitionEn || t("已有本地词条")
+    : sense.definitionEn || sense.glossZh || t("已有本地词条")
 })
 
 function clearNativeSelection(): void {
@@ -89,7 +90,7 @@ async function commitCurrentSelection(): Promise<void> {
   } catch (error) {
     if (token !== lookupToken) return
     messageType.value = 'error'
-    message.value = error instanceof Error ? error.message : '查词失败，请打开完整查词重试'
+    message.value = error instanceof Error ? error.message : t("查词失败，请打开完整查词重试")
   } finally {
     if (token === lookupToken) loading.value = false
   }
@@ -130,7 +131,7 @@ async function openFullLookup(): Promise<void> {
 async function playPronunciation(): Promise<void> {
   if (!selectedEntry.value) {
     messageType.value = 'error'
-    message.value = '本地词典暂无发音信息，请打开完整查词'
+    message.value = t("本地词典暂无发音信息，请打开完整查词")
     return
   }
   actionBusy.value = true
@@ -138,10 +139,10 @@ async function playPronunciation(): Promise<void> {
     const result = await playEntryPronunciation(selectedEntry.value)
     if (result.success) return
     messageType.value = 'error'
-    message.value = '当前设备无法播放发音'
+    message.value = t("当前设备无法播放发音")
   } catch (error) {
     messageType.value = 'error'
-    message.value = error instanceof Error ? error.message : '播放发音失败'
+    message.value = error instanceof Error ? error.message : t("播放发音失败")
   } finally {
     actionBusy.value = false
   }
@@ -151,7 +152,7 @@ async function addSelectedWord(listId = selectedListId.value): Promise<void> {
   if (actionBusy.value) return
   if (!selectedEntry.value) {
     messageType.value = 'error'
-    message.value = '本地词典暂未找到，打开完整查词后可补全并加入'
+    message.value = t("本地词典暂未找到，打开完整查词后可补全并加入")
     return
   }
   if (!listId) {
@@ -164,10 +165,10 @@ async function addSelectedWord(listId = selectedListId.value): Promise<void> {
     await addEntryToStudyList(listId, selectedEntry.value, source)
     window.localStorage.setItem('wordsbook:last-study-list', listId)
     messageType.value = 'success'
-    message.value = `已加入「${studyLists.value.find((list) => list.listId === listId)?.name ?? '词表'}」`
+    message.value = t("已加入「{0}」", [studyLists.value.find((list) => list.listId === listId)?.name ?? t("词表")])
   } catch (error) {
     messageType.value = 'error'
-    message.value = error instanceof Error ? error.message : '加入词表失败，请重试'
+    message.value = error instanceof Error ? error.message : t("加入词表失败，请重试")
   } finally {
     actionBusy.value = false
   }
@@ -184,10 +185,10 @@ async function saveSelectedWord(): Promise<void> {
     const source = route.path.startsWith('/review/reading') ? 'article' : 'lookup'
     await addEntryToStudyList(LOOKUP_LIST_ID, selectedEntry.value, source)
     messageType.value = 'success'
-    message.value = '已仅保存，不进入每日学习'
+    message.value = t("已仅保存，不进入每日学习")
   } catch (error) {
     messageType.value = 'error'
-    message.value = error instanceof Error ? error.message : '保存失败，请重试'
+    message.value = error instanceof Error ? error.message : t("保存失败，请重试")
   } finally {
     actionBusy.value = false
   }
@@ -231,7 +232,7 @@ onBeforeUnmount(() => {
     <aside
       v-if="selectedText"
       class="selection-lookup-panel reading-selection-bar"
-      aria-label="选中内容查词"
+      :aria-label="t('选中内容查词')"
       aria-live="polite"
       data-selection-lookup="off"
       @pointerdown.capture="holdPanelInteraction"
@@ -239,22 +240,22 @@ onBeforeUnmount(() => {
     >
       <div class="selection-word-summary">
         <strong>{{ selectedText }}</strong>
-        <span v-if="loading" class="muted">正在查词…</span>
+        <span v-if="loading" class="muted">{{ t("正在查词…") }}</span>
         <span v-else class="muted">{{ summary }}</span>
-        <button class="selection-close" type="button" aria-label="关闭选词查词" @click="clearSelection()"><X :size="19" aria-hidden="true" /></button>
+        <button class="selection-close" type="button" :aria-label="t('关闭选词查词')" @click="clearSelection()"><X :size="19" aria-hidden="true" /></button>
       </div>
       <div v-if="choosingList" class="selection-list-picker">
-        <select v-model="selectedListId" aria-label="选择学习词表">
-          <option v-for="list in studyLists" :key="list.listId" :value="list.listId">{{ list.name }}</option>
+        <select v-model="selectedListId" :aria-label="t('选择学习词表')">
+          <option v-for="list in studyLists" :key="list.listId" :value="list.listId">{{ studyListName(list) }}</option>
         </select>
-        <button class="btn btn-primary" type="button" :disabled="actionBusy" @click="addSelectedWord()">确认加入</button>
+        <button class="btn btn-primary" type="button" :disabled="actionBusy" @click="addSelectedWord()">{{ t("确认加入") }}</button>
       </div>
       <div class="selection-actions selection-actions-global">
-        <button class="btn" type="button" @click="openFullLookup">完整查词</button>
-        <button class="btn" type="button" :disabled="loading || actionBusy || !selectedEntry" @click="playPronunciation">播放发音</button>
-        <button class="btn btn-primary" type="button" :disabled="loading || actionBusy" @click="addSelectedWord()">加入学习</button>
-        <button class="btn" type="button" :disabled="loading || actionBusy" @click="choosingList = !choosingList">选择词表</button>
-        <button class="btn btn-quiet" type="button" :disabled="loading || actionBusy" @click="saveSelectedWord">仅保存</button>
+        <button class="btn" type="button" @click="openFullLookup">{{ t("完整查词") }}</button>
+        <button class="btn" type="button" :disabled="loading || actionBusy || !selectedEntry" @click="playPronunciation">{{ t("播放发音") }}</button>
+        <button class="btn btn-primary" type="button" :disabled="loading || actionBusy" @click="addSelectedWord()">{{ t("加入学习") }}</button>
+        <button class="btn" type="button" :disabled="loading || actionBusy" @click="choosingList = !choosingList">{{ t("选择词表") }}</button>
+        <button class="btn btn-quiet" type="button" :disabled="loading || actionBusy" @click="saveSelectedWord">{{ t("仅保存") }}</button>
       </div>
       <p v-if="message" :class="[messageType, 'selection-message']" role="status">{{ message }}</p>
     </aside>

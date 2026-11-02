@@ -9,6 +9,7 @@ import {
   tabForPath,
   type AppTab,
 } from './appNavigation'
+import { t } from '../i18n'
 
 const appTabLoaders = {
   lookup: () => import('../views/LookupView.vue'),
@@ -156,5 +157,5 @@ router.afterEach((to) => {
   if (typeof window !== 'undefined') {
     window.sessionStorage.removeItem('wordsbook:route-reload-after-import-error')
   }
-  document.title = `WordsBook - ${String(to.meta.title ?? 'PWA')}`
+  document.title = `WordsBook - ${t(String(to.meta.title ?? 'PWA'))}`
 })

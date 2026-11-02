@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t, studyListName } from '../i18n'
 import { computed, onActivated, onBeforeUnmount, ref, watch } from 'vue'
 import { ChevronRight, Plus } from 'lucide-vue-next'
 import { notify } from '../app/feedback'
@@ -31,9 +32,9 @@ async function create() {
   try {
     const list = await createStudyList(normalized)
     name.value = ''
-    message.value = `已创建「${list.name}」`
+    message.value = t("已创建「{0}」", [list.name])
     createListOpen.value = false
-    notify(`已创建「${list.name}」。`, { tone: 'success' })
+    notify(t("已创建「{0}」。", [list.name]), { tone: 'success' })
     await load()
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : String(reason)
@@ -51,48 +52,48 @@ onBeforeUnmount(() => setCriticalActivity('create-list-form', false))
   <main class="page-shell lists-overview">
     <section class="lists-toolbar">
       <div>
-        <h2>学习词表</h2>
-        <p class="muted">{{ learningLists.filter(item => item.studyEnabled).length }} 个参与今日学习</p>
+        <h2>{{ t("学习词表") }}</h2>
+        <p class="muted">{{ t("{0} 个参与今日学习", [learningLists.filter(item => item.studyEnabled).length]) }}</p>
       </div>
-      <button class="btn btn-primary lists-create-action" type="button" aria-label="新建词表" @click="createListOpen = true"><Plus :size="18" aria-hidden="true" />新建</button>
+      <button class="btn btn-primary lists-create-action" type="button" :aria-label="t('新建词表')" @click="createListOpen = true"><Plus :size="18" aria-hidden="true" />{{ t("新建") }}</button>
     </section>
     <p v-if="message" class="success" role="status">{{ message }}</p>
 
-    <section class="lists-section" aria-label="学习词表">
+    <section class="lists-section" :aria-label="t('学习词表')">
       <div v-if="learningLists.length" class="list-row-group">
         <RouterLink
           v-for="list in learningLists"
           :key="list.listId"
           class="list-row-link"
-          :aria-label="`管理词表：${list.name}`"
+          :aria-label="t('管理词表：{0}', [studyListName(list)])"
           :to="`/lists/${encodeURIComponent(list.listId)}`"
         >
           <span class="list-row-main">
             <span class="list-row-heading">
-              <strong>{{ list.name }}</strong>
-              <span :class="['list-status-chip', { active: list.studyEnabled }]">{{ list.studyEnabled ? '参与学习' : '已暂停' }}</span>
+              <strong>{{ studyListName(list) }}</strong>
+              <span :class="['list-status-chip', { active: list.studyEnabled }]">{{ list.studyEnabled ? t("参与学习") : t("已暂停") }}</span>
             </span>
-            <small>{{ list.description || '管理单词与学习状态' }}</small>
+            <small>{{ (list.systemType ? t(list.description ?? '') : list.description) || t("管理单词与学习状态") }}</small>
           </span>
-          <span class="list-row-trailing"><strong>{{ list.wordCount }}</strong><small>个单词</small><ChevronRight :size="18" aria-hidden="true" /></span>
+          <span class="list-row-trailing"><strong>{{ list.wordCount }}</strong><small>{{ t("个单词") }}</small><ChevronRight :size="18" aria-hidden="true" /></span>
         </RouterLink>
       </div>
-      <div v-else class="empty-state compact"><p>还没有学习词表。</p><RouterLink class="btn" to="/lookup">去查词</RouterLink></div>
+      <div v-else class="empty-state compact"><p>{{ t("还没有学习词表。") }}</p><RouterLink class="btn" to="/lookup">{{ t("去查词") }}</RouterLink></div>
     </section>
-    <RouterLink v-if="savedList" class="list-row-link list-row-saved" :to="`/lists/${encodeURIComponent(savedList.listId)}`" aria-label="查看仅保存单词">
-      <span class="list-row-main"><strong>仅保存</strong><small>不参与每日学习</small></span>
-      <span class="list-row-trailing"><strong>{{ savedList.wordCount }}</strong><small>个单词</small><ChevronRight :size="18" aria-hidden="true" /></span>
+    <RouterLink v-if="savedList" class="list-row-link list-row-saved" :to="`/lists/${encodeURIComponent(savedList.listId)}`" :aria-label="t('查看仅保存单词')">
+      <span class="list-row-main"><strong>{{ t("仅保存") }}</strong><small>{{ t("不参与每日学习") }}</small></span>
+      <span class="list-row-trailing"><strong>{{ savedList.wordCount }}</strong><small>{{ t("个单词") }}</small><ChevronRight :size="18" aria-hidden="true" /></span>
     </RouterLink>
 
-    <AppActionSheet :open="createListOpen" title="新建词表" @close="createListOpen = false">
+    <AppActionSheet :open="createListOpen" :title="t('新建词表')" @close="createListOpen = false">
       <form id="create-list-form" class="sheet-form" @submit.prevent="create">
-        <label class="setting-stack" for="new-list-name"><span>词表名称</span><input id="new-list-name" v-model="name" class="inline-input" autocomplete="off" enterkeyhint="done" placeholder="例如：旅行英语" /></label>
-        <p class="muted">创建后可从查词结果或批量导入添加单词。</p>
-        <p v-if="error" class="error" role="alert">创建失败：{{ error }}</p>
+        <label class="setting-stack" for="new-list-name"><span>{{ t("词表名称") }}</span><input id="new-list-name" v-model="name" class="inline-input" autocomplete="off" enterkeyhint="done" :placeholder="t('例如：旅行英语')" /></label>
+        <p class="muted">{{ t("创建后可从查词结果或批量导入添加单词。") }}</p>
+        <p v-if="error" class="error" role="alert">{{ t("创建失败：{0}", [error]) }}</p>
       </form>
       <template #actions>
-        <button class="btn" type="button" @click="createListOpen = false">取消</button>
-        <button class="btn btn-primary" form="create-list-form" :disabled="busy || !name.trim()" type="submit">{{ busy ? '创建中…' : '创建词表' }}</button>
+        <button class="btn" type="button" @click="createListOpen = false">{{ t("取消") }}</button>
+        <button class="btn btn-primary" form="create-list-form" :disabled="busy || !name.trim()" type="submit">{{ busy ? t("创建中…") : t("创建词表") }}</button>
       </template>
     </AppActionSheet>
   </main>

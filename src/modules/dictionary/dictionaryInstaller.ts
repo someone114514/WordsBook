@@ -1,3 +1,4 @@
+import { t } from '../../i18n'
 import { db } from '../../db/database'
 import type { DictionaryEntry, DictionaryIndexRow, DictionaryMeta } from '../../types/models'
 import { buildPrefixTokens, normalizeWord } from './search'
@@ -114,7 +115,7 @@ async function fetchText(url: string): Promise<string> {
   if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
     if (typeof DecompressionStream === 'undefined') {
       if (url.endsWith('.gz')) return fetchText(url.slice(0, -3))
-      throw new Error('当前浏览器无法解压词典包')
+      throw new Error(t("当前浏览器无法解压词典包"))
     }
     const decompressed = new Response(new Blob([buffer]).stream().pipeThrough(new DecompressionStream('gzip')))
     return decompressed.text()
@@ -321,10 +322,10 @@ function mapInstallError(error: unknown): Error {
   const reason = error instanceof Error ? error : new Error(String(error))
   const message = reason.message || String(reason)
   if (message.includes('QuotaExceededError')) {
-    return new Error('存储空间不足：iPhone Safari 可能限制离线容量，请清理空间后重试。')
+    return new Error(t("存储空间不足：iPhone Safari 可能限制离线容量，请清理空间后重试。"))
   }
   if (message.includes('AbortError')) {
-    return new Error('安装被中断：请保持页面常亮、关闭低电量模式并重试。')
+    return new Error(t("安装被中断：请保持页面常亮、关闭低电量模式并重试。"))
   }
   return reason
 }
@@ -341,7 +342,7 @@ async function resolveManifest(
   const absoluteManifestUrl = toAbsoluteUrl(manifestUrl)
   const manifest = await fetchDictionaryManifest(absoluteManifestUrl)
   const dictId = normalizeDictionaryId(manifest.id ?? manifest.name ?? `dict-${dictionaryIndex + 1}`)
-  const dictionaryName = manifest.name ?? manifest.source ?? `词典 ${dictionaryIndex + 1}`
+  const dictionaryName = manifest.name ?? manifest.source ?? t("词典 {0}", [dictionaryIndex + 1])
   const baseUrl = new URL('.', absoluteManifestUrl).toString()
 
   return { manifest, dictId, dictionaryName, baseUrl }
@@ -381,7 +382,7 @@ async function importSingleDictionary(
     onProgress?.({
       stage: 'import',
       ratio: manifest.entryCount > 0 ? Math.min(importedEntries / manifest.entryCount, 1) : 1,
-      message: `写入词条批次 #${batchesWritten} (${chunk.length} 条)`,
+      message: t("写入词条批次 #{0} ({1} 条)", [batchesWritten, chunk.length]),
       stats: {
         entries: importedEntries,
         indices: importedIndices,
@@ -403,7 +404,7 @@ async function importSingleDictionary(
     onProgress?.({
       stage: 'download-entries',
       ratio: entryShardIndex / Math.max(manifest.entries.length, 1),
-      message: `读取词条分片 ${shardIndex} / ${manifest.entries.length}`,
+      message: t("读取词条分片 {0} / {1}", [shardIndex, manifest.entries.length]),
       stats: {
         entries: importedEntries,
         indices: importedIndices,
@@ -447,7 +448,7 @@ async function importSingleDictionary(
       onProgress?.({
         stage: 'download-indices',
         ratio: shardTotal > 0 ? shardIndex / shardTotal : 1,
-        message: `写入索引批次 #${batchesWritten} (${chunk.length} 条)`,
+        message: t("写入索引批次 #{0} ({1} 条)", [batchesWritten, chunk.length]),
         stats: {
           entries: importedEntries,
           indices: importedIndices,
@@ -516,7 +517,7 @@ export async function installDictionaryBundle(
     onProgress?.({
       stage: 'fetch-manifest',
       ratio: (index + 1) / manifestUrls.length,
-      message: `加载词典配置 ${index + 1} / ${manifestUrls.length}`,
+      message: t("加载词典配置 {0} / {1}", [index + 1, manifestUrls.length]),
       stats: {
         dictionaries: manifestUrls.length,
         elapsedMs: Math.round(performance.now() - startedAt),
@@ -604,13 +605,13 @@ export async function installDictionaryBundle(
 
   const warningSuffix =
     failedDictionaries.length > 0
-      ? `；跳过 ${failedDictionaries.length} 个词典：${failedDictionaries.slice(0, 2).join(' | ')}`
+      ? t("；跳过 {0} 个词典：{1}", [failedDictionaries.length, failedDictionaries.slice(0, 2).join(' | ')])
       : ''
 
   onProgress?.({
     stage: 'completed',
     ratio: 1,
-    message: `词典安装完成${warningSuffix}`,
+    message: t("词典安装完成{0}", [warningSuffix]),
     stats: {
       entries: totalImportedEntries,
       indices: totalImportedIndices,
